@@ -371,6 +371,41 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
 
   const rowRefs = useRef({});
   const prevTop = useRef({});
+  const scrollAnimRef = useRef(null);
+
+  // Ease-out cubic — used for both the row transform and the scroll offset
+  // so they stay perfectly in lockstep.
+  function ease(t) {
+    return 1 - Math.pow(1 - t, 3);
+  }
+
+  // Keeps the edited row visually anchored in place by scrolling the page
+  // to absorb exactly the amount the row moved in the document, at the
+  // same rate the row's own offsetting transform relaxes back to zero.
+  // Net effect: the row appears to hold still while the rest of the
+  // ledger slides underneath it.
+  function settleRowWithScroll(el, distance, duration = 320) {
+    if (scrollAnimRef.current) cancelAnimationFrame(scrollAnimRef.current);
+    const start = performance.now();
+    const scrollY0 = window.scrollY;
+    const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+
+    function frame(now) {
+      const t = Math.min(1, (now - start) / duration);
+      const e = ease(t);
+      const scrolled = distance * e;
+      el.style.transition = "none";
+      el.style.transform = `translateY(${scrolled - distance}px)`;
+      window.scrollTo(0, Math.max(0, Math.min(maxScroll, scrollY0 + scrolled)));
+      if (t < 1) {
+        scrollAnimRef.current = requestAnimationFrame(frame);
+      } else {
+        el.style.transform = "translateY(0px)";
+        scrollAnimRef.current = null;
+      }
+    }
+    scrollAnimRef.current = requestAnimationFrame(frame);
+  }
 
   useLayoutEffect(() => {
     const newTops = {};
@@ -382,24 +417,33 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       const el = rowRefs.current[r.txn.id];
       const prev = prevTop.current[r.txn.id];
       const next = newTops[r.txn.id];
-      if (el && prev !== undefined && next !== undefined && prev !== next) {
+      if (!el || prev === undefined || next === undefined || prev === next) return;
+
+      if (r.txn.id === editingKey) {
+        // The row being edited: scroll compensates for its movement so it
+        // stays put on screen, and the rest of the ledger appears to pass
+        // beneath it.
+        settleRowWithScroll(el, next - prev);
+      } else {
+        // Every other row: simple FLIP, no scroll involved.
         const delta = prev - next;
         el.style.transition = "none";
         el.style.transform = `translateY(${delta}px)`;
         requestAnimationFrame(() => {
           el.style.transition = "transform 320ms cubic-bezier(0.2, 0.8, 0.2, 1)";
           el.style.transform = "translateY(0px)";
-          if (r.txn.id === editingKey) {
-            const rect = el.getBoundingClientRect();
-            const outOfView = rect.top < 60 || rect.bottom > window.innerHeight - 20;
-            if (outOfView) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
-          }
         });
       }
     });
     prevTop.current = newTops;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows.map((r) => r.txn.id + "|" + r.txn.date).join(",")]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollAnimRef.current) cancelAnimationFrame(scrollAnimRef.current);
+    };
+  }, []);
 
   function startEdit(t) {
     if (t.lines.length > 2) { onOpenSplit(t); return; }
