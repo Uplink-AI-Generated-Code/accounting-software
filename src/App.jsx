@@ -373,13 +373,23 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
   const prevTop = useRef({});
   const scrollAnimRef = useRef(null);
 
+  // getBoundingClientRect().top is viewport-relative, so it silently
+  // shifts whenever the page scrolls between reads — which happens
+  // constantly here, since scrolling is exactly what this animation does.
+  // Adding window.scrollY converts it to a document-absolute position,
+  // so every read stays comparable no matter what the scroll position was
+  // at the time it was taken.
+  function absTop(el) {
+    return el.getBoundingClientRect().top + window.scrollY;
+  }
+
   // Keeps the edited row visually anchored while it CSS-transitions to its
   // new document position. Rather than computing scroll from a JS easing
   // formula (which can drift out of sync with what the browser is actually
   // painting and cause visible jumps), each frame reads the row's real,
-  // current `getBoundingClientRect().top` and scrolls by exactly however
-  // far that moved since the last frame. Scroll always tracks the row's
-  // true rendered motion, whatever curve the CSS transition is really
+  // current absolute position and scrolls by exactly however far that
+  // moved since the last frame. Scroll always tracks the row's true
+  // rendered motion, whatever curve the CSS transition is really
   // following — so the row appears to hold still while the ledger slides
   // underneath it.
   function settleRowWithScroll(el, startTransform, duration = 320) {
@@ -394,16 +404,16 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     el.style.transform = "translateY(0px)";
 
     const start = performance.now();
-    let lastTop = el.getBoundingClientRect().top + window.scrollY;
+    let lastTop = absTop(el);
 
     function frame(now) {
       const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-      const curTop = el.getBoundingClientRect().top + window.scrollY;
+      const curTop = absTop(el);
       const drift = curTop - lastTop;
       if (Math.abs(drift) > 0.01) {
         window.scrollTo(0, Math.max(0, Math.min(maxScroll, window.scrollY + drift)));
       }
-      lastTop = el.getBoundingClientRect().top + window.scrollY;
+      lastTop = absTop(el);
 
       if (now - start < duration + 60) {
         scrollAnimRef.current = requestAnimationFrame(frame);
@@ -418,7 +428,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     const newTops = {};
     rows.forEach((r) => {
       const el = rowRefs.current[r.txn.id];
-      if (el) newTops[r.txn.id] = el.getBoundingClientRect().top + window.scrollY;
+      if (el) newTops[r.txn.id] = absTop(el);
     });
     rows.forEach((r) => {
       const el = rowRefs.current[r.txn.id];
