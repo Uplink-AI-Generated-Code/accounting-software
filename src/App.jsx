@@ -27,6 +27,7 @@ const TYPES = [
   { key: "equity", label: "Equity" },
   { key: "income", label: "Income" },
   { key: "expense", label: "Expenses" },
+  { key: "investment", label: "Stocks & Shares" },
 ];
 // Used only to translate a plain "increase/decrease" entry into formal debit/credit
 // for the balance-check hint — never shown to the user, never used for storage or display.
@@ -57,6 +58,23 @@ function daysDiff(a, b) {
   const t1 = new Date(a + "T00:00:00").getTime();
   const t2 = new Date(b + "T00:00:00").getTime();
   return Math.round((t2 - t1) / 86400000);
+}
+// Trims trailing zeros but keeps up to 6 decimal places, for fractional share counts.
+function fmtUnits(n) {
+  const v = Number.isFinite(n) ? n : 0;
+  return v.toLocaleString("en-GB", { maximumFractionDigits: 6, minimumFractionDigits: 0 });
+}
+// The single per-line value comparable against a given currency, wherever
+// it's found: a plain amount in a matching-currency account, a currency
+// exchange tag, or (for stock accounts) the cash side of a trade. This is
+// what lets a cash entry and a stock trade — or two differently-tagged
+// entries in general — recognise each other as a possible match.
+function getComparableAmount(line, acc, targetCurrency) {
+  if (!acc) return undefined;
+  if (acc.currency === targetCurrency) return line.amount;
+  if (line.exchangeCurrency === targetCurrency) return line.exchangeAmount;
+  if (acc.type === "investment" && line.cashCurrency === targetCurrency) return line.cashValue;
+  return undefined;
 }
 function hasStorage() {
   return typeof window !== "undefined" && !!window.storage && typeof window.storage.get === "function" && typeof window.storage.set === "function";
@@ -160,6 +178,29 @@ export default function App() {
     return map;
   }, [accounts, transactions]);
 
+  // Per-symbol unit totals for stock accounts — summing raw `amount` across
+  // an investment account (like `balances` does) would mix different
+  // symbols' unit counts together meaninglessly.
+  const holdings = useMemo(() => {
+    const map = {}; // accountId -> { SYMBOL: units }
+    transactions.forEach((t) =>
+      t.lines.forEach((l) => {
+        const acc = accounts.find((a) => a.id === l.accountId);
+        if (!acc || acc.type !== "investment" || !l.symbol) return;
+        map[acc.id] = map[acc.id] || {};
+        map[acc.id][l.symbol] = (map[acc.id][l.symbol] || 0) + (l.amount || 0);
+      })
+    );
+    return map;
+  }, [accounts, transactions]);
+
+  function holdingsSummary(accountId) {
+    const h = holdings[accountId] || {};
+    const parts = Object.entries(h).filter(([, u]) => Math.abs(u) > 1e-9);
+    if (parts.length === 0) return "No holdings";
+    return parts.map(([sym, u]) => `${sym} ${fmtUnits(u)}`).join("  ·  ");
+  }
+
   function saveAccount(data) {
     if (data.id) persist(accounts.map((a) => (a.id === data.id ? data : a)), transactions);
     else persist([...accounts, { ...data, id: uid() }], transactions);
@@ -249,7 +290,11 @@ export default function App() {
                 {list.map((a) => (
                   <button key={a.id} onClick={() => setSelectedId(a.id)} className="w-full text-left px-2 py-1.5 rounded flex items-center justify-between" style={{ background: selectedId === a.id ? C.paperDim : "transparent" }}>
                     <span style={{ fontSize: 13.5, color: C.ink }}>{a.name}</span>
-                    <span className="ll-mono" style={{ fontSize: 12, color: (balances[a.id] || 0) < 0 ? C.debit : C.inkSoft }}>{fmt(balances[a.id] || 0, a.currency)}</span>
+                    {a.type === "investment" ? (
+                      <span className="ll-mono" style={{ fontSize: 11, color: C.inkSoft, textAlign: "right" }}>{holdingsSummary(a.id)}</span>
+                    ) : (
+                      <span className="ll-mono" style={{ fontSize: 12, color: (balances[a.id] || 0) < 0 ? C.debit : C.inkSoft }}>{fmt(balances[a.id] || 0, a.currency)}</span>
+                    )}
                   </button>
                 ))}
               </div>
@@ -259,19 +304,30 @@ export default function App() {
 
         <main className="flex-1 p-6">
           {selected ? (
-            <AccountLedger
-              account={selected}
-              accounts={accounts}
-              transactions={transactions}
-              balance={balances[selected.id] || 0}
-              onEditAccount={() => setAccountForm(selected)}
-              onSaveTxn={saveTransaction}
-              onDeleteTxn={deleteTransaction}
-              onOpenSplit={(t) => setSplitForm(t)}
-              onNewSplit={() => setSplitForm({ presetAccountId: selected.id })}
-            />
+            selected.type === "investment" ? (
+              <StockLedger
+                account={selected}
+                accounts={accounts}
+                transactions={transactions}
+                onEditAccount={() => setAccountForm(selected)}
+                onSaveTxn={saveTransaction}
+                onDeleteTxn={deleteTransaction}
+              />
+            ) : (
+              <AccountLedger
+                account={selected}
+                accounts={accounts}
+                transactions={transactions}
+                balance={balances[selected.id] || 0}
+                onEditAccount={() => setAccountForm(selected)}
+                onSaveTxn={saveTransaction}
+                onDeleteTxn={deleteTransaction}
+                onOpenSplit={(t) => setSplitForm(t)}
+                onNewSplit={() => setSplitForm({ presetAccountId: selected.id })}
+              />
+            )
           ) : (
-            <Overview accounts={accounts} balances={balances} onSelect={setSelectedId} onNew={() => setAccountForm({})} />
+            <Overview accounts={accounts} balances={balances} holdingsSummary={holdingsSummary} onSelect={setSelectedId} onNew={() => setAccountForm({})} />
           )}
         </main>
       </div>
@@ -296,7 +352,7 @@ export default function App() {
 /* ---------------------------------------------------------
    Overview
 --------------------------------------------------------- */
-function Overview({ accounts, balances, onSelect, onNew }) {
+function Overview({ accounts, balances, holdingsSummary, onSelect, onNew }) {
   if (accounts.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center" style={{ marginTop: 100, color: C.inkFaint }}>
@@ -310,7 +366,7 @@ function Overview({ accounts, balances, onSelect, onNew }) {
     );
   }
   const totalsByCurrency = {};
-  accounts.forEach((a) => { totalsByCurrency[a.currency] = (totalsByCurrency[a.currency] || 0) + (balances[a.id] || 0); });
+  accounts.filter((a) => a.type !== "investment").forEach((a) => { totalsByCurrency[a.currency] = (totalsByCurrency[a.currency] || 0) + (balances[a.id] || 0); });
 
   return (
     <div>
@@ -323,12 +379,100 @@ function Overview({ accounts, balances, onSelect, onNew }) {
           <button key={a.id} onClick={() => onSelect(a.id)} className="text-left p-4 rounded" style={{ background: C.card, border: `1px solid ${C.line}` }}>
             <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>{TYPES.find((t) => t.key === a.type)?.label}</div>
             <div style={{ fontSize: 15, fontWeight: 600, marginTop: 4 }}>{a.name}</div>
-            <div className="ll-mono" style={{ fontSize: 18, marginTop: 8, color: (balances[a.id] || 0) < 0 ? C.debit : C.ink }}>{fmt(balances[a.id] || 0, a.currency)}</div>
+            {a.type === "investment" ? (
+              <div className="ll-mono" style={{ fontSize: 13, marginTop: 8, color: C.ink }}>{holdingsSummary(a.id)}</div>
+            ) : (
+              <div className="ll-mono" style={{ fontSize: 18, marginTop: 8, color: (balances[a.id] || 0) < 0 ? C.debit : C.ink }}>{fmt(balances[a.id] || 0, a.currency)}</div>
+            )}
           </button>
         ))}
       </div>
     </div>
   );
+}
+
+/* ---------------------------------------------------------
+   Shared row-reorder animation, used by both the cash ledger and
+   the stock ledger. Handles the FLIP slide for ordinary rows and the
+   scroll-synced "ledger slides underneath" treatment for whichever
+   row is being edited (or just finished being edited/cancelled).
+--------------------------------------------------------- */
+function useLedgerRowAnimation(rows, editingKey) {
+  const rowRefs = useRef({});
+  const prevTop = useRef({});
+  const scrollAnimRef = useRef(null);
+  const pendingSettleId = useRef(null);
+
+  function absTop(el) {
+    return el.getBoundingClientRect().top + window.scrollY;
+  }
+
+  function settleRowWithScroll(el, startTransform, duration = 320) {
+    if (scrollAnimRef.current) cancelAnimationFrame(scrollAnimRef.current);
+
+    el.style.transition = "none";
+    el.style.transform = `translateY(${startTransform}px)`;
+    void el.offsetHeight;
+    el.style.transition = "transform 320ms cubic-bezier(0.2, 0.8, 0.2, 1)";
+    el.style.transform = "translateY(0px)";
+
+    const start = performance.now();
+    let lastTop = absTop(el);
+
+    function frame(now) {
+      const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      const curTop = absTop(el);
+      const drift = curTop - lastTop;
+      if (Math.abs(drift) > 0.01) {
+        window.scrollTo(0, Math.max(0, Math.min(maxScroll, window.scrollY + drift)));
+      }
+      lastTop = absTop(el);
+
+      if (now - start < duration + 60) {
+        scrollAnimRef.current = requestAnimationFrame(frame);
+      } else {
+        scrollAnimRef.current = null;
+      }
+    }
+    scrollAnimRef.current = requestAnimationFrame(frame);
+  }
+
+  useLayoutEffect(() => {
+    const newTops = {};
+    rows.forEach((r) => {
+      const el = rowRefs.current[r.txn.id];
+      if (el) newTops[r.txn.id] = absTop(el);
+    });
+    rows.forEach((r) => {
+      const el = rowRefs.current[r.txn.id];
+      const prev = prevTop.current[r.txn.id];
+      const next = newTops[r.txn.id];
+      if (!el || prev === undefined || next === undefined || prev === next) return;
+
+      if (r.txn.id === editingKey || r.txn.id === pendingSettleId.current) {
+        settleRowWithScroll(el, prev - next);
+      } else {
+        const delta = prev - next;
+        el.style.transition = "none";
+        el.style.transform = `translateY(${delta}px)`;
+        requestAnimationFrame(() => {
+          el.style.transition = "transform 320ms cubic-bezier(0.2, 0.8, 0.2, 1)";
+          el.style.transform = "translateY(0px)";
+        });
+      }
+    });
+    prevTop.current = newTops;
+    pendingSettleId.current = null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows.map((r) => r.txn.id + "|" + r.txn.date).join(",")]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollAnimRef.current) cancelAnimationFrame(scrollAnimRef.current);
+    };
+  }, []);
+
+  return { rowRefs, pendingSettleId };
 }
 
 /* ---------------------------------------------------------
@@ -410,6 +554,8 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
   //   - exchange tag set: look for the opposite of the *exchange* amount,
   //     in an account of the *exchange* currency
   // Either way: never the same account, and within 3 days either side.
+  // Candidates are found via getComparableAmount, so this also picks up
+  // the cash side of stock trades automatically.
   const matchCandidates = useMemo(() => {
     if (!draft || draft.otherAccountId || draft.matchedTxnId) return [];
     const delta = draftDelta(draft);
@@ -429,8 +575,9 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     return transactions
       .filter((t) => t.id !== draft.txnId && t.lines.length === 1)
       .map((t) => ({ txn: t, line: t.lines[0], acc: accounts.find((a) => a.id === t.lines[0].accountId) }))
-      .filter((c) => c.acc && c.acc.id !== account.id && c.acc.currency === targetCurrency)
-      .filter((c) => Math.abs(c.line.amount - targetAmount) < 0.005)
+      .filter((c) => c.acc && c.acc.id !== account.id)
+      .map((c) => ({ ...c, comparable: getComparableAmount(c.line, c.acc, targetCurrency) }))
+      .filter((c) => c.comparable !== undefined && Math.abs(c.comparable - targetAmount) < 0.005)
       .filter((c) => Math.abs(daysDiff(draft.date, c.txn.date)) <= 3)
       .sort((a, b) => Math.abs(daysDiff(draft.date, a.txn.date)) - Math.abs(daysDiff(draft.date, b.txn.date)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -456,100 +603,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     });
   }, [effectiveTxns, account, accounts]);
 
-  const rowRefs = useRef({});
-  const prevTop = useRef({});
-  const scrollAnimRef = useRef(null);
-  // When an edit is cancelled, the row returning to its original spot
-  // should still get the scroll-follow treatment, even though it's no
-  // longer "the row being edited" by the time that reflow happens.
-  const pendingSettleId = useRef(null);
-
-  // getBoundingClientRect().top is viewport-relative, so it silently
-  // shifts whenever the page scrolls between reads — which happens
-  // constantly here, since scrolling is exactly what this animation does.
-  // Adding window.scrollY converts it to a document-absolute position,
-  // so every read stays comparable no matter what the scroll position was
-  // at the time it was taken.
-  function absTop(el) {
-    return el.getBoundingClientRect().top + window.scrollY;
-  }
-
-  // Keeps the edited row visually anchored while it CSS-transitions to its
-  // new document position. Rather than computing scroll from a JS easing
-  // formula (which can drift out of sync with what the browser is actually
-  // painting and cause visible jumps), each frame reads the row's real,
-  // current absolute position and scrolls by exactly however far that
-  // moved since the last frame. Scroll always tracks the row's true
-  // rendered motion, whatever curve the CSS transition is really
-  // following — so the row appears to hold still while the ledger slides
-  // underneath it.
-  function settleRowWithScroll(el, startTransform, duration = 320) {
-    if (scrollAnimRef.current) cancelAnimationFrame(scrollAnimRef.current);
-
-    el.style.transition = "none";
-    el.style.transform = `translateY(${startTransform}px)`;
-    // Force a layout flush so the starting position is committed before
-    // the transition begins.
-    void el.offsetHeight;
-    el.style.transition = "transform 320ms cubic-bezier(0.2, 0.8, 0.2, 1)";
-    el.style.transform = "translateY(0px)";
-
-    const start = performance.now();
-    let lastTop = absTop(el);
-
-    function frame(now) {
-      const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-      const curTop = absTop(el);
-      const drift = curTop - lastTop;
-      if (Math.abs(drift) > 0.01) {
-        window.scrollTo(0, Math.max(0, Math.min(maxScroll, window.scrollY + drift)));
-      }
-      lastTop = absTop(el);
-
-      if (now - start < duration + 60) {
-        scrollAnimRef.current = requestAnimationFrame(frame);
-      } else {
-        scrollAnimRef.current = null;
-      }
-    }
-    scrollAnimRef.current = requestAnimationFrame(frame);
-  }
-
-  useLayoutEffect(() => {
-    const newTops = {};
-    rows.forEach((r) => {
-      const el = rowRefs.current[r.txn.id];
-      if (el) newTops[r.txn.id] = absTop(el);
-    });
-    rows.forEach((r) => {
-      const el = rowRefs.current[r.txn.id];
-      const prev = prevTop.current[r.txn.id];
-      const next = newTops[r.txn.id];
-      if (!el || prev === undefined || next === undefined || prev === next) return;
-
-      if (r.txn.id === editingKey || r.txn.id === pendingSettleId.current) {
-        settleRowWithScroll(el, prev - next);
-      } else {
-        // Every other row: simple FLIP, no scroll involved.
-        const delta = prev - next;
-        el.style.transition = "none";
-        el.style.transform = `translateY(${delta}px)`;
-        requestAnimationFrame(() => {
-          el.style.transition = "transform 320ms cubic-bezier(0.2, 0.8, 0.2, 1)";
-          el.style.transform = "translateY(0px)";
-        });
-      }
-    });
-    prevTop.current = newTops;
-    pendingSettleId.current = null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows.map((r) => r.txn.id + "|" + r.txn.date).join(",")]);
-
-  useEffect(() => {
-    return () => {
-      if (scrollAnimRef.current) cancelAnimationFrame(scrollAnimRef.current);
-    };
-  }, []);
+  const { rowRefs, pendingSettleId } = useLedgerRowAnimation(rows, editingKey);
 
   function startEdit(t) {
     if (t.lines.length > 2) { onOpenSplit(t); return; }
@@ -774,8 +828,411 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
   );
 }
 
-const miniInput = { width: "100%", padding: "7px 8px", borderRadius: 4, border: `1px solid ${C.line}`, background: C.paper, fontSize: 13, color: C.ink, outline: "none" };
+/* ---------------------------------------------------------
+   Stock Ledger — trades of symbol + units against a cash value.
+   No price-per-unit field exists anywhere: it's always cashValue
+   divided by units, computed on the fly, exactly like the FX rate
+   in the cash ledger's currency exchange tag.
+--------------------------------------------------------- */
+function blankStockDraft(account) {
+  return {
+    mode: "new",
+    txnId: null,
+    date: todayISO(),
+    description: "",
+    symbol: "",
+    otherAccountId: "",
+    matchedTxnId: null,
+    unitsInStr: "",
+    unitsOutStr: "",
+    cashInStr: "",
+    cashOutStr: "",
+    cashCurrency: account.currency || "GBP",
+  };
+}
+
+function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn, onDeleteTxn }) {
+  const [draft, setDraft] = useState(null);
+  const [draftError, setDraftError] = useState("");
+
+  function unitsDeltaOf(d) {
+    const i = parseFloat(d.unitsInStr);
+    const o = parseFloat(d.unitsOutStr);
+    return (isNaN(i) ? 0 : i) - (isNaN(o) ? 0 : o);
+  }
+  function cashDeltaOf(d) {
+    const i = parseFloat(d.cashInStr);
+    const o = parseFloat(d.cashOutStr);
+    return (isNaN(i) ? 0 : i) - (isNaN(o) ? 0 : o);
+  }
+
+  function clearMatch(d) {
+    return { ...d, matchedTxnId: null, otherAccountId: "" };
+  }
+
+  // cashValue is stored as the *mirror* of the cash movement — same
+  // sign convention as the currency-exchange tag — so that, uniformly
+  // across the app, a match target is always "the negative of my own
+  // tag". See getComparableAmount.
+  function draftToTxn(d, forcedId) {
+    const unitsDelta = unitsDeltaOf(d);
+    const cashNatural = cashDeltaOf(d);
+    const line1 = { accountId: account.id, symbol: (d.symbol || "").trim().toUpperCase(), amount: unitsDelta };
+    if (d.cashCurrency && (d.cashInStr !== "" || d.cashOutStr !== "")) {
+      line1.cashValue = -cashNatural;
+      line1.cashCurrency = d.cashCurrency;
+    }
+    const lines = [line1];
+    if (d.otherAccountId) {
+      let line2Amount = cashNatural;
+      if (d.matchedTxnId) {
+        const matchedTxn = transactions.find((t) => t.id === d.matchedTxnId);
+        const matchedLine = matchedTxn && matchedTxn.lines.find((l) => l.accountId === d.otherAccountId);
+        if (matchedLine) line2Amount = matchedLine.amount;
+      }
+      lines.push({ accountId: d.otherAccountId, amount: line2Amount });
+    }
+    return { id: forcedId || d.txnId, date: d.date || todayISO(), description: d.description, lines };
+  }
+
+  const editingKey = draft ? (draft.mode === "edit" ? draft.txnId : "DRAFT_NEW") : null;
+
+  // Search other (non-investment) accounts for the cash leg of this trade:
+  // the opposite of what this line's cash tag says, in that same currency.
+  const matchCandidates = useMemo(() => {
+    if (!draft || draft.otherAccountId || draft.matchedTxnId) return [];
+    if (unitsDeltaOf(draft) === 0 || !draft.date) return [];
+    if (!draft.cashCurrency || (draft.cashInStr === "" && draft.cashOutStr === "")) return [];
+    const targetAmount = cashDeltaOf(draft); // = -cashValue, i.e. the real counterpart's own amount
+    const targetCurrency = draft.cashCurrency;
+
+    return transactions
+      .filter((t) => t.id !== draft.txnId && t.lines.length === 1)
+      .map((t) => ({ txn: t, line: t.lines[0], acc: accounts.find((a) => a.id === t.lines[0].accountId) }))
+      .filter((c) => c.acc && c.acc.id !== account.id)
+      .map((c) => ({ ...c, comparable: getComparableAmount(c.line, c.acc, targetCurrency) }))
+      .filter((c) => c.comparable !== undefined && Math.abs(c.comparable - targetAmount) < 0.005)
+      .filter((c) => Math.abs(daysDiff(draft.date, c.txn.date)) <= 3)
+      .sort((a, b) => Math.abs(daysDiff(draft.date, a.txn.date)) - Math.abs(daysDiff(draft.date, b.txn.date)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, transactions, accounts, account]);
+
+  const effectiveTxns = useMemo(() => {
+    let list = transactions;
+    if (draft && draft.mode === "edit") list = list.map((t) => (t.id === draft.txnId ? draftToTxn(draft) : t));
+    if (draft && draft.mode === "new") list = [...list, draftToTxn(draft, "DRAFT_NEW")];
+    return list;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transactions, draft, account, accounts]);
+
+  // Rows are shown in one chronological list across all symbols (like a
+  // real brokerage statement), but the running balance in each row tracks
+  // only that row's own symbol.
+  const rows = useMemo(() => {
+    const relevant = effectiveTxns.filter((t) => t.lines.some((l) => l.accountId === account.id));
+    const sorted = [...relevant].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : String(a.id).localeCompare(String(b.id))));
+    const runningBySymbol = {};
+    return sorted.map((t) => {
+      const line = t.lines.find((l) => l.accountId === account.id);
+      const symbol = line.symbol || "—";
+      runningBySymbol[symbol] = (runningBySymbol[symbol] || 0) + (line.amount || 0);
+      const others = t.lines.filter((l) => l.accountId !== account.id).map((l) => accounts.find((a) => a.id === l.accountId)).filter(Boolean);
+      return { txn: t, line, symbol, running: runningBySymbol[symbol], others };
+    });
+  }, [effectiveTxns, account, accounts]);
+
+  const { rowRefs, pendingSettleId } = useLedgerRowAnimation(rows, editingKey);
+
+  const holdingsList = useMemo(() => {
+    const totals = {}; // symbol -> { units, spent, spentCurrency }
+    transactions.forEach((t) => {
+      const line = t.lines.find((l) => l.accountId === account.id);
+      if (!line || !line.symbol) return;
+      const sym = line.symbol;
+      totals[sym] = totals[sym] || { units: 0, spent: 0, spentUnits: 0, currency: null, mixed: false };
+      totals[sym].units += line.amount || 0;
+      if (line.amount > 0 && line.cashValue !== undefined && line.cashCurrency) {
+        if (totals[sym].currency && totals[sym].currency !== line.cashCurrency) totals[sym].mixed = true;
+        totals[sym].currency = totals[sym].currency || line.cashCurrency;
+        totals[sym].spent += Math.abs(line.cashValue);
+        totals[sym].spentUnits += line.amount;
+      }
+    });
+    return Object.entries(totals)
+      .filter(([, v]) => Math.abs(v.units) > 1e-9)
+      .map(([sym, v]) => ({
+        symbol: sym,
+        units: v.units,
+        avgCost: !v.mixed && v.spentUnits > 0 ? v.spent / v.spentUnits : null,
+        currency: v.currency,
+      }))
+      .sort((a, b) => a.symbol.localeCompare(b.symbol));
+  }, [transactions, account]);
+
+  const knownSymbols = useMemo(
+    () => Array.from(new Set(transactions.flatMap((t) => t.lines).filter((l) => l.accountId === account.id && l.symbol).map((l) => l.symbol))),
+    [transactions, account]
+  );
+
+  // Each symbol keeps the currency it was first traded in — AAPL is
+  // always USD, VOD.L is always GBP — so once that's established there's
+  // nothing left to pick per trade.
+  const symbolCurrency = useMemo(() => {
+    const map = {};
+    transactions.forEach((t) => {
+      const line = t.lines.find((l) => l.accountId === account.id);
+      if (line && line.symbol && line.cashCurrency && !map[line.symbol]) map[line.symbol] = line.cashCurrency;
+    });
+    return map;
+  }, [transactions, account]);
+
+  function symbolCurrencyOf(sym) {
+    return symbolCurrency[(sym || "").trim().toUpperCase()];
+  }
+
+  function startEdit(t) {
+    if (t.lines.length > 2) return;
+    const line = t.lines.find((l) => l.accountId === account.id);
+    const other = t.lines.find((l) => l.accountId !== account.id);
+    const naturalCash = line.cashValue !== undefined ? -line.cashValue : 0;
+    setDraft({
+      mode: "edit",
+      txnId: t.id,
+      date: t.date,
+      description: t.description || "",
+      symbol: line.symbol || "",
+      otherAccountId: other ? other.accountId : "",
+      matchedTxnId: null,
+      unitsInStr: line.amount > 0 ? String(line.amount) : "",
+      unitsOutStr: line.amount < 0 ? String(-line.amount) : "",
+      cashInStr: naturalCash > 0 ? String(naturalCash) : "",
+      cashOutStr: naturalCash < 0 ? String(-naturalCash) : "",
+      cashCurrency: line.cashCurrency || account.currency || "GBP",
+    });
+    setDraftError("");
+  }
+
+  function selectMatch(candidate) {
+    setDraft((d) => (d ? { ...d, otherAccountId: candidate.acc.id, matchedTxnId: candidate.txn.id } : d));
+  }
+
+  function commit() {
+    if (!draft) return;
+    if (!draft.symbol.trim()) { setDraftError("Enter a symbol."); return; }
+    if (unitsDeltaOf(draft) === 0) { setDraftError("Enter units in or out."); return; }
+    const data = draftToTxn(draft, draft.mode === "edit" ? draft.txnId : undefined);
+    onSaveTxn(
+      { id: draft.mode === "edit" ? draft.txnId : undefined, date: data.date, description: data.description.trim(), lines: data.lines },
+      draft.matchedTxnId || undefined
+    );
+    setDraft(null);
+    setDraftError("");
+  }
+
+  function cancel() {
+    if (draft && draft.mode === "edit") pendingSettleId.current = draft.txnId;
+    setDraft(null);
+    setDraftError("");
+  }
+
+  const gridCols = "110px 1fr 90px 90px 90px 100px 50px";
+
+  return (
+    <div>
+      <div className="flex items-start justify-between mb-5">
+        <div>
+          <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>Stocks & Shares</div>
+          <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{account.name}</h2>
+          {holdingsList.length === 0 ? (
+            <div style={{ fontSize: 13, color: C.inkFaint, marginTop: 8 }}>No holdings yet</div>
+          ) : (
+            <div className="flex flex-wrap gap-x-5 gap-y-1 mt-2">
+              {holdingsList.map((h) => (
+                <div key={h.symbol} className="ll-mono" style={{ fontSize: 13.5 }}>
+                  <strong>{h.symbol}</strong> {fmtUnits(h.units)}
+                  {h.avgCost !== null && <span style={{ color: C.inkFaint, fontSize: 12 }}> · avg {fmt(h.avgCost, h.currency)}/unit</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <button onClick={onEditAccount} className="px-3 py-1.5 rounded" style={{ border: `1px solid ${C.line}`, fontSize: 13 }}>Edit account</button>
+          <button
+            onClick={() => { setDraft(blankStockDraft(account)); setDraftError(""); }}
+            disabled={!!draft}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded"
+            style={{ background: draft ? C.inkFaint : C.ink, color: C.paper, fontSize: 13, cursor: draft ? "default" : "pointer" }}
+          >
+            <Plus size={14} /> Add trade
+          </button>
+        </div>
+      </div>
+
+      <div style={{ border: `1px solid ${C.line}`, borderRadius: 6, overflow: "hidden", background: C.card }}>
+        <div className="grid" style={{ gridTemplateColumns: gridCols, fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.6, color: C.inkFaint, padding: "10px 16px", borderBottom: `1px solid ${C.line}` }}>
+          <div>Date</div><div>Description</div><div>Symbol</div><div className="text-right">Units out</div><div className="text-right">Units in</div><div className="text-right">Balance</div><div />
+        </div>
+
+        {rows.length === 0 && !draft && <div style={{ padding: "24px 16px", fontSize: 13, color: C.inkFaint }}>No trades yet in this account.</div>}
+
+        {rows.map((r) => {
+          const isEditing = r.txn.id === editingKey;
+          const unitsOut = r.line.amount < 0 ? -r.line.amount : 0;
+          const unitsIn = r.line.amount > 0 ? r.line.amount : 0;
+          const natural = r.line.cashValue !== undefined ? -r.line.cashValue : null;
+          const unmatched = r.txn.lines.length === 1;
+
+          if (isEditing) {
+            return (
+              <div key={r.txn.id} ref={(el) => (rowRefs.current[r.txn.id] = el)} style={{ borderBottom: `1px solid ${C.lineSoft}`, background: C.paperDim, padding: "10px 16px" }}>
+                <div className="grid items-center" style={{ gridTemplateColumns: gridCols, gap: 8 }}>
+                  <input type="date" autoFocus value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} style={miniInput} />
+                  <input type="text" placeholder="Description" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} style={miniInput} />
+                  <input
+                    type="text" list="ll-symbols" placeholder="AAPL" value={draft.symbol}
+                    onChange={(e) => {
+                      const sym = e.target.value.toUpperCase();
+                      const known = symbolCurrency[sym];
+                      setDraft({ ...draft, symbol: sym, cashCurrency: known || draft.cashCurrency });
+                    }}
+                    style={{ ...miniInput, textTransform: "uppercase" }}
+                  />
+                  <input
+                    type="number" step="0.000001" placeholder="Out" value={draft.unitsOutStr}
+                    onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), unitsOutStr: e.target.value } : { ...draft, unitsOutStr: e.target.value })}
+                    className="ll-mono text-right" style={{ ...miniInput, color: C.debit }}
+                    onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }}
+                  />
+                  <input
+                    type="number" step="0.000001" placeholder="In" value={draft.unitsInStr}
+                    onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), unitsInStr: e.target.value } : { ...draft, unitsInStr: e.target.value })}
+                    className="ll-mono text-right" style={{ ...miniInput, color: C.credit }}
+                    onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }}
+                  />
+                  <div className="ll-mono text-right" style={{ fontWeight: 600, fontSize: 13.5 }}>{fmtUnits(r.running)}</div>
+                  <div className="flex gap-1 justify-end">
+                    <button onClick={commit} title="Save" style={iconBtn(C.credit)}><Check size={15} /></button>
+                    <button onClick={cancel} title="Cancel" style={iconBtn(C.inkFaint)}><X size={15} /></button>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 mt-2 flex-wrap" style={{ paddingLeft: 118 }}>
+                  <span style={{ fontSize: 12, color: C.inkFaint }}>Cash out</span>
+                  <input
+                    type="number" step="0.01" placeholder="0.00" value={draft.cashOutStr}
+                    onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), cashOutStr: e.target.value } : { ...draft, cashOutStr: e.target.value })}
+                    className="ll-mono" style={{ ...miniInput, width: 90, color: C.debit }}
+                  />
+                  <span style={{ fontSize: 12, color: C.inkFaint }}>Cash in</span>
+                  <input
+                    type="number" step="0.01" placeholder="0.00" value={draft.cashInStr}
+                    onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), cashInStr: e.target.value } : { ...draft, cashInStr: e.target.value })}
+                    className="ll-mono" style={{ ...miniInput, width: 90, color: C.credit }}
+                  />
+                  {symbolCurrency[draft.symbol.trim().toUpperCase()] ? (
+                    <span className="ll-mono" style={{ fontSize: 12.5, color: C.inkFaint, padding: "0 4px" }}>{draft.cashCurrency}</span>
+                  ) : (
+                    <select value={draft.cashCurrency} onChange={(e) => setDraft({ ...draft, cashCurrency: e.target.value })} style={{ ...miniInput, width: 80 }} title="New symbol — sets the currency it'll always trade in">
+                      {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  )}
+                  <select
+                    value={draft.otherAccountId}
+                    onChange={(e) => setDraft({ ...draft, otherAccountId: e.target.value, matchedTxnId: null })}
+                    style={{ ...miniInput, width: 160 }}
+                  >
+                    <option value="">— unmatched —</option>
+                    {accounts.filter((a) => a.id !== account.id && a.type !== "investment").map((a) => (
+                      <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>
+                    ))}
+                  </select>
+                </div>
+
+                {draft.matchedTxnId ? (
+                  <div className="flex items-center gap-2 mt-2" style={{ paddingLeft: 118 }}>
+                    <Check size={13} color={C.credit} />
+                    <span style={{ fontSize: 12, color: C.credit }}>
+                      Matched to {accounts.find((a) => a.id === draft.otherAccountId)?.name} · will merge into one entry on save
+                    </span>
+                    <button type="button" onClick={() => setDraft(clearMatch(draft))} style={{ fontSize: 12, color: C.gold }}>Undo</button>
+                  </div>
+                ) : (
+                  !draft.otherAccountId && matchCandidates.length > 0 && (
+                    <div className="mt-2" style={{ paddingLeft: 118 }}>
+                      <div style={{ fontSize: 11, color: C.inkFaint, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Possible matches</div>
+                      <div className="flex flex-col gap-1">
+                        {matchCandidates.map((c) => (
+                          <button
+                            key={c.txn.id}
+                            type="button"
+                            onClick={() => selectMatch(c)}
+                            className="flex items-center justify-between px-2 py-1.5 rounded text-left"
+                            style={{ border: `1px solid ${C.line}`, background: C.card }}
+                          >
+                            <span style={{ fontSize: 12.5 }}>
+                              <strong>{c.acc.name}</strong> · {fmtDate(c.txn.date)}{c.txn.description ? ` · ${c.txn.description}` : ""}
+                            </span>
+                            <span className="ll-mono" style={{ fontSize: 12.5, color: c.line.amount < 0 ? C.debit : C.credit }}>{fmt(c.line.amount, c.acc.currency)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                )}
+
+                <div className="flex items-center justify-between mt-2">
+                  <span style={{ fontSize: 12, color: draftError ? C.debit : C.inkFaint }}>
+                    {draftError || (draft.otherAccountId ? "Cash leg linked" : "Cash side unmatched — can be matched to a cash account later")}
+                  </span>
+                  {draft.mode === "edit" && (
+                    <button onClick={() => onDeleteTxn(draft.txnId)} className="flex items-center gap-1" style={{ fontSize: 12, color: C.debit }}><Trash2 size={12} /> Delete</button>
+                  )}
+                </div>
+              </div>
+            );
+          }
+
+          return (
+            <div
+              key={r.txn.id}
+              ref={(el) => (rowRefs.current[r.txn.id] = el)}
+              onClick={() => (draft ? null : startEdit(r.txn))}
+              className="ll-row cursor-pointer"
+              style={{ padding: "10px 16px", borderBottom: `1px solid ${C.lineSoft}` }}
+            >
+              <div className="grid items-center" style={{ gridTemplateColumns: gridCols, fontSize: 13.5 }}>
+                <div style={{ color: C.inkSoft, fontSize: 12.5 }}>{fmtDate(r.txn.date)}</div>
+                <div className="flex items-center gap-2">
+                  {r.txn.description || <span style={{ color: C.inkFaint }}>—</span>}
+                  {unmatched && <span title="Cash side not yet matched to another account"><AlertTriangle size={12} color={C.gold} /></span>}
+                </div>
+                <div className="ll-mono" style={{ fontWeight: 600 }}>{r.symbol}</div>
+                <div className="ll-mono text-right" style={{ color: unitsOut ? C.debit : C.inkFaint }}>{unitsOut ? fmtUnits(unitsOut) : "—"}</div>
+                <div className="ll-mono text-right" style={{ color: unitsIn ? C.credit : C.inkFaint }}>{unitsIn ? fmtUnits(unitsIn) : "—"}</div>
+                <div className="ll-mono text-right" style={{ fontWeight: 600 }}>{fmtUnits(r.running)}</div>
+                <div className="flex justify-end"><Pencil size={13} color={C.inkFaint} /></div>
+              </div>
+              {natural !== null && (
+                <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 3, paddingLeft: 118 }}>
+                  Cash {fmt(natural, r.line.cashCurrency)}
+                  {r.others.length > 0 ? ` · ${r.others.map((a) => a.name).join(", ")}` : " · unmatched"}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <datalist id="ll-symbols">
+        {knownSymbols.map((s) => <option key={s} value={s} />)}
+      </datalist>
+    </div>
+  );
+}
+
+
 function iconBtn(color) { return { padding: 6, borderRadius: 4, border: `1px solid ${C.line}`, color, background: C.card }; }
+const miniInput = { width: "100%", padding: "7px 8px", borderRadius: 4, border: `1px solid ${C.line}`, background: C.paper, fontSize: 13, color: C.ink, outline: "none" };
 
 /* ---------------------------------------------------------
    Account form modal
@@ -800,12 +1257,14 @@ function AccountFormModal({ initial, onCancel, onSave, onDelete }) {
             {TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
           </select>
         </Field>
-        <Field label="Currency">
+        <Field label={type === "investment" ? "Default cash currency" : "Currency"}>
           <select value={currency} onChange={(e) => setCurrency(e.target.value)} style={inputStyle}>
             {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </Field>
-        <Field label="Opening balance"><input type="number" step="0.01" value={opening} onChange={(e) => setOpening(e.target.value)} style={inputStyle} /></Field>
+        {type !== "investment" && (
+          <Field label="Opening balance"><input type="number" step="0.01" value={opening} onChange={(e) => setOpening(e.target.value)} style={inputStyle} /></Field>
+        )}
         <div className="flex justify-between items-center mt-2">
           {onDelete ? <button type="button" onClick={onDelete} className="flex items-center gap-1 text-sm" style={{ color: C.debit }}><Trash2 size={14} /> Delete</button> : <span />}
           <div className="flex gap-2">
