@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
-import { Plus, Trash2, Check, X, Wallet, ArrowLeftRight, AlertTriangle, BookOpen, Pencil } from "lucide-react";
+import { Plus, Trash2, Check, X, Wallet, ArrowLeftRight, AlertTriangle, BookOpen, Pencil, Unlink2 } from "lucide-react";
 
 /* ---------------------------------------------------------
    Tokens
@@ -218,14 +218,15 @@ export default function App() {
     setAccountForm(null);
   }
 
-  function saveTransaction(data, mergeDeleteId) {
-    // Both edits computed from the same snapshot of `transactions` in one
-    // shot — doing this as two separate calls (save, then delete) would
-    // have each read the same stale array and clobber one another.
+  function saveTransaction(data, mergeDeleteId, insertExtra) {
+    // All edits computed from the same snapshot of `transactions` in one
+    // shot — doing this as separate calls would have each read the same
+    // stale array and clobber one another.
     let next = transactions;
     if (mergeDeleteId) next = next.filter((t) => t.id !== mergeDeleteId);
     if (data.id) next = next.map((t) => (t.id === data.id ? { ...data } : t));
     else next = [...next, { ...data, id: uid() }];
+    if (insertExtra) next = [...next, { ...insertExtra, id: uid() }];
     persist(accounts, next);
   }
 
@@ -613,6 +614,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     setDraft({
       mode: "edit",
       txnId: t.id,
+      originalTxn: t,
       date: t.date,
       description: t.description || "",
       otherAccountId: other ? other.accountId : "",
@@ -628,6 +630,23 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
 
   function selectMatch(candidate) {
     setDraft((d) => (d ? { ...d, otherAccountId: candidate.acc.id, matchedTxnId: candidate.txn.id } : d));
+  }
+
+  // Splits an already-linked entry back into two separate, unlinked
+  // records — the exact reverse of a match. Neither side's data is
+  // discarded; each just goes back to standing alone.
+  function unlinkNow() {
+    if (!draft || !draft.originalTxn || draft.originalTxn.lines.length !== 2) return;
+    const t = draft.originalTxn;
+    const mine = t.lines.find((l) => l.accountId === account.id);
+    const other = t.lines.find((l) => l.accountId !== account.id);
+    onSaveTxn(
+      { id: t.id, date: t.date, description: t.description, lines: [mine] },
+      undefined,
+      { date: t.date, description: t.description, lines: [other] }
+    );
+    setDraft(null);
+    setDraftError("");
   }
 
   function commit() {
@@ -791,7 +810,12 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                     {draftError || (draft.otherAccountId ? "Two-account entry" : "Single-sided — can be matched to another account later") + (draft.inAmountStr && draft.outAmountStr ? " · saving the difference" : "")}
                   </span>
                   {draft.mode === "edit" && (
-                    <button onClick={() => onDeleteTxn(draft.txnId)} className="flex items-center gap-1" style={{ fontSize: 12, color: C.debit }}><Trash2 size={12} /> Delete</button>
+                    <div className="flex items-center gap-3">
+                      {draft.originalTxn && draft.originalTxn.lines.length === 2 && (
+                        <button onClick={unlinkNow} title="Split back into two separate, unlinked entries" className="flex items-center gap-1" style={{ fontSize: 12, color: C.gold }}><Unlink2 size={12} /> Unlink</button>
+                      )}
+                      <button onClick={() => onDeleteTxn(draft.txnId)} className="flex items-center gap-1" style={{ fontSize: 12, color: C.debit }}><Trash2 size={12} /> Delete</button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -998,6 +1022,7 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
     setDraft({
       mode: "edit",
       txnId: t.id,
+      originalTxn: t,
       date: t.date,
       description: t.description || "",
       symbol: line.symbol || "",
@@ -1014,6 +1039,23 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
 
   function selectMatch(candidate) {
     setDraft((d) => (d ? { ...d, otherAccountId: candidate.acc.id, matchedTxnId: candidate.txn.id } : d));
+  }
+
+  // Splits an already-linked entry back into two separate, unlinked
+  // records — the exact reverse of a match. Neither side's data is
+  // discarded; each just goes back to standing alone.
+  function unlinkNow() {
+    if (!draft || !draft.originalTxn || draft.originalTxn.lines.length !== 2) return;
+    const t = draft.originalTxn;
+    const mine = t.lines.find((l) => l.accountId === account.id);
+    const other = t.lines.find((l) => l.accountId !== account.id);
+    onSaveTxn(
+      { id: t.id, date: t.date, description: t.description, lines: [mine] },
+      undefined,
+      { date: t.date, description: t.description, lines: [other] }
+    );
+    setDraft(null);
+    setDraftError("");
   }
 
   function commit() {
@@ -1186,7 +1228,12 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
                     {draftError || (draft.otherAccountId ? "Cash leg linked" : "Cash side unmatched — can be matched to a cash account later")}
                   </span>
                   {draft.mode === "edit" && (
-                    <button onClick={() => onDeleteTxn(draft.txnId)} className="flex items-center gap-1" style={{ fontSize: 12, color: C.debit }}><Trash2 size={12} /> Delete</button>
+                    <div className="flex items-center gap-3">
+                      {draft.originalTxn && draft.originalTxn.lines.length === 2 && (
+                        <button onClick={unlinkNow} title="Split back into two separate, unlinked entries" className="flex items-center gap-1" style={{ fontSize: 12, color: C.gold }}><Unlink2 size={12} /> Unlink</button>
+                      )}
+                      <button onClick={() => onDeleteTxn(draft.txnId)} className="flex items-center gap-1" style={{ fontSize: 12, color: C.debit }}><Trash2 size={12} /> Delete</button>
+                    </div>
                   )}
                 </div>
               </div>
