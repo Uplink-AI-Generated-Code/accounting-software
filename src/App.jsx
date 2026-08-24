@@ -53,6 +53,11 @@ function fmtDate(d) {
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
+function daysDiff(a, b) {
+  const t1 = new Date(a + "T00:00:00").getTime();
+  const t2 = new Date(b + "T00:00:00").getTime();
+  return Math.round((t2 - t1) / 86400000);
+}
 function hasStorage() {
   return typeof window !== "undefined" && !!window.storage && typeof window.storage.get === "function" && typeof window.storage.set === "function";
 }
@@ -172,9 +177,15 @@ export default function App() {
     setAccountForm(null);
   }
 
-  function saveTransaction(data) {
-    if (data.id) persist(accounts, transactions.map((t) => (t.id === data.id ? { ...data } : t)));
-    else persist(accounts, [...transactions, { ...data, id: uid() }]);
+  function saveTransaction(data, mergeDeleteId) {
+    // Both edits computed from the same snapshot of `transactions` in one
+    // shot — doing this as two separate calls (save, then delete) would
+    // have each read the same stale array and clobber one another.
+    let next = transactions;
+    if (mergeDeleteId) next = next.filter((t) => t.id !== mergeDeleteId);
+    if (data.id) next = next.map((t) => (t.id === data.id ? { ...data } : t));
+    else next = [...next, { ...data, id: uid() }];
+    persist(accounts, next);
   }
 
   function deleteTransaction(id) {
@@ -324,7 +335,19 @@ function Overview({ accounts, balances, onSelect, onNew }) {
    Account Ledger — inline add/edit, live FLIP reorder + autoscroll
 --------------------------------------------------------- */
 function blankDraft(presetOtherId) {
-  return { mode: "new", txnId: null, date: todayISO(), description: "", otherAccountId: presetOtherId || "", inAmountStr: "", outAmountStr: "", otherAmountStr: "" };
+  return {
+    mode: "new",
+    txnId: null,
+    date: todayISO(),
+    description: "",
+    otherAccountId: presetOtherId || "",
+    matchedTxnId: null,
+    inAmountStr: "",
+    outAmountStr: "",
+    otherAmountStr: "",
+    exchangeAmountStr: "",
+    exchangeCurrency: "",
+  };
 }
 
 function AccountLedger({ account, accounts, transactions, balance, onEditAccount, onSaveTxn, onDeleteTxn, onOpenSplit, onNewSplit }) {
@@ -339,22 +362,79 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     return (isNaN(inN) ? 0 : inN) - (isNaN(outN) ? 0 : outN);
   }
 
+  // Clears anything tied to a previously-selected match — used whenever a
+  // change to the draft (amount, exchange tag) would make that match stale.
+  function clearMatch(d) {
+    return { ...d, matchedTxnId: null, otherAccountId: "" };
+  }
+
   function draftToTxn(d, forcedId) {
     const delta = draftDelta(d);
-    const lines = [{ accountId: account.id, amount: delta }];
-    if (d.otherAccountId) {
-      const otherAcc = accounts.find((a) => a.id === d.otherAccountId);
-      let otherAmt = -delta;
-      if (otherAcc && otherAcc.currency !== account.currency && d.otherAmountStr !== "") {
-        const parsed = parseFloat(d.otherAmountStr);
-        if (!isNaN(parsed)) otherAmt = delta < 0 ? Math.abs(parsed) : -Math.abs(parsed);
+    const line1 = { accountId: account.id, amount: delta };
+
+    if (!d.otherAccountId) {
+      // Unmatched. If this leg is tagged as one side of a currency
+      // exchange, carry that tag along — it's what lets a later match
+      // search a *different*-currency account instead of guessing.
+      if (d.exchangeCurrency && d.exchangeAmountStr !== "") {
+        const exVal = parseFloat(d.exchangeAmountStr);
+        if (!isNaN(exVal)) {
+          line1.exchangeAmount = delta < 0 ? -Math.abs(exVal) : Math.abs(exVal);
+          line1.exchangeCurrency = d.exchangeCurrency;
+        }
       }
-      lines.push({ accountId: d.otherAccountId, amount: otherAmt });
+      return { id: forcedId || d.txnId, date: d.date || todayISO(), description: d.description, lines: [line1] };
     }
-    return { id: forcedId || d.txnId, date: d.date || todayISO(), description: d.description, lines };
+
+    const otherAcc = accounts.find((a) => a.id === d.otherAccountId);
+    let otherAmt = -delta;
+    if (d.matchedTxnId) {
+      // Reuse the matched record's own amount exactly, rather than
+      // recomputing it — it's the ground truth for that leg.
+      const matchedTxn = transactions.find((t) => t.id === d.matchedTxnId);
+      const matchedLine = matchedTxn && matchedTxn.lines.find((l) => l.accountId === d.otherAccountId);
+      if (matchedLine) otherAmt = matchedLine.amount;
+    } else if (otherAcc && otherAcc.currency !== account.currency && d.otherAmountStr !== "") {
+      const parsed = parseFloat(d.otherAmountStr);
+      if (!isNaN(parsed)) otherAmt = delta < 0 ? Math.abs(parsed) : -Math.abs(parsed);
+    }
+    return { id: forcedId || d.txnId, date: d.date || todayISO(), description: d.description, lines: [line1, { accountId: d.otherAccountId, amount: otherAmt }] };
   }
 
   const editingKey = draft ? (draft.mode === "edit" ? draft.txnId : "DRAFT_NEW") : null;
+
+  // Match candidates for the row currently being edited, when it's still
+  // unmatched. Search parameters depend on whether an exchange tag is set:
+  //   - no exchange tag: look for the opposite amount in another account
+  //     that shares this account's currency
+  //   - exchange tag set: look for the opposite of the *exchange* amount,
+  //     in an account of the *exchange* currency
+  // Either way: never the same account, and within 3 days either side.
+  const matchCandidates = useMemo(() => {
+    if (!draft || draft.otherAccountId || draft.matchedTxnId) return [];
+    const delta = draftDelta(draft);
+    if (delta === 0 || !draft.date) return [];
+
+    let targetAmount = -delta;
+    let targetCurrency = account.currency;
+    if (draft.exchangeCurrency && draft.exchangeAmountStr !== "") {
+      const exVal = parseFloat(draft.exchangeAmountStr);
+      if (!isNaN(exVal)) {
+        const exSigned = delta < 0 ? -Math.abs(exVal) : Math.abs(exVal);
+        targetAmount = -exSigned;
+        targetCurrency = draft.exchangeCurrency;
+      }
+    }
+
+    return transactions
+      .filter((t) => t.id !== draft.txnId && t.lines.length === 1)
+      .map((t) => ({ txn: t, line: t.lines[0], acc: accounts.find((a) => a.id === t.lines[0].accountId) }))
+      .filter((c) => c.acc && c.acc.id !== account.id && c.acc.currency === targetCurrency)
+      .filter((c) => Math.abs(c.line.amount - targetAmount) < 0.005)
+      .filter((c) => Math.abs(daysDiff(draft.date, c.txn.date)) <= 3)
+      .sort((a, b) => Math.abs(daysDiff(draft.date, a.txn.date)) - Math.abs(daysDiff(draft.date, b.txn.date)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, transactions, accounts, account]);
 
   const effectiveTxns = useMemo(() => {
     let list = transactions;
@@ -482,11 +562,18 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       date: t.date,
       description: t.description || "",
       otherAccountId: other ? other.accountId : "",
+      matchedTxnId: null,
       inAmountStr: line.amount > 0 ? String(line.amount) : "",
       outAmountStr: line.amount < 0 ? String(-line.amount) : "",
       otherAmountStr: other && otherAcc && otherAcc.currency !== account.currency ? String(Math.abs(other.amount)) : "",
+      exchangeAmountStr: !other && line.exchangeAmount !== undefined ? String(Math.abs(line.exchangeAmount)) : "",
+      exchangeCurrency: !other && line.exchangeCurrency ? line.exchangeCurrency : "",
     });
     setDraftError("");
+  }
+
+  function selectMatch(candidate) {
+    setDraft((d) => (d ? { ...d, otherAccountId: candidate.acc.id, matchedTxnId: candidate.txn.id } : d));
   }
 
   function commit() {
@@ -494,7 +581,10 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     const delta = draftDelta(draft);
     if (delta === 0) { setDraftError("Enter an amount in In or Out."); return; }
     const data = draftToTxn(draft, draft.mode === "edit" ? draft.txnId : undefined);
-    onSaveTxn({ id: draft.mode === "edit" ? draft.txnId : undefined, date: data.date, description: data.description.trim(), lines: data.lines });
+    onSaveTxn(
+      { id: draft.mode === "edit" ? draft.txnId : undefined, date: data.date, description: data.description.trim(), lines: data.lines },
+      draft.matchedTxnId || undefined
+    );
     setDraft(null);
     setDraftError("");
   }
@@ -551,7 +641,11 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                 <div className="grid items-center" style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 60px", gap: 8 }}>
                   <input type="date" autoFocus value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} style={miniInput} />
                   <input type="text" placeholder="Description" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} style={miniInput} />
-                  <select value={draft.otherAccountId} onChange={(e) => setDraft({ ...draft, otherAccountId: e.target.value })} style={miniInput}>
+                  <select
+                    value={draft.otherAccountId}
+                    onChange={(e) => setDraft({ ...draft, otherAccountId: e.target.value, matchedTxnId: null })}
+                    style={miniInput}
+                  >
                     <option value="">— unmatched —</option>
                     {accounts.filter((a) => a.id !== account.id).map((a) => (
                       <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>
@@ -559,13 +653,13 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                   </select>
                   <input
                     type="number" step="0.0001" placeholder="Out" value={draft.outAmountStr}
-                    onChange={(e) => setDraft({ ...draft, outAmountStr: e.target.value })}
+                    onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), outAmountStr: e.target.value } : { ...draft, outAmountStr: e.target.value })}
                     className="ll-mono text-right" style={{ ...miniInput, color: C.debit }}
                     onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }}
                   />
                   <input
                     type="number" step="0.0001" placeholder="In" value={draft.inAmountStr}
-                    onChange={(e) => setDraft({ ...draft, inAmountStr: e.target.value })}
+                    onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), inAmountStr: e.target.value } : { ...draft, inAmountStr: e.target.value })}
                     className="ll-mono text-right" style={{ ...miniInput, color: C.credit }}
                     onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }}
                   />
@@ -575,12 +669,69 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                     <button onClick={cancel} title="Cancel" style={iconBtn(C.inkFaint)}><X size={15} /></button>
                   </div>
                 </div>
-                {needsOtherAmount && (
+
+                {needsOtherAmount && !draft.matchedTxnId && (
                   <div className="flex items-center gap-2 mt-2" style={{ paddingLeft: 128 }}>
                     <span style={{ fontSize: 12, color: C.inkFaint }}>Amount in {otherAcc.currency}</span>
                     <input type="number" step="0.0001" placeholder={otherAcc.currency} value={draft.otherAmountStr} onChange={(e) => setDraft({ ...draft, otherAmountStr: e.target.value })} className="ll-mono" style={{ ...miniInput, width: 110 }} />
                   </div>
                 )}
+
+                {!draft.otherAccountId && (
+                  <div className="flex items-center gap-2 mt-2" style={{ paddingLeft: 128 }}>
+                    <span style={{ fontSize: 12, color: C.inkFaint }}>Also known as</span>
+                    <input
+                      type="number" step="0.0001" placeholder="Amount"
+                      value={draft.exchangeAmountStr}
+                      onChange={(e) => setDraft({ ...draft, exchangeAmountStr: e.target.value })}
+                      className="ll-mono" style={{ ...miniInput, width: 100 }}
+                    />
+                    <select
+                      value={draft.exchangeCurrency}
+                      onChange={(e) => setDraft({ ...draft, exchangeCurrency: e.target.value })}
+                      style={{ ...miniInput, width: 90 }}
+                    >
+                      <option value="">currency…</option>
+                      {CURRENCIES.filter((c) => c !== account.currency).map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                    <span style={{ fontSize: 11, color: C.inkFaint }}>for matching in another currency</span>
+                  </div>
+                )}
+
+                {draft.matchedTxnId ? (
+                  <div className="flex items-center gap-2 mt-2" style={{ paddingLeft: 128 }}>
+                    <Check size={13} color={C.credit} />
+                    <span style={{ fontSize: 12, color: C.credit }}>
+                      Matched to {accounts.find((a) => a.id === draft.otherAccountId)?.name} · will merge into one entry on save
+                    </span>
+                    <button type="button" onClick={() => setDraft(clearMatch(draft))} style={{ fontSize: 12, color: C.gold }}>Undo</button>
+                  </div>
+                ) : (
+                  !draft.otherAccountId && matchCandidates.length > 0 && (
+                    <div className="mt-2" style={{ paddingLeft: 128 }}>
+                      <div style={{ fontSize: 11, color: C.inkFaint, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Possible matches</div>
+                      <div className="flex flex-col gap-1">
+                        {matchCandidates.map((c) => (
+                          <button
+                            key={c.txn.id}
+                            type="button"
+                            onClick={() => selectMatch(c)}
+                            className="flex items-center justify-between px-2 py-1.5 rounded text-left"
+                            style={{ border: `1px solid ${C.line}`, background: C.card }}
+                          >
+                            <span style={{ fontSize: 12.5 }}>
+                              <strong>{c.acc.name}</strong> · {fmtDate(c.txn.date)}{c.txn.description ? ` · ${c.txn.description}` : ""}
+                            </span>
+                            <span className="ll-mono" style={{ fontSize: 12.5, color: c.line.amount < 0 ? C.debit : C.credit }}>{fmt(c.line.amount, c.acc.currency)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                )}
+
                 <div className="flex items-center justify-between mt-2">
                   <span style={{ fontSize: 12, color: draftError ? C.debit : C.inkFaint }}>
                     {draftError || (draft.otherAccountId ? "Two-account entry" : "Single-sided — can be matched to another account later") + (draft.inAmountStr && draft.outAmountStr ? " · saving the difference" : "")}
