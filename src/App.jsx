@@ -379,6 +379,10 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
   const rowRefs = useRef({});
   const prevTop = useRef({});
   const scrollAnimRef = useRef(null);
+  // When an edit is cancelled, the row returning to its original spot
+  // should still get the scroll-follow treatment, even though it's no
+  // longer "the row being edited" by the time that reflow happens.
+  const pendingSettleId = useRef(null);
 
   // getBoundingClientRect().top is viewport-relative, so it silently
   // shifts whenever the page scrolls between reads — which happens
@@ -443,7 +447,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       const next = newTops[r.txn.id];
       if (!el || prev === undefined || next === undefined || prev === next) return;
 
-      if (r.txn.id === editingKey) {
+      if (r.txn.id === editingKey || r.txn.id === pendingSettleId.current) {
         settleRowWithScroll(el, prev - next);
       } else {
         // Every other row: simple FLIP, no scroll involved.
@@ -457,6 +461,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       }
     });
     prevTop.current = newTops;
+    pendingSettleId.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows.map((r) => r.txn.id + "|" + r.txn.date).join(",")]);
 
@@ -495,6 +500,10 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
   }
 
   function cancel() {
+    // The row is about to snap back to its original date/position — keep
+    // following it with the same scroll-sync treatment it had while being
+    // edited, even though `draft` (and so `editingKey`) is about to clear.
+    if (draft && draft.mode === "edit") pendingSettleId.current = draft.txnId;
     setDraft(null);
     setDraftError("");
   }
