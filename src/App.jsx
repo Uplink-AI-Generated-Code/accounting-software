@@ -324,23 +324,30 @@ function Overview({ accounts, balances, onSelect, onNew }) {
    Account Ledger — inline add/edit, live FLIP reorder + autoscroll
 --------------------------------------------------------- */
 function blankDraft(presetOtherId) {
-  return { mode: "new", txnId: null, date: todayISO(), description: "", otherAccountId: presetOtherId || "", isOut: false, amountStr: "", otherAmountStr: "" };
+  return { mode: "new", txnId: null, date: todayISO(), description: "", otherAccountId: presetOtherId || "", inAmountStr: "", outAmountStr: "", otherAmountStr: "" };
 }
 
 function AccountLedger({ account, accounts, transactions, balance, onEditAccount, onSaveTxn, onDeleteTxn, onOpenSplit, onNewSplit }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
 
+  // If both In and Out are filled, the saved line is their difference —
+  // e.g. In 50 / Out 20 saves as an increase of 30.
+  function draftDelta(d) {
+    const inN = parseFloat(d.inAmountStr);
+    const outN = parseFloat(d.outAmountStr);
+    return (isNaN(inN) ? 0 : inN) - (isNaN(outN) ? 0 : outN);
+  }
+
   function draftToTxn(d, forcedId) {
-    const mag = Math.abs(parseFloat(d.amountStr));
-    const delta = isNaN(mag) ? 0 : d.isOut ? -mag : mag;
+    const delta = draftDelta(d);
     const lines = [{ accountId: account.id, amount: delta }];
     if (d.otherAccountId) {
       const otherAcc = accounts.find((a) => a.id === d.otherAccountId);
       let otherAmt = -delta;
       if (otherAcc && otherAcc.currency !== account.currency && d.otherAmountStr !== "") {
         const parsed = parseFloat(d.otherAmountStr);
-        if (!isNaN(parsed)) otherAmt = d.isOut ? Math.abs(parsed) : -Math.abs(parsed);
+        if (!isNaN(parsed)) otherAmt = delta < 0 ? Math.abs(parsed) : -Math.abs(parsed);
       }
       lines.push({ accountId: d.otherAccountId, amount: otherAmt });
     }
@@ -470,8 +477,8 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       date: t.date,
       description: t.description || "",
       otherAccountId: other ? other.accountId : "",
-      isOut: line.amount < 0,
-      amountStr: String(Math.abs(line.amount)),
+      inAmountStr: line.amount > 0 ? String(line.amount) : "",
+      outAmountStr: line.amount < 0 ? String(-line.amount) : "",
       otherAmountStr: other && otherAcc && otherAcc.currency !== account.currency ? String(Math.abs(other.amount)) : "",
     });
     setDraftError("");
@@ -479,8 +486,8 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
 
   function commit() {
     if (!draft) return;
-    const mag = parseFloat(draft.amountStr);
-    if (isNaN(mag) || mag === 0) { setDraftError("Enter an amount."); return; }
+    const delta = draftDelta(draft);
+    if (delta === 0) { setDraftError("Enter an amount in In or Out."); return; }
     const data = draftToTxn(draft, draft.mode === "edit" ? draft.txnId : undefined);
     onSaveTxn({ id: draft.mode === "edit" ? draft.txnId : undefined, date: data.date, description: data.description.trim(), lines: data.lines });
     setDraft(null);
@@ -532,7 +539,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
             const needsOtherAmount = otherAcc && otherAcc.currency !== account.currency;
             return (
               <div key={r.txn.id} ref={(el) => (rowRefs.current[r.txn.id] = el)} style={{ borderBottom: `1px solid ${C.lineSoft}`, background: C.paperDim, padding: "10px 16px" }}>
-                <div className="grid items-center" style={{ gridTemplateColumns: "120px 1fr 170px 190px 120px 60px", gap: 8 }}>
+                <div className="grid items-center" style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 60px", gap: 8 }}>
                   <input type="date" autoFocus value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} style={miniInput} />
                   <input type="text" placeholder="Description" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} style={miniInput} />
                   <select value={draft.otherAccountId} onChange={(e) => setDraft({ ...draft, otherAccountId: e.target.value })} style={miniInput}>
@@ -541,30 +548,33 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                       <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>
                     ))}
                   </select>
-                  <div className="flex gap-1 items-center">
-                    <div className="flex rounded overflow-hidden shrink-0" style={{ border: `1px solid ${C.line}` }}>
-                      {[{ v: false, label: "In" }, { v: true, label: "Out" }].map((o) => (
-                        <button key={o.label} type="button" onClick={() => setDraft({ ...draft, isOut: o.v })}
-                          style={{ padding: "7px 9px", fontSize: 12, background: draft.isOut === o.v ? (o.v ? C.debitBg : C.creditBg) : "transparent", color: draft.isOut === o.v ? (o.v ? C.debit : C.credit) : C.inkFaint, fontWeight: draft.isOut === o.v ? 600 : 400 }}>
-                          {o.label}
-                        </button>
-                      ))}
-                    </div>
-                    <input type="number" step="0.0001" placeholder={account.currency} value={draft.amountStr} onChange={(e) => setDraft({ ...draft, amountStr: e.target.value })}
-                      className="ll-mono" style={{ ...miniInput, width: 90 }}
-                      onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }} />
-                  </div>
-                  {needsOtherAmount ? (
-                    <input type="number" step="0.0001" placeholder={otherAcc.currency} value={draft.otherAmountStr} onChange={(e) => setDraft({ ...draft, otherAmountStr: e.target.value })} className="ll-mono" style={miniInput} />
-                  ) : <div />}
+                  <input
+                    type="number" step="0.0001" placeholder="Out" value={draft.outAmountStr}
+                    onChange={(e) => setDraft({ ...draft, outAmountStr: e.target.value })}
+                    className="ll-mono text-right" style={{ ...miniInput, color: C.debit }}
+                    onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }}
+                  />
+                  <input
+                    type="number" step="0.0001" placeholder="In" value={draft.inAmountStr}
+                    onChange={(e) => setDraft({ ...draft, inAmountStr: e.target.value })}
+                    className="ll-mono text-right" style={{ ...miniInput, color: C.credit }}
+                    onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }}
+                  />
+                  <div className="ll-mono text-right" style={{ fontWeight: 600, fontSize: 13.5, color: r.running < 0 ? C.debit : C.ink }}>{fmt(r.running, account.currency)}</div>
                   <div className="flex gap-1 justify-end">
                     <button onClick={commit} title="Save" style={iconBtn(C.credit)}><Check size={15} /></button>
                     <button onClick={cancel} title="Cancel" style={iconBtn(C.inkFaint)}><X size={15} /></button>
                   </div>
                 </div>
+                {needsOtherAmount && (
+                  <div className="flex items-center gap-2 mt-2" style={{ paddingLeft: 128 }}>
+                    <span style={{ fontSize: 12, color: C.inkFaint }}>Amount in {otherAcc.currency}</span>
+                    <input type="number" step="0.0001" placeholder={otherAcc.currency} value={draft.otherAmountStr} onChange={(e) => setDraft({ ...draft, otherAmountStr: e.target.value })} className="ll-mono" style={{ ...miniInput, width: 110 }} />
+                  </div>
+                )}
                 <div className="flex items-center justify-between mt-2">
                   <span style={{ fontSize: 12, color: draftError ? C.debit : C.inkFaint }}>
-                    {draftError || (draft.otherAccountId ? "Two-account entry" : "Single-sided — can be matched to another account later")}
+                    {draftError || (draft.otherAccountId ? "Two-account entry" : "Single-sided — can be matched to another account later") + (draft.inAmountStr && draft.outAmountStr ? " · saving the difference" : "")}
                   </span>
                   {draft.mode === "edit" && (
                     <button onClick={() => onDeleteTxn(draft.txnId)} className="flex items-center gap-1" style={{ fontSize: 12, color: C.debit }}><Trash2 size={12} /> Delete</button>
