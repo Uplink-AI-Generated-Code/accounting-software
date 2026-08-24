@@ -465,7 +465,7 @@ function useLedgerRowAnimation(rows, editingKey) {
     prevTop.current = newTops;
     pendingSettleId.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows.map((r) => r.txn.id + "|" + r.txn.date).join(",")]);
+  }, [rows.map((r) => r.txn.id + "|" + r.line.date).join(",")]);
 
   useEffect(() => {
     return () => {
@@ -515,7 +515,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
 
   function draftToTxn(d, forcedId) {
     const delta = draftDelta(d);
-    const line1 = { accountId: account.id, amount: delta };
+    const line1 = { accountId: account.id, amount: delta, date: d.date || todayISO() };
 
     if (!d.otherAccountId) {
       // Unmatched. If this leg is tagged as one side of a currency
@@ -528,22 +528,34 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
           line1.exchangeCurrency = d.exchangeCurrency;
         }
       }
-      return { id: forcedId || d.txnId, date: d.date || todayISO(), description: d.description, lines: [line1] };
+      return { id: forcedId || d.txnId, description: d.description, lines: [line1] };
     }
 
-    const otherAcc = accounts.find((a) => a.id === d.otherAccountId);
-    let otherAmt = -delta;
+    let line2;
     if (d.matchedTxnId) {
-      // Reuse the matched record's own amount exactly, rather than
-      // recomputing it — it's the ground truth for that leg.
+      // Reuse the matched record's own line exactly — amount, its own
+      // date, and any tags it carried — rather than recomputing any of it.
       const matchedTxn = transactions.find((t) => t.id === d.matchedTxnId);
       const matchedLine = matchedTxn && matchedTxn.lines.find((l) => l.accountId === d.otherAccountId);
-      if (matchedLine) otherAmt = matchedLine.amount;
-    } else if (otherAcc && otherAcc.currency !== account.currency && d.otherAmountStr !== "") {
-      const parsed = parseFloat(d.otherAmountStr);
-      if (!isNaN(parsed)) otherAmt = delta < 0 ? Math.abs(parsed) : -Math.abs(parsed);
+      line2 = matchedLine ? { ...matchedLine } : null;
+    } else if (d.otherLineSnapshot && d.otherLineSnapshot.accountId === d.otherAccountId) {
+      // The pairing hasn't changed since this entry was opened — leave
+      // the other side's line, including its own date, exactly as it was.
+      line2 = { ...d.otherLineSnapshot };
+    } else {
+      // A freshly chosen account with no prior record — a brand new leg,
+      // dated the same as this one for now (it can be edited separately
+      // afterward, same as any other entry).
+      const otherAcc = accounts.find((a) => a.id === d.otherAccountId);
+      let otherAmt = -delta;
+      if (otherAcc && otherAcc.currency !== account.currency && d.otherAmountStr !== "") {
+        const parsed = parseFloat(d.otherAmountStr);
+        if (!isNaN(parsed)) otherAmt = delta < 0 ? Math.abs(parsed) : -Math.abs(parsed);
+      }
+      line2 = { accountId: d.otherAccountId, amount: otherAmt, date: d.date || todayISO() };
     }
-    return { id: forcedId || d.txnId, date: d.date || todayISO(), description: d.description, lines: [line1, { accountId: d.otherAccountId, amount: otherAmt }] };
+    const lines = line2 ? [line1, line2] : [line1];
+    return { id: forcedId || d.txnId, description: d.description, lines };
   }
 
   const editingKey = draft ? (draft.mode === "edit" ? draft.txnId : "DRAFT_NEW") : null;
@@ -579,8 +591,8 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       .filter((c) => c.acc && c.acc.id !== account.id)
       .map((c) => ({ ...c, comparable: getComparableAmount(c.line, c.acc, targetCurrency) }))
       .filter((c) => c.comparable !== undefined && Math.abs(c.comparable - targetAmount) < 0.005)
-      .filter((c) => Math.abs(daysDiff(draft.date, c.txn.date)) <= 3)
-      .sort((a, b) => Math.abs(daysDiff(draft.date, a.txn.date)) - Math.abs(daysDiff(draft.date, b.txn.date)));
+      .filter((c) => Math.abs(daysDiff(draft.date, c.line.date)) <= 3)
+      .sort((a, b) => Math.abs(daysDiff(draft.date, a.line.date)) - Math.abs(daysDiff(draft.date, b.line.date)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft, transactions, accounts, account]);
 
@@ -592,12 +604,16 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transactions, draft, account, accounts]);
 
+  // Each row is sorted and balanced by *its own account's line's own
+  // date* — the two sides of a linked entry can carry different dates,
+  // so the transaction itself no longer has one date to sort by.
   const rows = useMemo(() => {
-    const relevant = effectiveTxns.filter((t) => t.lines.some((l) => l.accountId === account.id));
-    const sorted = [...relevant].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : String(a.id).localeCompare(String(b.id))));
+    const relevant = effectiveTxns
+      .filter((t) => t.lines.some((l) => l.accountId === account.id))
+      .map((t) => ({ txn: t, line: t.lines.find((l) => l.accountId === account.id) }));
+    const sorted = relevant.sort((a, b) => (a.line.date < b.line.date ? -1 : a.line.date > b.line.date ? 1 : String(a.txn.id).localeCompare(String(b.txn.id))));
     let running = account.openingBalance || 0;
-    return sorted.map((t) => {
-      const line = t.lines.find((l) => l.accountId === account.id);
+    return sorted.map(({ txn: t, line }) => {
       running += line.amount || 0;
       const others = t.lines.filter((l) => l.accountId !== account.id).map((l) => accounts.find((a) => a.id === l.accountId)).filter(Boolean);
       return { txn: t, line, running, others };
@@ -615,7 +631,8 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       mode: "edit",
       txnId: t.id,
       originalTxn: t,
-      date: t.date,
+      otherLineSnapshot: other || null,
+      date: line.date,
       description: t.description || "",
       otherAccountId: other ? other.accountId : "",
       matchedTxnId: null,
@@ -633,17 +650,17 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
   }
 
   // Splits an already-linked entry back into two separate, unlinked
-  // records — the exact reverse of a match. Neither side's data is
-  // discarded; each just goes back to standing alone.
+  // records — the exact reverse of a match. Neither side's data (including
+  // its own date) is touched; each just goes back to standing alone.
   function unlinkNow() {
     if (!draft || !draft.originalTxn || draft.originalTxn.lines.length !== 2) return;
     const t = draft.originalTxn;
     const mine = t.lines.find((l) => l.accountId === account.id);
     const other = t.lines.find((l) => l.accountId !== account.id);
     onSaveTxn(
-      { id: t.id, date: t.date, description: t.description, lines: [mine] },
+      { id: t.id, description: t.description, lines: [mine] },
       undefined,
-      { date: t.date, description: t.description, lines: [other] }
+      { description: t.description, lines: [other] }
     );
     setDraft(null);
     setDraftError("");
@@ -655,7 +672,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     if (delta === 0) { setDraftError("Enter an amount in In or Out."); return; }
     const data = draftToTxn(draft, draft.mode === "edit" ? draft.txnId : undefined);
     onSaveTxn(
-      { id: draft.mode === "edit" ? draft.txnId : undefined, date: data.date, description: data.description.trim(), lines: data.lines },
+      { id: draft.mode === "edit" ? draft.txnId : undefined, description: data.description.trim(), lines: data.lines },
       draft.matchedTxnId || undefined
     );
     setDraft(null);
@@ -795,7 +812,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                             style={{ border: `1px solid ${C.line}`, background: C.card }}
                           >
                             <span style={{ fontSize: 12.5 }}>
-                              <strong>{c.acc.name}</strong> · {fmtDate(c.txn.date)}{c.txn.description ? ` · ${c.txn.description}` : ""}
+                              <strong>{c.acc.name}</strong> · {fmtDate(c.line.date)}{c.txn.description ? ` · ${c.txn.description}` : ""}
                             </span>
                             <span className="ll-mono" style={{ fontSize: 12.5, color: c.line.amount < 0 ? C.debit : C.credit }}>{fmt(c.line.amount, c.acc.currency)}</span>
                           </button>
@@ -830,7 +847,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
               className="grid ll-row cursor-pointer"
               style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 60px", fontSize: 13.5, padding: "10px 16px", borderBottom: `1px solid ${C.lineSoft}`, alignItems: "center" }}
             >
-              <div style={{ color: C.inkSoft, fontSize: 12.5 }}>{fmtDate(r.txn.date)}</div>
+              <div style={{ color: C.inkSoft, fontSize: 12.5 }}>{fmtDate(r.line.date)}</div>
               <div className="flex items-center gap-2">
                 {r.txn.description || <span style={{ color: C.inkFaint }}>—</span>}
                 {hint && hint.type !== "balanced" && hint.type !== "empty" && (
@@ -901,22 +918,30 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
   function draftToTxn(d, forcedId) {
     const unitsDelta = unitsDeltaOf(d);
     const cashNatural = cashDeltaOf(d);
-    const line1 = { accountId: account.id, symbol: (d.symbol || "").trim().toUpperCase(), amount: unitsDelta };
+    const line1 = { accountId: account.id, symbol: (d.symbol || "").trim().toUpperCase(), amount: unitsDelta, date: d.date || todayISO() };
     if (d.cashCurrency && (d.cashInStr !== "" || d.cashOutStr !== "")) {
       line1.cashValue = -cashNatural;
       line1.cashCurrency = d.cashCurrency;
     }
     const lines = [line1];
     if (d.otherAccountId) {
-      let line2Amount = cashNatural;
+      let line2;
       if (d.matchedTxnId) {
+        // Reuse the matched record's own line exactly — amount, its own
+        // date, and any tags — rather than recomputing any of it.
         const matchedTxn = transactions.find((t) => t.id === d.matchedTxnId);
         const matchedLine = matchedTxn && matchedTxn.lines.find((l) => l.accountId === d.otherAccountId);
-        if (matchedLine) line2Amount = matchedLine.amount;
+        line2 = matchedLine ? { ...matchedLine } : null;
+      } else if (d.otherLineSnapshot && d.otherLineSnapshot.accountId === d.otherAccountId) {
+        // Pairing unchanged since this trade was opened — leave the cash
+        // leg, including its own date, exactly as it was.
+        line2 = { ...d.otherLineSnapshot };
+      } else {
+        line2 = { accountId: d.otherAccountId, amount: cashNatural, date: d.date || todayISO() };
       }
-      lines.push({ accountId: d.otherAccountId, amount: line2Amount });
+      if (line2) lines.push(line2);
     }
-    return { id: forcedId || d.txnId, date: d.date || todayISO(), description: d.description, lines };
+    return { id: forcedId || d.txnId, description: d.description, lines };
   }
 
   const editingKey = draft ? (draft.mode === "edit" ? draft.txnId : "DRAFT_NEW") : null;
@@ -936,8 +961,8 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
       .filter((c) => c.acc && c.acc.id !== account.id)
       .map((c) => ({ ...c, comparable: getComparableAmount(c.line, c.acc, targetCurrency) }))
       .filter((c) => c.comparable !== undefined && Math.abs(c.comparable - targetAmount) < 0.005)
-      .filter((c) => Math.abs(daysDiff(draft.date, c.txn.date)) <= 3)
-      .sort((a, b) => Math.abs(daysDiff(draft.date, a.txn.date)) - Math.abs(daysDiff(draft.date, b.txn.date)));
+      .filter((c) => Math.abs(daysDiff(draft.date, c.line.date)) <= 3)
+      .sort((a, b) => Math.abs(daysDiff(draft.date, a.line.date)) - Math.abs(daysDiff(draft.date, b.line.date)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft, transactions, accounts, account]);
 
@@ -950,14 +975,15 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
   }, [transactions, draft, account, accounts]);
 
   // Rows are shown in one chronological list across all symbols (like a
-  // real brokerage statement), but the running balance in each row tracks
-  // only that row's own symbol.
+  // real brokerage statement), sorted and balanced by this account's own
+  // line's own date — the cash leg of a trade can carry a different date.
   const rows = useMemo(() => {
-    const relevant = effectiveTxns.filter((t) => t.lines.some((l) => l.accountId === account.id));
-    const sorted = [...relevant].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : String(a.id).localeCompare(String(b.id))));
+    const relevant = effectiveTxns
+      .filter((t) => t.lines.some((l) => l.accountId === account.id))
+      .map((t) => ({ txn: t, line: t.lines.find((l) => l.accountId === account.id) }));
+    const sorted = relevant.sort((a, b) => (a.line.date < b.line.date ? -1 : a.line.date > b.line.date ? 1 : String(a.txn.id).localeCompare(String(b.txn.id))));
     const runningBySymbol = {};
-    return sorted.map((t) => {
-      const line = t.lines.find((l) => l.accountId === account.id);
+    return sorted.map(({ txn: t, line }) => {
       const symbol = line.symbol || "—";
       runningBySymbol[symbol] = (runningBySymbol[symbol] || 0) + (line.amount || 0);
       const others = t.lines.filter((l) => l.accountId !== account.id).map((l) => accounts.find((a) => a.id === l.accountId)).filter(Boolean);
@@ -1023,7 +1049,8 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
       mode: "edit",
       txnId: t.id,
       originalTxn: t,
-      date: t.date,
+      otherLineSnapshot: other || null,
+      date: line.date,
       description: t.description || "",
       symbol: line.symbol || "",
       otherAccountId: other ? other.accountId : "",
@@ -1042,17 +1069,17 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
   }
 
   // Splits an already-linked entry back into two separate, unlinked
-  // records — the exact reverse of a match. Neither side's data is
-  // discarded; each just goes back to standing alone.
+  // records — the exact reverse of a match. Neither side's data (including
+  // its own date) is touched; each just goes back to standing alone.
   function unlinkNow() {
     if (!draft || !draft.originalTxn || draft.originalTxn.lines.length !== 2) return;
     const t = draft.originalTxn;
     const mine = t.lines.find((l) => l.accountId === account.id);
     const other = t.lines.find((l) => l.accountId !== account.id);
     onSaveTxn(
-      { id: t.id, date: t.date, description: t.description, lines: [mine] },
+      { id: t.id, description: t.description, lines: [mine] },
       undefined,
-      { date: t.date, description: t.description, lines: [other] }
+      { description: t.description, lines: [other] }
     );
     setDraft(null);
     setDraftError("");
@@ -1064,7 +1091,7 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
     if (unitsDeltaOf(draft) === 0) { setDraftError("Enter units in or out."); return; }
     const data = draftToTxn(draft, draft.mode === "edit" ? draft.txnId : undefined);
     onSaveTxn(
-      { id: draft.mode === "edit" ? draft.txnId : undefined, date: data.date, description: data.description.trim(), lines: data.lines },
+      { id: draft.mode === "edit" ? draft.txnId : undefined, description: data.description.trim(), lines: data.lines },
       draft.matchedTxnId || undefined
     );
     setDraft(null);
@@ -1213,7 +1240,7 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
                             style={{ border: `1px solid ${C.line}`, background: C.card }}
                           >
                             <span style={{ fontSize: 12.5 }}>
-                              <strong>{c.acc.name}</strong> · {fmtDate(c.txn.date)}{c.txn.description ? ` · ${c.txn.description}` : ""}
+                              <strong>{c.acc.name}</strong> · {fmtDate(c.line.date)}{c.txn.description ? ` · ${c.txn.description}` : ""}
                             </span>
                             <span className="ll-mono" style={{ fontSize: 12.5, color: c.line.amount < 0 ? C.debit : C.credit }}>{fmt(c.line.amount, c.acc.currency)}</span>
                           </button>
@@ -1249,7 +1276,7 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
               style={{ padding: "10px 16px", borderBottom: `1px solid ${C.lineSoft}` }}
             >
               <div className="grid items-center" style={{ gridTemplateColumns: gridCols, fontSize: 13.5 }}>
-                <div style={{ color: C.inkSoft, fontSize: 12.5 }}>{fmtDate(r.txn.date)}</div>
+                <div style={{ color: C.inkSoft, fontSize: 12.5 }}>{fmtDate(r.line.date)}</div>
                 <div className="flex items-center gap-2">
                   {r.txn.description || <span style={{ color: C.inkFaint }}>—</span>}
                   {unmatched && <span title="Cash side not yet matched to another account"><AlertTriangle size={12} color={C.gold} /></span>}
@@ -1335,13 +1362,16 @@ function SplitFormModal({ initial, accounts, onCancel, onSave, onDelete }) {
         { id: uid(), accountId: initial.presetAccountId || "", isOut: true, amountStr: "" },
         { id: uid(), accountId: "", isOut: false, amountStr: "" },
       ];
-  const [date, setDate] = useState(initial.date || todayISO());
+  // Split entries don't have per-line date editing here — every line gets
+  // this one date. (Two-account entries made via the inline ledger editor
+  // can carry separate dates per side; that's a different flow.)
+  const [date, setDate] = useState((initial.lines && initial.lines[0] && initial.lines[0].date) || todayISO());
   const [description, setDescription] = useState(initial.description || "");
   const [lines, setLines] = useState(startingLines);
 
   const parsedLines = lines
     .filter((l) => l.accountId && l.amountStr !== "")
-    .map((l) => ({ accountId: l.accountId, amount: l.isOut ? -Math.abs(parseFloat(l.amountStr)) : Math.abs(parseFloat(l.amountStr)) }));
+    .map((l) => ({ accountId: l.accountId, amount: l.isOut ? -Math.abs(parseFloat(l.amountStr)) : Math.abs(parseFloat(l.amountStr)), date }));
   const hint = balanceHint(parsedLines, accounts);
 
   function updateLine(id, patch) { setLines((ls) => ls.map((l) => (l.id === id ? { ...l, ...patch } : l))); }
@@ -1350,7 +1380,7 @@ function SplitFormModal({ initial, accounts, onCancel, onSave, onDelete }) {
 
   function submit() {
     if (parsedLines.length === 0) return;
-    onSave({ id: initial.id, date, description: description.trim(), lines: parsedLines });
+    onSave({ id: initial.id, description: description.trim(), lines: parsedLines });
   }
 
   return (
