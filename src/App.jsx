@@ -751,6 +751,15 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
 
   const editingKey = draft ? (draft.mode === "edit" ? draft.txnId : "DRAFT_NEW") : null;
 
+  // Live balance status for the entry being edited — built from the exact
+  // lines that would be saved (matched/preserved amounts included), so
+  // the imbalance shown here always matches what a saved row would show.
+  const draftHint = useMemo(() => {
+    if (!draft || draftDelta(draft) === 0) return null;
+    return balanceHint(draftToTxn(draft).lines, accounts);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, accounts, transactions]);
+
   // Match candidates for the row currently being edited — only offered
   // before any other account has been added, since matching decides what
   // that first link should be. Search parameters depend on whether an
@@ -983,7 +992,8 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
           const isEditing = r.txn.id === editingKey;
           const out = r.line.amount < 0 ? -r.line.amount : 0;
           const inn = r.line.amount > 0 ? r.line.amount : 0;
-          const hint = r.txn.lines.length !== 2 ? balanceHint(r.txn.lines, accounts) : null;
+          const hint = balanceHint(r.txn.lines, accounts);
+          const unbalanced = hint.type === "unbalanced";
 
           if (isEditing) {
             return (
@@ -1104,8 +1114,8 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                 )}
 
                 <div className="flex items-center justify-between mt-2">
-                  <span style={{ fontSize: 12, color: draftError ? C.debit : C.inkFaint }}>
-                    {draftError || (draft.otherLines.length > 0 ? "Linked entry" : "Single-sided — can be matched to another account later") + (draft.inAmountStr && draft.outAmountStr ? " · saving the difference" : "")}
+                  <span style={{ fontSize: 12, color: draftError ? C.debit : draftHint && draftHint.type === "unbalanced" ? C.debit : draftHint && (draftHint.type === "balanced" || draftHint.type === "fx") ? C.credit : C.inkFaint }}>
+                    {draftError || (draftHint ? draftHint.message : "Enter an amount to see balance status") + (draft.inAmountStr && draft.outAmountStr ? " · saving the difference" : "")}
                   </span>
                   {draft.mode === "edit" && (
                     <div className="flex items-center gap-3">
@@ -1130,9 +1140,9 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
             >
               <div style={{ color: C.inkSoft, fontSize: 12.5 }}>{fmtDate(r.line.date)}</div>
               <div className="flex items-center gap-2">
-                {r.txn.description || <span style={{ color: C.inkFaint }}>—</span>}
-                {hint && hint.type !== "balanced" && hint.type !== "empty" && (
-                  <span title={hint.message}><AlertTriangle size={12} color={C.gold} /></span>
+                <span style={{ color: unbalanced ? C.debit : C.ink }}>{r.txn.description || <span style={{ color: C.inkFaint }}>—</span>}</span>
+                {hint.type !== "balanced" && hint.type !== "empty" && (
+                  <span title={hint.message}><AlertTriangle size={12} color={unbalanced ? C.debit : C.gold} /></span>
                 )}
               </div>
               <div style={{ color: C.inkFaint, fontSize: 12.5, display: "flex", alignItems: "center", gap: 4 }}>
