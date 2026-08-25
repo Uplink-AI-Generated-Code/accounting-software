@@ -730,18 +730,19 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     const delta = draftDelta(d);
     const line1 = { accountId: account.id, amount: delta, date: d.date || todayISO() };
 
+    // The exchange tag is kept regardless of whether this leg is linked —
+    // it's useful as a record of the rate at entry time even once a real
+    // counterpart line exists, not just while still searching for one.
+    if (d.exchangeCurrency && d.exchangeAmountStr !== "") {
+      const exVal = parseFloat(d.exchangeAmountStr);
+      if (!isNaN(exVal)) {
+        line1.exchangeAmount = delta < 0 ? -Math.abs(exVal) : Math.abs(exVal);
+        line1.exchangeCurrency = d.exchangeCurrency;
+      }
+    }
+
     const activeOtherLines = d.otherLines.filter((ol) => ol.accountId && ol.amountStr !== "");
     if (activeOtherLines.length === 0) {
-      // Unmatched. If this leg is tagged as one side of a currency
-      // exchange, carry that tag along — it's what lets a later match
-      // search a *different*-currency account instead of guessing.
-      if (d.exchangeCurrency && d.exchangeAmountStr !== "") {
-        const exVal = parseFloat(d.exchangeAmountStr);
-        if (!isNaN(exVal)) {
-          line1.exchangeAmount = delta < 0 ? -Math.abs(exVal) : Math.abs(exVal);
-          line1.exchangeCurrency = d.exchangeCurrency;
-        }
-      }
       return { id: forcedId || d.txnId, description: d.description, lines: [line1] };
     }
 
@@ -835,8 +836,8 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       description: t.description || "",
       inAmountStr: line.amount > 0 ? String(line.amount) : "",
       outAmountStr: line.amount < 0 ? String(-line.amount) : "",
-      exchangeAmountStr: others.length === 0 && line.exchangeAmount !== undefined ? String(Math.abs(line.exchangeAmount)) : "",
-      exchangeCurrency: others.length === 0 && line.exchangeCurrency ? line.exchangeCurrency : "",
+      exchangeAmountStr: line.exchangeAmount !== undefined ? String(Math.abs(line.exchangeAmount)) : "",
+      exchangeCurrency: line.exchangeCurrency ? line.exchangeCurrency : "",
       otherLines: others.map((o) => ({ key: uid(), accountId: o.accountId, isOut: o.amount < 0, amountStr: String(Math.abs(o.amount)), matchedTxnId: null, snapshot: o })),
       splitOffLines: [],
     });
@@ -1062,28 +1063,28 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                   </button>
                 </div>
 
-                {draft.otherLines.length === 0 && (
-                  <div className="flex items-center gap-2 mt-2" style={{ paddingLeft: 128 }}>
-                    <span style={{ fontSize: 12, color: C.inkFaint }}>Also known as</span>
-                    <input
-                      type="number" step="0.0001" placeholder="Amount"
-                      value={draft.exchangeAmountStr}
-                      onChange={(e) => setDraft({ ...draft, exchangeAmountStr: e.target.value })}
-                      className="ll-mono" style={{ ...miniInput, width: 100 }}
-                    />
-                    <select
-                      value={draft.exchangeCurrency}
-                      onChange={(e) => setDraft({ ...draft, exchangeCurrency: e.target.value })}
-                      style={{ ...miniInput, width: 90 }}
-                    >
-                      <option value="">currency…</option>
-                      {CURRENCIES.filter((c) => c !== account.currency).map((c) => (
-                        <option key={c} value={c}>{c}</option>
-                      ))}
-                    </select>
-                    <span style={{ fontSize: 11, color: C.inkFaint }}>for matching in another currency</span>
-                  </div>
-                )}
+                <div className="flex items-center gap-2 mt-2" style={{ paddingLeft: 128 }}>
+                  <span style={{ fontSize: 12, color: C.inkFaint }}>Also known as</span>
+                  <input
+                    type="number" step="0.0001" placeholder="Amount"
+                    value={draft.exchangeAmountStr}
+                    onChange={(e) => setDraft({ ...draft, exchangeAmountStr: e.target.value })}
+                    className="ll-mono" style={{ ...miniInput, width: 100 }}
+                  />
+                  <select
+                    value={draft.exchangeCurrency}
+                    onChange={(e) => setDraft({ ...draft, exchangeCurrency: e.target.value })}
+                    style={{ ...miniInput, width: 90 }}
+                  >
+                    <option value="">currency…</option>
+                    {CURRENCIES.filter((c) => c !== account.currency).map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                  <span style={{ fontSize: 11, color: C.inkFaint }}>
+                    {draft.otherLines.length === 0 ? "for matching in another currency" : "kept for reference"}
+                  </span>
+                </div>
 
                 {draft.otherLines.length === 0 && matchCandidates.length > 0 && (
                   <div className="mt-2" style={{ paddingLeft: 128 }}>
