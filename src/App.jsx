@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
-import { Plus, Trash2, Check, X, Wallet, ArrowLeftRight, AlertTriangle, BookOpen, Pencil, Unlink2 } from "lucide-react";
+import { Plus, Trash2, Check, X, Wallet, ArrowLeftRight, AlertTriangle, BookOpen, Pencil, Unlink2, TrendingUp, TableProperties } from "lucide-react";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 /* ---------------------------------------------------------
    Tokens
@@ -59,6 +60,77 @@ function daysDiff(a, b) {
   const t2 = new Date(b + "T00:00:00").getTime();
   return Math.round((t2 - t1) / 86400000);
 }
+function addDays(dateISO, days) {
+  const d = new Date(dateISO + "T00:00:00");
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+function addMonths(dateISO, months) {
+  const d = new Date(dateISO + "T00:00:00");
+  d.setMonth(d.getMonth() + months);
+  return d.toISOString().slice(0, 10);
+}
+function addYears(dateISO, years) {
+  const d = new Date(dateISO + "T00:00:00");
+  d.setFullYear(d.getFullYear() + years);
+  return d.toISOString().slice(0, 10);
+}
+function fmtDateShort(iso) {
+  const d = new Date(iso + "T00:00:00");
+  if (isNaN(d)) return iso;
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
+const CHART_INTERVALS = [
+  { key: "30d", label: "30D" },
+  { key: "3m", label: "3M" },
+  { key: "6m", label: "6M" },
+  { key: "1y", label: "1Y" },
+  { key: "ytd", label: "YTD" },
+  { key: "all", label: "All" },
+];
+
+function intervalRange(key, earliestISO) {
+  const today = todayISO();
+  switch (key) {
+    case "30d": return { start: addDays(today, -29), end: today };
+    case "3m": return { start: addMonths(today, -3), end: today };
+    case "6m": return { start: addMonths(today, -6), end: today };
+    case "1y": return { start: addYears(today, -1), end: today };
+    case "ytd": return { start: today.slice(0, 4) + "-01-01", end: today };
+    case "all": return { start: earliestISO || today, end: today };
+    default: return { start: addMonths(today, -3), end: today };
+  }
+}
+
+// Walks a sorted array of {date, amount} lines day by day across a range,
+// carrying the running total forward — a step function sampled daily, so
+// two different periods (e.g. this year vs last year) land on directly
+// comparable, equal-length series for overlaying on one chart.
+function buildDailySeries(opening, sortedLines, startISO, endISO) {
+  let value = opening;
+  let idx = 0;
+  while (idx < sortedLines.length && sortedLines[idx].date < startISO) {
+    value += sortedLines[idx].amount || 0;
+    idx++;
+  }
+  const points = [];
+  let cursor = new Date(startISO + "T00:00:00");
+  const end = new Date(endISO + "T00:00:00");
+  let safety = 0;
+  while (cursor <= end && safety < 3660) {
+    const iso = cursor.toISOString().slice(0, 10);
+    while (idx < sortedLines.length && sortedLines[idx].date === iso) {
+      value += sortedLines[idx].amount || 0;
+      idx++;
+    }
+    points.push({ date: iso, value });
+    cursor.setDate(cursor.getDate() + 1);
+    safety++;
+  }
+  return points;
+}
+
 // Trims trailing zeros but keeps up to 6 decimal places, for fractional share counts.
 function fmtUnits(n) {
   const v = Number.isFinite(n) ? n : 0;
@@ -477,6 +549,148 @@ function useLedgerRowAnimation(rows, editingKey) {
 }
 
 /* ---------------------------------------------------------
+   Charts — balance/units over a user-selectable interval, with an
+   optional overlay of the same interval one year earlier.
+--------------------------------------------------------- */
+function IntervalControls({ interval, setInterval: setIntervalValue, compareYoY, setCompareYoY, disableCompare }) {
+  return (
+    <div className="flex items-center gap-3 flex-wrap">
+      <div className="flex rounded overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
+        {CHART_INTERVALS.map((o) => (
+          <button
+            key={o.key} type="button" onClick={() => setIntervalValue(o.key)}
+            style={{ padding: "6px 10px", fontSize: 12, background: interval === o.key ? C.paperDim : "transparent", color: interval === o.key ? C.ink : C.inkFaint, fontWeight: interval === o.key ? 600 : 400 }}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <label className="flex items-center gap-1.5" style={{ fontSize: 12.5, color: C.inkSoft, opacity: disableCompare ? 0.4 : 1 }}>
+        <input type="checkbox" checked={compareYoY && !disableCompare} disabled={disableCompare} onChange={(e) => setCompareYoY(e.target.checked)} />
+        Compare to last year
+      </label>
+    </div>
+  );
+}
+
+function ChartTooltip({ active, payload, formatValue, compareYoY }) {
+  if (!active || !payload || !payload.length) return null;
+  const cur = payload.find((p) => p.dataKey === "current");
+  const prev = payload.find((p) => p.dataKey === "previous");
+  if (!cur) return null;
+  return (
+    <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 6, padding: "8px 10px", fontSize: 12.5 }}>
+      <div><strong>{fmtDateShort(cur.payload.date)}</strong>: <span className="ll-mono">{formatValue(cur.value)}</span></div>
+      {compareYoY && prev && prev.value !== undefined && (
+        <div style={{ color: C.inkFaint, marginTop: 2 }}>{fmtDateShort(cur.payload.previousDate)}: <span className="ll-mono">{formatValue(prev.value)}</span></div>
+      )}
+    </div>
+  );
+}
+
+function useChartSeries(opening, lines, interval, compareYoY) {
+  const earliest = lines.length ? lines[0].date : todayISO();
+  const { start, end } = intervalRange(interval, earliest);
+  const currentSeries = useMemo(() => buildDailySeries(opening, lines, start, end), [opening, lines, start, end]);
+  const prevRange = compareYoY && interval !== "all" ? { start: addYears(start, -1), end: addYears(end, -1) } : null;
+  const previousSeries = useMemo(() => (prevRange ? buildDailySeries(opening, lines, prevRange.start, prevRange.end) : null), [opening, lines, prevRange]);
+  return useMemo(
+    () =>
+      currentSeries.map((p, i) => ({
+        offset: i,
+        date: p.date,
+        current: p.value,
+        previous: previousSeries && previousSeries[i] ? previousSeries[i].value : undefined,
+        previousDate: previousSeries && previousSeries[i] ? previousSeries[i].date : undefined,
+      })),
+    [currentSeries, previousSeries]
+  );
+}
+
+function BalanceChart({ account, transactions }) {
+  const [interval, setInterval_] = useState("3m");
+  const [compareYoY, setCompareYoY] = useState(false);
+
+  const lines = useMemo(
+    () => transactions.map((t) => t.lines.find((l) => l.accountId === account.id)).filter(Boolean).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
+    [transactions, account]
+  );
+  const merged = useChartSeries(account.openingBalance || 0, lines, interval, compareYoY);
+
+  if (lines.length === 0) {
+    return <div style={{ padding: "40px 0", textAlign: "center", color: C.inkFaint, fontSize: 13 }}>Not enough entries yet to chart.</div>;
+  }
+
+  return (
+    <div>
+      <div className="mb-4"><IntervalControls interval={interval} setInterval={setInterval_} compareYoY={compareYoY} setCompareYoY={setCompareYoY} disableCompare={interval === "all"} /></div>
+      <div style={{ height: 320 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={merged} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
+            <CartesianGrid stroke={C.lineSoft} vertical={false} />
+            <XAxis dataKey="offset" tickFormatter={(o) => (merged[o] ? fmtDateShort(merged[o].date) : "")} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={{ stroke: C.line }} tickLine={false} minTickGap={40} />
+            <YAxis tickFormatter={(v) => fmt(v, account.currency)} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={80} />
+            <Tooltip content={<ChartTooltip formatValue={(v) => fmt(v, account.currency)} compareYoY={compareYoY} />} />
+            {compareYoY && <Legend wrapperStyle={{ fontSize: 12 }} />}
+            {compareYoY && <Line type="stepAfter" dataKey="previous" name="Same period last year" stroke={C.goldDim} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
+            <Line type="stepAfter" dataKey="current" name="Balance" stroke={C.gold} strokeWidth={2} dot={false} isAnimationActive={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+function UnitsChart({ account, transactions }) {
+  const [interval, setInterval_] = useState("3m");
+  const [compareYoY, setCompareYoY] = useState(false);
+  const symbols = useMemo(
+    () => Array.from(new Set(transactions.flatMap((t) => t.lines).filter((l) => l.accountId === account.id && l.symbol).map((l) => l.symbol))).sort(),
+    [transactions, account]
+  );
+  const [symbol, setSymbol] = useState("");
+  useEffect(() => {
+    if (!symbol && symbols.length) setSymbol(symbols[0]);
+    if (symbol && !symbols.includes(symbol)) setSymbol(symbols[0] || "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbols]);
+
+  const lines = useMemo(
+    () => transactions.map((t) => t.lines.find((l) => l.accountId === account.id && l.symbol === symbol)).filter(Boolean).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
+    [transactions, account, symbol]
+  );
+  const merged = useChartSeries(0, lines, interval, compareYoY);
+
+  if (symbols.length === 0) {
+    return <div style={{ padding: "40px 0", textAlign: "center", color: C.inkFaint, fontSize: 13 }}>Not enough trades yet to chart.</div>;
+  }
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 flex-wrap mb-4">
+        <select value={symbol} onChange={(e) => setSymbol(e.target.value)} style={{ width: 100, padding: "7px 8px", borderRadius: 4, border: `1px solid ${C.line}`, background: C.paper, fontSize: 13, color: C.ink }}>
+          {symbols.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <IntervalControls interval={interval} setInterval={setInterval_} compareYoY={compareYoY} setCompareYoY={setCompareYoY} disableCompare={interval === "all"} />
+      </div>
+      <div style={{ height: 320 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={merged} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
+            <CartesianGrid stroke={C.lineSoft} vertical={false} />
+            <XAxis dataKey="offset" tickFormatter={(o) => (merged[o] ? fmtDateShort(merged[o].date) : "")} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={{ stroke: C.line }} tickLine={false} minTickGap={40} />
+            <YAxis tickFormatter={(v) => fmtUnits(v)} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={60} />
+            <Tooltip content={<ChartTooltip formatValue={(v) => `${fmtUnits(v)} ${symbol}`} compareYoY={compareYoY} />} />
+            {compareYoY && <Legend wrapperStyle={{ fontSize: 12 }} />}
+            {compareYoY && <Line type="stepAfter" dataKey="previous" name="Same period last year" stroke={C.goldDim} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
+            <Line type="stepAfter" dataKey="current" name={`${symbol} units`} stroke={C.gold} strokeWidth={2} dot={false} isAnimationActive={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
    Account Ledger — inline add/edit, live FLIP reorder + autoscroll
 --------------------------------------------------------- */
 function blankDraft(presetOtherId) {
@@ -498,6 +712,7 @@ function blankDraft(presetOtherId) {
 function AccountLedger({ account, accounts, transactions, balance, onEditAccount, onSaveTxn, onDeleteTxn, onOpenSplit, onNewSplit }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
+  const [view, setView] = useState("ledger");
 
   // If both In and Out are filled, the saved line is their difference —
   // e.g. In 50 / Out 20 saves as an increase of 30.
@@ -697,6 +912,14 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
           <div className="ll-mono" style={{ fontSize: 22, marginTop: 6, color: balance < 0 ? C.debit : C.ink }}>{fmt(balance, account.currency)}</div>
         </div>
         <div className="flex gap-2">
+          <div className="flex rounded overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
+            <button onClick={() => setView("ledger")} title="Ledger" className="flex items-center gap-1.5 px-3" style={{ background: view === "ledger" ? C.paperDim : "transparent", color: view === "ledger" ? C.ink : C.inkFaint, fontSize: 13 }}>
+              <TableProperties size={14} /> Ledger
+            </button>
+            <button onClick={() => setView("chart")} title="Chart" className="flex items-center gap-1.5 px-3" style={{ background: view === "chart" ? C.paperDim : "transparent", color: view === "chart" ? C.ink : C.inkFaint, fontSize: 13 }}>
+              <TrendingUp size={14} /> Chart
+            </button>
+          </div>
           <button onClick={onEditAccount} className="px-3 py-1.5 rounded" style={{ border: `1px solid ${C.line}`, fontSize: 13 }}>Edit account</button>
           <button onClick={onNewSplit} className="px-3 py-1.5 rounded" style={{ border: `1px solid ${C.line}`, fontSize: 13 }}>Split entry…</button>
           <button
@@ -710,6 +933,9 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
         </div>
       </div>
 
+      {view === "chart" ? (
+        <BalanceChart account={account} transactions={transactions} />
+      ) : (
       <div style={{ border: `1px solid ${C.line}`, borderRadius: 6, overflow: "hidden", background: C.card }}>
         <div className="grid" style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 60px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.6, color: C.inkFaint, padding: "10px 16px", borderBottom: `1px solid ${C.line}` }}>
           <div>Date</div><div>Description</div><div>Transfer</div><div className="text-right">Out</div><div className="text-right">In</div><div className="text-right">Balance</div><div />
@@ -865,6 +1091,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
           );
         })}
       </div>
+      )}
     </div>
   );
 }
@@ -895,6 +1122,7 @@ function blankStockDraft(account) {
 function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn, onDeleteTxn }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
+  const [view, setView] = useState("ledger");
 
   function unitsDeltaOf(d) {
     const i = parseFloat(d.unitsInStr);
@@ -1126,6 +1354,14 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
           )}
         </div>
         <div className="flex gap-2">
+          <div className="flex rounded overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
+            <button onClick={() => setView("ledger")} title="Ledger" className="flex items-center gap-1.5 px-3" style={{ background: view === "ledger" ? C.paperDim : "transparent", color: view === "ledger" ? C.ink : C.inkFaint, fontSize: 13 }}>
+              <TableProperties size={14} /> Ledger
+            </button>
+            <button onClick={() => setView("chart")} title="Chart" className="flex items-center gap-1.5 px-3" style={{ background: view === "chart" ? C.paperDim : "transparent", color: view === "chart" ? C.ink : C.inkFaint, fontSize: 13 }}>
+              <TrendingUp size={14} /> Chart
+            </button>
+          </div>
           <button onClick={onEditAccount} className="px-3 py-1.5 rounded" style={{ border: `1px solid ${C.line}`, fontSize: 13 }}>Edit account</button>
           <button
             onClick={() => { setDraft(blankStockDraft(account)); setDraftError(""); }}
@@ -1138,6 +1374,9 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
         </div>
       </div>
 
+      {view === "chart" ? (
+        <UnitsChart account={account} transactions={transactions} />
+      ) : (
       <div style={{ border: `1px solid ${C.line}`, borderRadius: 6, overflow: "hidden", background: C.card }}>
         <div className="grid" style={{ gridTemplateColumns: gridCols, fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.6, color: C.inkFaint, padding: "10px 16px", borderBottom: `1px solid ${C.line}` }}>
           <div>Date</div><div>Description</div><div>Symbol</div><div className="text-right">Units out</div><div className="text-right">Units in</div><div className="text-right">Balance</div><div />
@@ -1297,6 +1536,7 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
           );
         })}
       </div>
+      )}
       <datalist id="ll-symbols">
         {knownSymbols.map((s) => <option key={s} value={s} />)}
       </datalist>
