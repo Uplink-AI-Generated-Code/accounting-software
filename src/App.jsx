@@ -1213,7 +1213,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                       {draft.originalTxn && draft.originalTxn.lines.length >= 2 && (
                         <button onClick={unlinkNow} title="Split back into separate, unlinked entries" className="flex items-center gap-1" style={{ fontSize: 12, color: C.gold }}><Unlink2 size={12} /> Unlink all</button>
                       )}
-                      <button onClick={() => onDeleteTxn(draft.txnId)} className="flex items-center gap-1" style={{ fontSize: 12, color: C.debit }}><Trash2 size={12} /> Delete</button>
+                      <button onClick={() => { onDeleteTxn(draft.txnId); setDraft(null); setDraftError(""); }} className="flex items-center gap-1" style={{ fontSize: 12, color: C.debit }}><Trash2 size={12} /> Delete</button>
                     </div>
                   )}
                 </div>
@@ -1643,7 +1643,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
                       {draft.originalTxn && draft.originalTxn.lines.length === 2 && (
                         <button onClick={unlinkNow} title="Split back into two separate, unlinked entries" className="flex items-center gap-1" style={{ fontSize: 12, color: C.gold }}><Unlink2 size={12} /> Unlink</button>
                       )}
-                      <button onClick={() => onDeleteTxn(draft.txnId)} className="flex items-center gap-1" style={{ fontSize: 12, color: C.debit }}><Trash2 size={12} /> Delete</button>
+                      <button onClick={() => { onDeleteTxn(draft.txnId); setDraft(null); setDraftError(""); }} className="flex items-center gap-1" style={{ fontSize: 12, color: C.debit }}><Trash2 size={12} /> Delete</button>
                     </div>
                   )}
                 </div>
