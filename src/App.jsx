@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
-import { Plus, Trash2, Check, X, Wallet, ArrowLeftRight, AlertTriangle, BookOpen, Pencil, Unlink2, TrendingUp, TableProperties } from "lucide-react";
+import { Plus, Trash2, Check, X, Wallet, ArrowLeftRight, AlertTriangle, BookOpen, Pencil, Unlink2, TrendingUp, TableProperties, BookmarkPlus } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 /* ---------------------------------------------------------
@@ -84,25 +84,35 @@ function isaRulesFor(startYear, over65) {
 }
 
 // An ISA subaccount doesn't set its own institution — it inherits its
-// wrapper's, the same way it inherits flexibility.
-function institutionOf(account, accounts) {
+// wrapper's, the same way it inherits flexibility. Always resolved
+// against the *full* account list, since a nested grouping level may be
+// working with a subset that doesn't include the wrapper itself.
+function institutionOf(account, allAccounts) {
   if (account.institution) return account.institution;
   if (account.isaParentId) {
-    const parent = accounts.find((a) => a.id === account.isaParentId);
+    const parent = allAccounts.find((a) => a.id === account.isaParentId);
     if (parent && parent.institution) return parent.institution;
   }
   return "";
 }
 
-// Buckets every account (including ISA subaccounts) for the sidebar and
-// Overview. "type" is the original chart-of-accounts grouping and is
-// handled by the caller directly, since it already has its own labels;
-// this covers the two new lenses.
-function groupAccounts(accounts, mode) {
-  if (mode === "currency") {
+const GROUP_DIMENSIONS = [
+  { key: "type", label: "Type" },
+  { key: "institution", label: "Institution" },
+  { key: "currency", label: "Currency" },
+];
+
+// Splits one set of accounts into labelled buckets along a single
+// dimension. `allAccounts` is only needed to resolve inherited
+// institutions correctly inside a nested/filtered subset.
+function bucketBy(subset, dim, allAccounts) {
+  if (dim === "type") {
+    return TYPES.map((t) => ({ key: t.key, label: t.label, items: subset.filter((a) => a.type === t.key) })).filter((g) => g.items.length);
+  }
+  if (dim === "currency") {
     const byCur = {};
     const wrappers = [];
-    accounts.forEach((a) => {
+    subset.forEach((a) => {
       if (a.type === "isa-parent") { wrappers.push(a); return; }
       const cur = a.currency || "—";
       byCur[cur] = byCur[cur] || [];
@@ -113,20 +123,175 @@ function groupAccounts(accounts, mode) {
     if (wrappers.length) groups.push({ key: "__isa", label: "Stocks & Shares ISAs", items: wrappers });
     return groups;
   }
-  if (mode === "institution") {
-    const byInst = {};
-    accounts.forEach((a) => {
-      const inst = institutionOf(a, accounts) || "No institution";
-      byInst[inst] = byInst[inst] || [];
-      byInst[inst].push(a);
-    });
-    const keys = Object.keys(byInst).sort((a, b) => (a === "No institution" ? 1 : b === "No institution" ? -1 : a.localeCompare(b)));
-    return keys.map((k) => ({ key: k, label: k, items: byInst[k] }));
-  }
-  return [];
+  // institution
+  const byInst = {};
+  subset.forEach((a) => {
+    const inst = institutionOf(a, allAccounts) || "No institution";
+    byInst[inst] = byInst[inst] || [];
+    byInst[inst].push(a);
+  });
+  const keys = Object.keys(byInst).sort((a, b) => (a === "No institution" ? 1 : b === "No institution" ? -1 : a.localeCompare(b)));
+  return keys.map((k) => ({ key: k, label: k, items: byInst[k] }));
 }
 
-// Groups accounts into ISA "products" for allowance purposes — a flat ISA
+// Recursively buckets accounts through up to three chosen dimensions —
+// levels like ["institution", "currency"] produce one institution section
+// per top level, each split into currency sub-sections underneath. Every
+// node (leaf or not) keeps its full flattened `items` list, so a subtotal
+// can be shown at any level, not just the deepest one.
+function buildNestedGroups(subset, levels, allAccounts) {
+  const [dim, ...rest] = levels;
+  const buckets = bucketBy(subset, dim, allAccounts);
+  return buckets.map((b) => ({
+    key: `${dim}:${b.key}`,
+    label: b.label,
+    dim,
+    items: b.items,
+    leaf: rest.length === 0,
+    children: rest.length === 0 ? null : buildNestedGroups(b.items, rest, allAccounts),
+  }));
+}
+
+function subtotalsForItems(items, balances) {
+  const sub = {};
+  items.filter((a) => a.type !== "investment" && a.type !== "isa-parent").forEach((a) => { sub[a.currency] = (sub[a.currency] || 0) + (balances[a.id] || 0); });
+  return sub;
+}
+
+// A compact cascading picker for up to three nested grouping levels — the
+// first is always active (defaulting to Type); each subsequent one offers
+// "—" to stop nesting there, plus whichever dimensions aren't already
+// used earlier in the chain. Changing a level resets anything after it,
+// so the chain can never end up with a dimension repeated or a gap.
+function groupLevelsLabel(levels) {
+  return levels.map((k) => GROUP_DIMENSIONS.find((d) => d.key === k)?.label || k).join(" › ");
+}
+
+function GroupLevelPicker({ levels, onChange, saved, onSave, onRemove }) {
+  function setLevel(i, val) {
+    const next = levels.slice(0, i);
+    if (val) next.push(val);
+    onChange(next.length ? next : ["type"]);
+  }
+  const selStyle = { fontSize: 11.5, padding: "3px 5px", border: `1px solid ${C.line}`, borderRadius: 4, background: C.paper, color: C.ink };
+  const alreadySaved = (saved || []).some((s) => JSON.stringify(s.levels) === JSON.stringify(levels));
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex items-center gap-1">
+        {[0, 1, 2].map((i) => {
+          if (i > 0 && !levels[i - 1]) return null;
+          const used = levels.slice(0, i);
+          const options = GROUP_DIMENSIONS.filter((d) => !used.includes(d.key));
+          return (
+            <React.Fragment key={i}>
+              {i > 0 && <span style={{ color: C.inkFaint, fontSize: 11 }}>›</span>}
+              <select value={levels[i] || ""} onChange={(e) => setLevel(i, e.target.value)} style={selStyle}>
+                {i > 0 && <option value="">—</option>}
+                {options.map((d) => <option key={d.key} value={d.key}>{d.label}</option>)}
+              </select>
+            </React.Fragment>
+          );
+        })}
+        {onSave && (
+          <button
+            onClick={() => !alreadySaved && onSave(levels)}
+            disabled={alreadySaved}
+            title={alreadySaved ? "Already saved" : "Save this grouping"}
+            style={{ padding: 4, color: alreadySaved ? C.goldDim : C.inkFaint, opacity: alreadySaved ? 0.6 : 1 }}
+          >
+            <BookmarkPlus size={14} />
+          </button>
+        )}
+      </div>
+      {saved && saved.length > 0 && (
+        <div className="flex items-center gap-1 flex-wrap">
+          {saved.map((s) => {
+            const active = JSON.stringify(s.levels) === JSON.stringify(levels);
+            return (
+              <span key={s.id} className="flex items-center" style={{ border: `1px solid ${active ? C.gold : C.line}`, borderRadius: 4, overflow: "hidden" }}>
+                <button onClick={() => onChange(s.levels)} style={{ padding: "3px 6px", fontSize: 11, background: active ? C.paperDim : "transparent", color: active ? C.ink : C.inkSoft, fontWeight: active ? 600 : 400 }}>
+                  {groupLevelsLabel(s.levels)}
+                </button>
+                <button onClick={() => onRemove(s.id)} title="Remove" style={{ padding: "3px 4px", color: C.inkFaint }}>
+                  <X size={11} />
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Renders nested groups in the sidebar — indented headers down to
+// whichever level is a leaf, where actual clickable account rows appear.
+function SidebarGroupTree({ groups, depth, selectedId, onSelect, balances, accountDisplay }) {
+  return groups.map((g) => (
+    <div key={g.key} className="mb-3" style={{ marginLeft: depth * 8 }}>
+      <div style={{ fontSize: 10.5, letterSpacing: 1, textTransform: "uppercase", color: C.inkFaint, padding: "4px 8px" }}>{g.label}</div>
+      {g.leaf ? (
+        g.items.map((a) => (
+          <button key={a.id} onClick={() => onSelect(a.id)} className="w-full text-left px-2 py-1.5 rounded flex items-center justify-between" style={{ background: selectedId === a.id ? C.paperDim : "transparent" }}>
+            <span style={{ fontSize: 13.5, color: C.ink, display: "flex", alignItems: "center", gap: 5 }}>
+              {a.name}
+              {a.isaKind && <span title={ISA_KINDS.find((k) => k.key === a.isaKind)?.label} style={{ fontSize: 9.5, fontWeight: 700, color: C.gold, border: `1px solid ${C.goldDim}`, borderRadius: 3, padding: "1px 3px", letterSpacing: 0.3 }}>ISA</span>}
+            </span>
+            <span className="ll-mono" style={{ fontSize: a.type === "investment" ? 11 : 12, color: (balances[a.id] || 0) < 0 ? C.debit : C.inkSoft }}>{accountDisplay(a)}</span>
+          </button>
+        ))
+      ) : (
+        <SidebarGroupTree groups={g.children} depth={depth + 1} selectedId={selectedId} onSelect={onSelect} balances={balances} accountDisplay={accountDisplay} />
+      )}
+    </div>
+  ));
+}
+
+function AccountCard({ a, accounts, balances, onSelect }) {
+  return (
+    <button onClick={() => onSelect(a.id)} className="text-left p-4 rounded" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+      <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>
+        {TYPES.find((t) => t.key === a.type)?.label}{a.type === "investment" ? ` · ${a.symbol}` : ""}
+        {a.isaKind ? ` · ${ISA_KINDS.find((k) => k.key === a.isaKind)?.label}` : ""}
+      </div>
+      <div style={{ fontSize: 15, fontWeight: 600, marginTop: 4 }}>{a.name}</div>
+      {a.type === "isa-parent" ? (
+        <div className="ll-mono" style={{ fontSize: 14, marginTop: 8, color: C.inkFaint }}>{accounts.filter((x) => x.isaParentId === a.id).length} subaccounts</div>
+      ) : a.type === "investment" ? (
+        <div className="ll-mono" style={{ fontSize: 16, marginTop: 8, color: C.ink }}>{fmtUnits(balances[a.id] || 0)} <span style={{ fontSize: 13, color: C.inkFaint }}>units</span></div>
+      ) : (
+        <div className="ll-mono" style={{ fontSize: 18, marginTop: 8, color: (balances[a.id] || 0) < 0 ? C.debit : C.ink }}>{fmt(balances[a.id] || 0, a.currency)}</div>
+      )}
+    </button>
+  );
+}
+
+// Renders nested groups on the Overview page — a subtotal line at every
+// non-Type level, and a card grid once a branch reaches its leaf.
+function OverviewGroupTree({ groups, depth, accounts, balances, onSelect }) {
+  return groups.map((g) => {
+    const sub = g.dim !== "type" ? subtotalsForItems(g.items, balances) : null;
+    return (
+      <div key={g.key} className="mb-6" style={{ marginLeft: depth * 14 }}>
+        <div className="flex items-baseline justify-between mb-2">
+          <div style={{ fontSize: depth === 0 ? 12 : 11, fontWeight: 600, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.6 }}>{g.label}</div>
+          {sub && Object.keys(sub).length > 0 && (
+            <div className="ll-mono" style={{ fontSize: 12, color: C.inkFaint }}>{Object.entries(sub).map(([c, v]) => fmt(v, c)).join("  ·  ")}</div>
+          )}
+        </div>
+        {g.leaf ? (
+          <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
+            {g.items.map((a) => <AccountCard key={a.id} a={a} accounts={accounts} balances={balances} onSelect={onSelect} />)}
+          </div>
+        ) : (
+          <OverviewGroupTree groups={g.children} depth={depth + 1} accounts={accounts} balances={balances} onSelect={onSelect} />
+        )}
+      </div>
+    );
+  });
+}
+
+
 // account is its own product; a Stocks & Shares ISA wrapper and all of
 // its subaccounts together form one product, since both the allowance
 // and flexibility apply to the ISA itself, not each subaccount.
@@ -489,7 +654,7 @@ function balanceHint(lines, accounts) {
 export default function App() {
   const [accounts, setAccounts] = useState([]);
   const [transactions, setTransactions] = useState([]);
-  const [settings, setSettings] = useState({ over65: false, groupBy: "type" });
+  const [settings, setSettings] = useState({ over65: false, groupLevels: ["type"], savedGroupings: [] });
   const [loaded, setLoaded] = useState(false);
   const [storageOK, setStorageOK] = useState(true);
   const [selectedId, setSelectedIdRaw] = useState(null);
@@ -529,7 +694,14 @@ export default function App() {
           const parsed = JSON.parse(res.value);
           setAccounts(parsed.accounts || []);
           setTransactions(parsed.transactions || []);
-          if (parsed.settings) setSettings({ over65: false, groupBy: "type", ...parsed.settings });
+          if (parsed.settings) {
+            const s = { over65: false, groupLevels: ["type"], savedGroupings: [], ...parsed.settings };
+            // Migrate the old single-level "groupBy" setting if that's all a
+            // previously-saved session has.
+            if (parsed.settings.groupBy && !parsed.settings.groupLevels) s.groupLevels = [parsed.settings.groupBy];
+            delete s.groupBy;
+            setSettings(s);
+          }
         }
       } catch (e) {
         /* no data saved yet */
@@ -586,6 +758,16 @@ export default function App() {
 
   function saveSettings(next) {
     persist(accounts, transactions, next);
+  }
+
+  function saveGroupingPreset(levels) {
+    const already = (settings.savedGroupings || []).some((s) => JSON.stringify(s.levels) === JSON.stringify(levels));
+    if (already) return;
+    saveSettings({ ...settings, savedGroupings: [...(settings.savedGroupings || []), { id: uid(), levels }] });
+  }
+
+  function removeGroupingPreset(id) {
+    saveSettings({ ...settings, savedGroupings: (settings.savedGroupings || []).filter((s) => s.id !== id) });
   }
 
   const balances = useMemo(() => {
@@ -701,40 +883,28 @@ export default function App() {
             ISA Allowance
           </button>
 
-          <div className="flex rounded overflow-hidden mb-3" style={{ border: `1px solid ${C.line}` }}>
-            {[{ v: "type", label: "Type" }, { v: "institution", label: "Institution" }, { v: "currency", label: "Currency" }].map((o) => (
-              <button
-                key={o.v}
-                onClick={() => saveSettings({ ...settings, groupBy: o.v })}
-                className="flex-1"
-                style={{ padding: "5px 0", fontSize: 11, background: settings.groupBy === o.v ? C.paperDim : "transparent", color: settings.groupBy === o.v ? C.ink : C.inkFaint, fontWeight: settings.groupBy === o.v ? 600 : 400 }}
-              >
-                {o.label}
-              </button>
-            ))}
+          <div className="mb-3">
+            <GroupLevelPicker
+              levels={settings.groupLevels || ["type"]}
+              onChange={(lv) => saveSettings({ ...settings, groupLevels: lv })}
+              saved={settings.savedGroupings}
+              onSave={saveGroupingPreset}
+              onRemove={removeGroupingPreset}
+            />
           </div>
 
           {loaded && accounts.length === 0 && (
             <p style={{ fontSize: 12.5, color: C.inkFaint, padding: "0 8px", lineHeight: 1.5 }}>No accounts yet. Add one to start keeping books.</p>
           )}
 
-          {(settings.groupBy === "type" ? TYPES.map((t) => ({ key: t.key, label: t.label, items: accounts.filter((a) => a.type === t.key) })) : groupAccounts(accounts, settings.groupBy)).map((g) => {
-            if (!g.items || g.items.length === 0) return null;
-            return (
-              <div key={g.key} className="mb-3">
-                <div style={{ fontSize: 10.5, letterSpacing: 1, textTransform: "uppercase", color: C.inkFaint, padding: "4px 8px" }}>{g.label}</div>
-                {g.items.map((a) => (
-                  <button key={a.id} onClick={() => setSelectedId(a.id)} className="w-full text-left px-2 py-1.5 rounded flex items-center justify-between" style={{ background: selectedId === a.id ? C.paperDim : "transparent" }}>
-                    <span style={{ fontSize: 13.5, color: C.ink, display: "flex", alignItems: "center", gap: 5 }}>
-                      {a.name}
-                      {a.isaKind && <span title={ISA_KINDS.find((k) => k.key === a.isaKind)?.label} style={{ fontSize: 9.5, fontWeight: 700, color: C.gold, border: `1px solid ${C.goldDim}`, borderRadius: 3, padding: "1px 3px", letterSpacing: 0.3 }}>ISA</span>}
-                    </span>
-                    <span className="ll-mono" style={{ fontSize: a.type === "investment" ? 11 : 12, color: (balances[a.id] || 0) < 0 ? C.debit : C.inkSoft }}>{accountDisplay(a)}</span>
-                  </button>
-                ))}
-              </div>
-            );
-          })}
+          <SidebarGroupTree
+            groups={buildNestedGroups(accounts, settings.groupLevels || ["type"], accounts)}
+            depth={0}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            balances={balances}
+            accountDisplay={accountDisplay}
+          />
         </aside>
 
 
@@ -773,7 +943,7 @@ export default function App() {
               />
             )
           ) : (
-            <Overview accounts={accounts} balances={balances} settings={settings} onSaveSettings={saveSettings} onSelect={setSelectedId} onNew={() => setAccountForm({})} />
+            <Overview accounts={accounts} balances={balances} settings={settings} onSaveSettings={saveSettings} onSaveGrouping={saveGroupingPreset} onRemoveGrouping={removeGroupingPreset} onSelect={setSelectedId} onNew={() => setAccountForm({})} />
           )}
         </main>
       </div>
@@ -788,7 +958,7 @@ export default function App() {
 /* ---------------------------------------------------------
    Overview
 --------------------------------------------------------- */
-function Overview({ accounts, balances, settings, onSaveSettings, onSelect, onNew }) {
+function Overview({ accounts, balances, settings, onSaveSettings, onSaveGrouping, onRemoveGrouping, onSelect, onNew }) {
   if (accounts.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center" style={{ marginTop: 100, color: C.inkFaint }}>
@@ -804,15 +974,7 @@ function Overview({ accounts, balances, settings, onSaveSettings, onSelect, onNe
   const totalsByCurrency = {};
   accounts.filter((a) => a.type !== "investment" && a.type !== "isa-parent").forEach((a) => { totalsByCurrency[a.currency] = (totalsByCurrency[a.currency] || 0) + (balances[a.id] || 0); });
 
-  const groups = settings.groupBy === "type"
-    ? TYPES.map((t) => ({ key: t.key, label: t.label, items: accounts.filter((a) => a.type === t.key) }))
-    : groupAccounts(accounts, settings.groupBy);
-
-  function subtotalsFor(items) {
-    const sub = {};
-    items.filter((a) => a.type !== "investment" && a.type !== "isa-parent").forEach((a) => { sub[a.currency] = (sub[a.currency] || 0) + (balances[a.id] || 0); });
-    return sub;
-  }
+  const groupLevels = settings.groupLevels || ["type"];
 
   return (
     <div>
@@ -820,51 +982,20 @@ function Overview({ accounts, balances, settings, onSaveSettings, onSelect, onNe
         <h2 className="ll-serif" style={{ fontSize: 20 }}>Chart of accounts</h2>
         <div className="flex items-center gap-2">
           <span style={{ fontSize: 11.5, color: C.inkFaint }}>Group by</span>
-          <div className="flex rounded overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
-            {[{ v: "type", label: "Type" }, { v: "institution", label: "Institution" }, { v: "currency", label: "Currency" }].map((o) => (
-              <button key={o.v} onClick={() => onSaveSettings({ ...settings, groupBy: o.v })} style={{ padding: "5px 10px", fontSize: 12, background: settings.groupBy === o.v ? C.paperDim : "transparent", color: settings.groupBy === o.v ? C.ink : C.inkFaint, fontWeight: settings.groupBy === o.v ? 600 : 400 }}>
-                {o.label}
-              </button>
-            ))}
-          </div>
+          <GroupLevelPicker
+            levels={groupLevels}
+            onChange={(lv) => onSaveSettings({ ...settings, groupLevels: lv })}
+            saved={settings.savedGroupings}
+            onSave={onSaveGrouping}
+            onRemove={onRemoveGrouping}
+          />
         </div>
       </div>
       <p style={{ fontSize: 13, color: C.inkFaint, marginBottom: 20 }}>
         Combined balance by currency: {Object.entries(totalsByCurrency).map(([c, v]) => fmt(v, c)).join("  ·  ")}
       </p>
 
-      {groups.map((g) => {
-        if (!g.items || g.items.length === 0) return null;
-        const sub = settings.groupBy !== "type" ? subtotalsFor(g.items) : null;
-        return (
-          <div key={g.key} className="mb-6">
-            <div className="flex items-baseline justify-between mb-2">
-              <div style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.6 }}>{g.label}</div>
-              {sub && Object.keys(sub).length > 0 && (
-                <div className="ll-mono" style={{ fontSize: 12, color: C.inkFaint }}>{Object.entries(sub).map(([c, v]) => fmt(v, c)).join("  ·  ")}</div>
-              )}
-            </div>
-            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
-              {g.items.map((a) => (
-                <button key={a.id} onClick={() => onSelect(a.id)} className="text-left p-4 rounded" style={{ background: C.card, border: `1px solid ${C.line}` }}>
-                  <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>
-                    {TYPES.find((t) => t.key === a.type)?.label}{a.type === "investment" ? ` · ${a.symbol}` : ""}
-                    {a.isaKind ? ` · ${ISA_KINDS.find((k) => k.key === a.isaKind)?.label}` : ""}
-                  </div>
-                  <div style={{ fontSize: 15, fontWeight: 600, marginTop: 4 }}>{a.name}</div>
-                  {a.type === "isa-parent" ? (
-                    <div className="ll-mono" style={{ fontSize: 14, marginTop: 8, color: C.inkFaint }}>{accounts.filter((x) => x.isaParentId === a.id).length} subaccounts</div>
-                  ) : a.type === "investment" ? (
-                    <div className="ll-mono" style={{ fontSize: 16, marginTop: 8, color: C.ink }}>{fmtUnits(balances[a.id] || 0)} <span style={{ fontSize: 13, color: C.inkFaint }}>units</span></div>
-                  ) : (
-                    <div className="ll-mono" style={{ fontSize: 18, marginTop: 8, color: (balances[a.id] || 0) < 0 ? C.debit : C.ink }}>{fmt(balances[a.id] || 0, a.currency)}</div>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-        );
-      })}
+      <OverviewGroupTree groups={buildNestedGroups(accounts, groupLevels, accounts)} depth={0} accounts={accounts} balances={balances} onSelect={onSelect} />
     </div>
   );
 }
