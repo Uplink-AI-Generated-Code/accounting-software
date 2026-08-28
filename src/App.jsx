@@ -152,6 +152,21 @@ function hasStorage() {
   return typeof window !== "undefined" && !!window.storage && typeof window.storage.get === "function" && typeof window.storage.set === "function";
 }
 
+// The value a line contributes to a balance check, in real cash terms.
+// For an ordinary account this is just its amount in its own currency.
+// For a stock account, the line's `amount` is a unit count, not cash —
+// its contribution is the trade's cash side (cashValue/cashCurrency)
+// instead, using the same self-referential sign convention as an
+// exchange tag. A stock line with no cash info recorded (e.g. a bonus
+// share issue) contributes nothing verifiable and is left out.
+function lineBalanceValue(line, acc) {
+  if (acc && acc.type === "investment") {
+    if (line.cashValue !== undefined && line.cashCurrency) return { value: line.cashValue, currency: line.cashCurrency };
+    return null;
+  }
+  return { value: line.amount, currency: acc ? acc.currency : "???" };
+}
+
 /* ---------------------------------------------------------
    Balance hint for a set of lines.
    Each line.amount is a delta: positive = increase that account,
@@ -160,16 +175,23 @@ function hasStorage() {
    and reconciled later.
 --------------------------------------------------------- */
 function balanceHint(lines, accounts) {
-  const valid = lines.filter((l) => l.accountId && Number.isFinite(l.amount) && l.amount !== 0);
-  if (valid.length === 0) return { type: "empty", message: "" };
-  if (valid.length === 1) return { type: "single", message: "Single-sided — not yet matched to another account" };
+  const enriched = lines
+    .map((l) => {
+      const acc = accounts.find((a) => a.id === l.accountId);
+      if (!l.accountId) return null;
+      const bv = lineBalanceValue(l, acc);
+      if (!bv || !Number.isFinite(bv.value) || bv.value === 0) return null;
+      return { line: l, acc, ...bv };
+    })
+    .filter(Boolean);
+
+  if (enriched.length === 0) return { type: "empty", message: "" };
+  if (enriched.length === 1) return { type: "single", message: "Single-sided — not yet matched to another account" };
 
   const byCur = {};
-  valid.forEach((l) => {
-    const acc = accounts.find((a) => a.id === l.accountId);
-    const cur = acc ? acc.currency : "???";
-    const trueSigned = acc && CONTRA_TYPES.has(acc.type) ? -l.amount : l.amount;
-    byCur[cur] = (byCur[cur] || 0) + trueSigned;
+  enriched.forEach((x) => {
+    const trueSigned = x.acc && CONTRA_TYPES.has(x.acc.type) ? -x.value : x.value;
+    byCur[x.currency] = (byCur[x.currency] || 0) + trueSigned;
   });
   const curs = Object.keys(byCur);
 
@@ -178,19 +200,29 @@ function balanceHint(lines, accounts) {
     if (Math.abs(diff) < 0.005) return { type: "balanced", message: "Balanced" };
     return { type: "unbalanced", message: `Off by ${fmt(Math.abs(diff), curs[0])}` };
   }
-  if (curs.length === 2 && valid.length === 2) {
-    const [a, b] = valid;
-    const accA = accounts.find((x) => x.id === a.accountId);
-    const accB = accounts.find((x) => x.id === b.accountId);
-    if (Math.sign(a.amount) !== Math.sign(b.amount)) {
-      const rate = Math.abs(b.amount / a.amount);
-      return { type: "fx", message: `Exchange — implied rate 1 ${accA.currency} = ${rate.toFixed(4)} ${accB.currency}` };
+  if (curs.length === 2 && enriched.length === 2) {
+    const [a, b] = enriched;
+    if (Math.sign(a.value) !== Math.sign(b.value)) {
+      const rate = Math.abs(b.value / a.value);
+      return { type: "fx", message: `Exchange — implied rate 1 ${a.currency} = ${rate.toFixed(4)} ${b.currency}` };
     }
     return { type: "unbalanced", message: "Both legs move the same direction" };
   }
   const allZero = curs.every((c) => Math.abs(byCur[c]) < 0.005);
   if (allZero) return { type: "balanced", message: "Balanced within each currency" };
   return { type: "unbalanced", message: curs.map((c) => fmt(byCur[c], c)).join("  ·  ") + " left over" };
+}
+
+// Per-symbol currency memory for one investment account — the same rule
+// used inside the stock ledger itself: a symbol keeps the currency it
+// was first traded in, so it never needs asking twice.
+function symbolCurrencyMap(transactions, accountId) {
+  const map = {};
+  transactions.forEach((t) => {
+    const line = t.lines.find((l) => l.accountId === accountId);
+    if (line && line.symbol && line.cashCurrency && !map[line.symbol]) map[line.symbol] = line.cashCurrency;
+  });
+  return map;
 }
 
 /* ---------------------------------------------------------
@@ -680,13 +712,32 @@ function UnitsChart({ account, transactions }) {
 /* ---------------------------------------------------------
    Account Ledger — inline add/edit, live FLIP reorder + autoscroll
 --------------------------------------------------------- */
+function blankOtherLine(accountId) {
+  return {
+    key: uid(),
+    accountId: accountId || "",
+    matchedTxnId: null,
+    snapshot: null,
+    // cash-account fields
+    isOut: true,
+    amountStr: "",
+    // investment-account fields
+    symbol: "",
+    unitsIsOut: false,
+    unitsStr: "",
+    cashIsOut: true,
+    cashStr: "",
+    cashCurrency: "",
+  };
+}
+
 function blankDraft(presetOtherId) {
   return {
     mode: "new",
     txnId: null,
     date: todayISO(),
     description: "",
-    otherLines: presetOtherId ? [{ key: uid(), accountId: presetOtherId, isOut: true, amountStr: "", matchedTxnId: null, snapshot: null }] : [],
+    otherLines: presetOtherId ? [blankOtherLine(presetOtherId)] : [],
     splitOffLines: [],
     inAmountStr: "",
     outAmountStr: "",
@@ -712,15 +763,38 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
   // saved. A matched candidate is reused exactly (amount, date, tags) —
   // an unchanged pre-existing line keeps its own date even if the amount
   // was corrected — anything else is a fresh leg dated like this entry.
+  // Investment accounts resolve to a symbol/units/cashValue line, exactly
+  // like an entry made directly in that stock account.
   function resolveOtherLine(d, ol) {
     if (ol.matchedTxnId) {
       const matchedTxn = transactions.find((t) => t.id === ol.matchedTxnId);
       const matchedLine = matchedTxn && matchedTxn.lines.find((l) => l.accountId === ol.accountId);
       if (matchedLine) return { ...matchedLine };
     }
+    const olAcc = accounts.find((a) => a.id === ol.accountId);
+    const unchanged = ol.snapshot && ol.snapshot.accountId === ol.accountId;
+
+    if (olAcc && olAcc.type === "investment") {
+      const unitsMag = Math.abs(parseFloat(ol.unitsStr));
+      const units = isNaN(unitsMag) ? 0 : ol.unitsIsOut ? -unitsMag : unitsMag;
+      const base = unchanged ? { ...ol.snapshot } : { accountId: ol.accountId, date: d.date || todayISO() };
+      base.symbol = (ol.symbol || "").trim().toUpperCase();
+      base.amount = units;
+      const cashMag = Math.abs(parseFloat(ol.cashStr));
+      if (ol.cashCurrency && ol.cashStr !== "" && !isNaN(cashMag)) {
+        const cashNatural = ol.cashIsOut ? -cashMag : cashMag;
+        base.cashValue = -cashNatural;
+        base.cashCurrency = ol.cashCurrency;
+      } else {
+        delete base.cashValue;
+        delete base.cashCurrency;
+      }
+      return base;
+    }
+
     const mag = Math.abs(parseFloat(ol.amountStr));
     const amt = isNaN(mag) ? 0 : ol.isOut ? -mag : mag;
-    if (ol.snapshot && ol.snapshot.accountId === ol.accountId) {
+    if (unchanged) {
       return { ...ol.snapshot, amount: amt };
     }
     return { accountId: ol.accountId, amount: amt, date: d.date || todayISO() };
@@ -741,7 +815,12 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       }
     }
 
-    const activeOtherLines = d.otherLines.filter((ol) => ol.accountId && ol.amountStr !== "");
+    const activeOtherLines = d.otherLines.filter((ol) => {
+      if (!ol.accountId) return false;
+      if (ol.matchedTxnId) return true;
+      const olAcc = accounts.find((a) => a.id === ol.accountId);
+      return olAcc && olAcc.type === "investment" ? ol.unitsStr !== "" : ol.amountStr !== "";
+    });
     if (activeOtherLines.length === 0) {
       return { id: forcedId || d.txnId, description: d.description, lines: [line1] };
     }
@@ -825,6 +904,29 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
 
   const { rowRefs, pendingSettleId } = useLedgerRowAnimation(rows, editingKey);
 
+  // Converts a resolved line (from a matched candidate, or a pre-existing
+  // line on the entry being opened) into the editable "other account" row
+  // shape — branching on account type since a stock line needs symbol/
+  // units/cash fields instead of a plain amount.
+  function otherLineFromLine(o, snapshot) {
+    const oAcc = accounts.find((a) => a.id === o.accountId);
+    const base = blankOtherLine(o.accountId);
+    base.snapshot = snapshot || null;
+    if (oAcc && oAcc.type === "investment") {
+      const naturalCash = o.cashValue !== undefined ? -o.cashValue : 0;
+      base.symbol = o.symbol || "";
+      base.unitsIsOut = o.amount < 0;
+      base.unitsStr = String(Math.abs(o.amount));
+      base.cashIsOut = naturalCash < 0;
+      base.cashStr = naturalCash !== 0 ? String(Math.abs(naturalCash)) : "";
+      base.cashCurrency = o.cashCurrency || oAcc.currency || "GBP";
+    } else {
+      base.isOut = o.amount < 0;
+      base.amountStr = String(Math.abs(o.amount));
+    }
+    return base;
+  }
+
   function startEdit(t) {
     const line = t.lines.find((l) => l.accountId === account.id);
     const others = t.lines.filter((l) => l.accountId !== account.id);
@@ -838,24 +940,19 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       outAmountStr: line.amount < 0 ? String(-line.amount) : "",
       exchangeAmountStr: line.exchangeAmount !== undefined ? String(Math.abs(line.exchangeAmount)) : "",
       exchangeCurrency: line.exchangeCurrency ? line.exchangeCurrency : "",
-      otherLines: others.map((o) => ({ key: uid(), accountId: o.accountId, isOut: o.amount < 0, amountStr: String(Math.abs(o.amount)), matchedTxnId: null, snapshot: o })),
+      otherLines: others.map((o) => otherLineFromLine(o, o)),
       splitOffLines: [],
     });
     setDraftError("");
   }
 
   function selectMatch(candidate) {
-    setDraft((d) =>
-      d
-        ? {
-            ...d,
-            otherLines: [
-              ...d.otherLines,
-              { key: uid(), accountId: candidate.acc.id, isOut: candidate.line.amount < 0, amountStr: String(Math.abs(candidate.line.amount)), matchedTxnId: candidate.txn.id, snapshot: null },
-            ],
-          }
-        : d
-    );
+    setDraft((d) => {
+      if (!d) return d;
+      const ol = otherLineFromLine(candidate.line, null);
+      ol.matchedTxnId = candidate.txn.id;
+      return { ...d, otherLines: [...d.otherLines, ol] };
+    });
   }
 
   function addOtherLine() {
@@ -863,13 +960,9 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       if (!d) return d;
       const delta = draftDelta(d);
       const isFirst = d.otherLines.length === 0;
-      return {
-        ...d,
-        otherLines: [
-          ...d.otherLines,
-          { key: uid(), accountId: "", isOut: delta > 0, amountStr: isFirst && delta !== 0 ? String(Math.abs(delta)) : "", matchedTxnId: null, snapshot: null },
-        ],
-      };
+      const ol = blankOtherLine("");
+      if (isFirst && delta !== 0) { ol.isOut = delta > 0; ol.amountStr = String(Math.abs(delta)); }
+      return { ...d, otherLines: [...d.otherLines, ol] };
     });
   }
 
@@ -895,14 +988,33 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       let splitOffLines = d.splitOffLines;
       const otherLines = d.otherLines.map((ol) => {
         if (ol.key !== key) return ol;
-        const next = { ...ol, ...patch, matchedTxnId: null };
-        if ("accountId" in patch && ol.snapshot && ol.snapshot.accountId !== patch.accountId) {
-          splitOffLines = [...splitOffLines, ol.snapshot];
-          next.snapshot = null;
+        let next = { ...ol, ...patch, matchedTxnId: null };
+        if ("accountId" in patch) {
+          const stillSame = ol.snapshot && ol.snapshot.accountId === patch.accountId;
+          if (ol.snapshot && !stillSame) {
+            splitOffLines = [...splitOffLines, ol.snapshot];
+            next.snapshot = null;
+          }
+          const newAcc = accounts.find((a) => a.id === patch.accountId);
+          if (newAcc && newAcc.type === "investment" && !stillSame) {
+            next = { ...next, symbol: "", unitsIsOut: false, unitsStr: "", cashIsOut: true, cashStr: "", cashCurrency: newAcc.currency || "GBP" };
+          }
         }
         return next;
       });
       return { ...d, otherLines, splitOffLines };
+    });
+  }
+
+  // Symbol changed on an investment other-line: lock in the currency it's
+  // already known to trade in, same rule as the stock ledger itself.
+  function updateOtherLineSymbol(key, accountId, rawSymbol) {
+    const sym = rawSymbol.toUpperCase();
+    const known = symbolCurrencyMap(transactions, accountId)[sym];
+    setDraft((d) => {
+      if (!d) return d;
+      const otherLines = d.otherLines.map((ol) => (ol.key === key ? { ...ol, symbol: sym, cashCurrency: known || ol.cashCurrency, matchedTxnId: null } : ol));
+      return { ...d, otherLines };
     });
   }
 
@@ -1028,27 +1140,76 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                   <div className="mt-2 flex flex-col gap-1.5" style={{ paddingLeft: 128 }}>
                     {draft.otherLines.map((ol) => {
                       const olAcc = accounts.find((a) => a.id === ol.accountId);
+                      const isStock = olAcc && olAcc.type === "investment";
+                      const knownCurrency = isStock ? symbolCurrencyMap(transactions, ol.accountId)[ol.symbol.trim().toUpperCase()] : null;
                       return (
-                        <div key={ol.key} className="flex items-center gap-2">
+                        <div key={ol.key} className="flex items-center gap-2 flex-wrap">
                           <select value={ol.accountId} onChange={(e) => updateOtherLine(ol.key, { accountId: e.target.value })} style={{ ...miniInput, width: 190 }}>
                             <option value="">Select account…</option>
                             {accounts.filter((a) => a.id !== account.id).map((a) => (
-                              <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>
+                              <option key={a.id} value={a.id}>{a.name} ({a.type === "investment" ? "stocks" : a.currency})</option>
                             ))}
                           </select>
-                          <div className="flex rounded overflow-hidden shrink-0" style={{ border: `1px solid ${C.line}` }}>
-                            {[{ v: false, label: "In" }, { v: true, label: "Out" }].map((o) => (
-                              <button key={o.label} type="button" onClick={() => updateOtherLine(ol.key, { isOut: o.v })}
-                                style={{ padding: "6px 9px", fontSize: 12, background: ol.isOut === o.v ? (o.v ? C.debitBg : C.creditBg) : "transparent", color: ol.isOut === o.v ? (o.v ? C.debit : C.credit) : C.inkFaint, fontWeight: ol.isOut === o.v ? 600 : 400 }}>
-                                {o.label}
-                              </button>
-                            ))}
-                          </div>
-                          <input
-                            type="number" step="0.0001" placeholder={olAcc ? olAcc.currency : "0.00"} value={ol.amountStr}
-                            onChange={(e) => updateOtherLine(ol.key, { amountStr: e.target.value })}
-                            className="ll-mono" style={{ ...miniInput, width: 100 }}
-                          />
+
+                          {isStock ? (
+                            <>
+                              <input
+                                type="text" list="ll-shared-symbols" placeholder="AAPL" value={ol.symbol}
+                                onChange={(e) => updateOtherLineSymbol(ol.key, ol.accountId, e.target.value)}
+                                style={{ ...miniInput, width: 80, textTransform: "uppercase" }}
+                              />
+                              <div className="flex rounded overflow-hidden shrink-0" style={{ border: `1px solid ${C.line}` }}>
+                                {[{ v: false, label: "Units in" }, { v: true, label: "Units out" }].map((o) => (
+                                  <button key={o.label} type="button" onClick={() => updateOtherLine(ol.key, { unitsIsOut: o.v })}
+                                    style={{ padding: "6px 8px", fontSize: 11.5, background: ol.unitsIsOut === o.v ? (o.v ? C.debitBg : C.creditBg) : "transparent", color: ol.unitsIsOut === o.v ? (o.v ? C.debit : C.credit) : C.inkFaint, fontWeight: ol.unitsIsOut === o.v ? 600 : 400 }}>
+                                    {o.label}
+                                  </button>
+                                ))}
+                              </div>
+                              <input
+                                type="number" step="0.000001" placeholder="Units" value={ol.unitsStr}
+                                onChange={(e) => updateOtherLine(ol.key, { unitsStr: e.target.value })}
+                                className="ll-mono" style={{ ...miniInput, width: 80 }}
+                              />
+                              <div className="flex rounded overflow-hidden shrink-0" style={{ border: `1px solid ${C.line}` }}>
+                                {[{ v: false, label: "Cost in" }, { v: true, label: "Cost out" }].map((o) => (
+                                  <button key={o.label} type="button" onClick={() => updateOtherLine(ol.key, { cashIsOut: o.v })}
+                                    style={{ padding: "6px 8px", fontSize: 11.5, background: ol.cashIsOut === o.v ? (o.v ? C.debitBg : C.creditBg) : "transparent", color: ol.cashIsOut === o.v ? (o.v ? C.debit : C.credit) : C.inkFaint, fontWeight: ol.cashIsOut === o.v ? 600 : 400 }}>
+                                    {o.label}
+                                  </button>
+                                ))}
+                              </div>
+                              <input
+                                type="number" step="0.01" placeholder="Cost" value={ol.cashStr}
+                                onChange={(e) => updateOtherLine(ol.key, { cashStr: e.target.value })}
+                                className="ll-mono" style={{ ...miniInput, width: 90 }}
+                              />
+                              {knownCurrency ? (
+                                <span className="ll-mono" style={{ fontSize: 12.5, color: C.inkFaint, padding: "0 4px" }}>{ol.cashCurrency}</span>
+                              ) : (
+                                <select value={ol.cashCurrency} onChange={(e) => updateOtherLine(ol.key, { cashCurrency: e.target.value })} style={{ ...miniInput, width: 80 }} title="New symbol — sets the currency it'll always trade in">
+                                  {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                                </select>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              <div className="flex rounded overflow-hidden shrink-0" style={{ border: `1px solid ${C.line}` }}>
+                                {[{ v: false, label: "In" }, { v: true, label: "Out" }].map((o) => (
+                                  <button key={o.label} type="button" onClick={() => updateOtherLine(ol.key, { isOut: o.v })}
+                                    style={{ padding: "6px 9px", fontSize: 12, background: ol.isOut === o.v ? (o.v ? C.debitBg : C.creditBg) : "transparent", color: ol.isOut === o.v ? (o.v ? C.debit : C.credit) : C.inkFaint, fontWeight: ol.isOut === o.v ? 600 : 400 }}>
+                                    {o.label}
+                                  </button>
+                                ))}
+                              </div>
+                              <input
+                                type="number" step="0.0001" placeholder={olAcc ? olAcc.currency : "0.00"} value={ol.amountStr}
+                                onChange={(e) => updateOtherLine(ol.key, { amountStr: e.target.value })}
+                                className="ll-mono" style={{ ...miniInput, width: 100 }}
+                              />
+                            </>
+                          )}
+
                           {ol.matchedTxnId && <span title="Matched — will merge into one entry on save"><Check size={14} color={C.credit} /></span>}
                           <button type="button" onClick={() => removeOtherLine(ol.key)} title="Remove this link"><X size={15} color={C.inkFaint} /></button>
                         </div>
@@ -1158,6 +1319,11 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
         })}
       </div>
       )}
+      <datalist id="ll-shared-symbols">
+        {Array.from(new Set(transactions.flatMap((t) => t.lines).filter((l) => l.symbol).map((l) => l.symbol))).map((s) => (
+          <option key={s} value={s} />
+        ))}
+      </datalist>
     </div>
   );
 }
@@ -1176,6 +1342,8 @@ function blankStockDraft(account) {
     description: "",
     symbol: "",
     otherAccountId: "",
+    otherLineSnapshot: null,
+    splitOffLines: [],
     matchedTxnId: null,
     unitsInStr: "",
     unitsOutStr: "",
@@ -1344,6 +1512,7 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
       txnId: t.id,
       originalTxn: t,
       otherLineSnapshot: other || null,
+      splitOffLines: [],
       date: line.date,
       description: t.description || "",
       symbol: line.symbol || "",
@@ -1362,6 +1531,35 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
     setDraft((d) => (d ? { ...d, otherAccountId: candidate.acc.id, matchedTxnId: candidate.txn.id } : d));
   }
 
+  // Removing the cash link never deletes its data — if it had a
+  // pre-existing line (from when this trade was opened), it's queued to
+  // be split off into its own standalone record on save, same as Unlink.
+  function removeLink() {
+    setDraft((d) => {
+      if (!d) return d;
+      if (d.otherLineSnapshot && d.otherLineSnapshot.accountId === d.otherAccountId && !d.matchedTxnId) {
+        return { ...d, otherAccountId: "", matchedTxnId: null, otherLineSnapshot: null, splitOffLines: [...d.splitOffLines, d.otherLineSnapshot] };
+      }
+      return { ...d, otherAccountId: "", matchedTxnId: null, otherLineSnapshot: null };
+    });
+  }
+
+  // Picking a different account from the dropdown re-points the link the
+  // same way removing and re-adding one would — any pre-existing snapshot
+  // that no longer matches gets split off rather than silently dropped.
+  function repointOtherAccount(newId) {
+    setDraft((d) => {
+      if (!d) return d;
+      let otherLineSnapshot = d.otherLineSnapshot;
+      let splitOffLines = d.splitOffLines;
+      if (otherLineSnapshot && otherLineSnapshot.accountId !== newId) {
+        splitOffLines = [...splitOffLines, otherLineSnapshot];
+        otherLineSnapshot = null;
+      }
+      return { ...d, otherAccountId: newId, matchedTxnId: null, otherLineSnapshot, splitOffLines };
+    });
+  }
+
   // Splits an already-linked entry back into two separate, unlinked
   // records — the exact reverse of a match. Neither side's data (including
   // its own date) is touched; each just goes back to standing alone.
@@ -1373,7 +1571,7 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
     onSaveTxn(
       { id: t.id, description: t.description, lines: [mine] },
       undefined,
-      { description: t.description, lines: [other] }
+      [{ description: t.description, lines: [other] }]
     );
     setDraft(null);
     setDraftError("");
@@ -1384,9 +1582,13 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
     if (!draft.symbol.trim()) { setDraftError("Enter a symbol."); return; }
     if (unitsDeltaOf(draft) === 0) { setDraftError("Enter units in or out."); return; }
     const data = draftToTxn(draft, draft.mode === "edit" ? draft.txnId : undefined);
+    const splitOffExtras = draft.splitOffLines.length
+      ? draft.splitOffLines.map((sn) => ({ description: draft.originalTxn ? draft.originalTxn.description : draft.description, lines: [sn] }))
+      : undefined;
     onSaveTxn(
       { id: draft.mode === "edit" ? draft.txnId : undefined, description: data.description.trim(), lines: data.lines },
-      draft.matchedTxnId || undefined
+      draft.matchedTxnId || undefined,
+      splitOffExtras
     );
     setDraft(null);
     setDraftError("");
@@ -1513,7 +1715,7 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
                   )}
                   <select
                     value={draft.otherAccountId}
-                    onChange={(e) => setDraft({ ...draft, otherAccountId: e.target.value, matchedTxnId: null })}
+                    onChange={(e) => repointOtherAccount(e.target.value)}
                     style={{ ...miniInput, width: 160 }}
                   >
                     <option value="">— unmatched —</option>
@@ -1521,7 +1723,16 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
                       <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>
                     ))}
                   </select>
+                  {draft.otherAccountId && (
+                    <button type="button" onClick={removeLink} title="Remove this link"><X size={15} color={C.inkFaint} /></button>
+                  )}
                 </div>
+
+                {draft.splitOffLines.length > 0 && (
+                  <div className="mt-2" style={{ paddingLeft: 118, fontSize: 11.5, color: C.inkFaint }}>
+                    The removed cash line will be saved as a separate, unlinked entry — not deleted.
+                  </div>
+                )}
 
                 {draft.matchedTxnId ? (
                   <div className="flex items-center gap-2 mt-2" style={{ paddingLeft: 118 }}>
