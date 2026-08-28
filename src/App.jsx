@@ -29,12 +29,217 @@ const TYPES = [
   { key: "income", label: "Income" },
   { key: "expense", label: "Expenses" },
   { key: "investment", label: "Stocks & Shares" },
+  { key: "isa-parent", label: "Stocks & Shares ISAs" },
 ];
 // Used only to translate a plain "increase/decrease" entry into formal debit/credit
 // for the balance-check hint — never shown to the user, never used for storage or display.
 const CONTRA_TYPES = new Set(["liability", "equity", "income"]);
 
 const CURRENCIES = ["GBP", "USD", "EUR", "JPY", "CHF", "CAD", "AUD"];
+
+/* ---------------------------------------------------------
+   UK ISA allowance rules
+   Keyed by the tax year's start year (a UK tax year runs 6 April to the
+   following 5 April). To handle a future rule change, add a new row here
+   — everything else (which tax year "today" falls in, which cap applies)
+   is derived automatically, nothing else in the app needs editing.
+--------------------------------------------------------- */
+const ISA_KINDS = [
+  { key: "cash-isa", label: "Cash ISA" },
+  { key: "stocks-shares-isa", label: "Stocks & Shares ISA" },
+  { key: "lifetime-isa", label: "Lifetime ISA" },
+  { key: "innovative-finance-isa", label: "Innovative Finance ISA" },
+];
+
+// startYear = the calendar year the tax year begins in (e.g. 2026 means
+// the 2026/27 tax year, 6 April 2026 – 5 April 2027).
+const ISA_RULE_TABLE = [
+  { startYear: 2026, total: 20000, subCaps: { "lifetime-isa": 4000 } },
+  { startYear: 2027, total: 20000, subCaps: { "lifetime-isa": 4000, "cash-isa": 12000 } },
+];
+
+// UK tax years run 6 April – 5 April, not the calendar year.
+function taxYearStartYearFor(dateISO) {
+  const d = new Date(dateISO + "T00:00:00");
+  const y = d.getFullYear();
+  const boundary = new Date(y, 3, 6); // 6 April, month is 0-indexed
+  return d < boundary ? y - 1 : y;
+}
+function taxYearBounds(startYear) {
+  const start = `${startYear}-04-06`;
+  const end = `${startYear + 1}-04-05`;
+  return { start, end, label: `${startYear}/${String(startYear + 1).slice(2)}` };
+}
+// Rules in effect for a given tax year — falls back to the latest known
+// rule set for any year beyond the table, since allowances don't lapse.
+// Over-65s are exempt from the Cash ISA sub-cap once it exists.
+function isaRulesFor(startYear, over65) {
+  const applicable = ISA_RULE_TABLE.filter((r) => r.startYear <= startYear);
+  const rules = applicable.length ? applicable[applicable.length - 1] : ISA_RULE_TABLE[0];
+  if (over65 && rules.subCaps["cash-isa"] !== undefined) {
+    const { "cash-isa": _drop, ...rest } = rules.subCaps;
+    return { ...rules, subCaps: rest };
+  }
+  return rules;
+}
+
+// Groups accounts into ISA "products" for allowance purposes — a flat ISA
+// account is its own product; a Stocks & Shares ISA wrapper and all of
+// its subaccounts together form one product, since both the allowance
+// and flexibility apply to the ISA itself, not each subaccount.
+function isaProducts(accounts) {
+  const products = [];
+  accounts.forEach((a) => {
+    if (a.type === "isa-parent") {
+      products.push({
+        account: a,
+        kind: "stocks-shares-isa",
+        flexible: !!a.flexible,
+        accountIds: accounts.filter((x) => x.isaParentId === a.id).map((x) => x.id),
+      });
+    } else if (a.isaKind && a.isaKind !== "stocks-shares-isa") {
+      products.push({ account: a, kind: a.isaKind, flexible: !!a.flexible, accountIds: [a.id] });
+    }
+  });
+  return products;
+}
+
+function isExternalLine(t, line, accounts) {
+  const others = t.lines.filter((l) => l.accountId !== line.accountId);
+  return others.length === 0 || others.every((l) => {
+    const oAcc = accounts.find((a) => a.id === l.accountId);
+    return !oAcc || !oAcc.isaKind;
+  });
+}
+
+// How much of a flexible product's balance, as at the start of a given
+// tax year, was subscribed in tax years *before* that one — opening
+// balances plus all external in/out flow before the year began. This is
+// the pool that HMRC's rules say can only ever be replaced back into
+// this exact ISA, never a different one.
+function priorPoolEntering(product, accounts, transactions, yearStart) {
+  let pool = 0;
+  product.accountIds.forEach((id) => {
+    const acc = accounts.find((a) => a.id === id);
+    if (acc) pool += acc.openingBalance || 0;
+  });
+  transactions.forEach((t) => {
+    t.lines.forEach((line) => {
+      if (!product.accountIds.includes(line.accountId) || !line.amount) return;
+      if (line.date >= yearStart) return;
+      if (isExternalLine(t, line, accounts)) pool += line.amount;
+    });
+  });
+  return Math.max(0, pool);
+}
+
+// How much of this tax year's allowance has been used, per ISA kind and
+// overall.
+//
+// A transaction whose linked counterpart is itself an ISA — another of
+// your ISAs, or another subaccount of the same wrapper — is a transfer,
+// not a subscription, and never counts on either side.
+//
+// For a flexible ISA, withdrawals draw down this tax year's own
+// subscriptions first, then older money (HMRC's ordering) — the
+// this-year portion becomes replaceable into *any* flexible ISA, while
+// the older portion is only replaceable back into the very same ISA.
+// This is simulated chronologically across every flexible ISA together
+// (using each one's full history to know how much of its balance predates
+// the tax year in view), so a deposit is only ever treated as new money
+// once genuine replacement capacity has been used up.
+function computeIsaUsage(accounts, transactions, startYear) {
+  const { start, end } = taxYearBounds(startYear);
+  const byKind = {};
+  ISA_KINDS.forEach((k) => (byKind[k.key] = 0));
+
+  const products = isaProducts(accounts);
+
+  // Non-flexible: unchanged — every deposit counts, withdrawals never
+  // reduce anything.
+  products.filter((p) => !p.flexible).forEach((product) => {
+    let deposits = 0;
+    transactions.forEach((t) => {
+      t.lines.forEach((line) => {
+        if (!product.accountIds.includes(line.accountId) || line.amount <= 0) return;
+        if (line.date < start || line.date > end) return;
+        if (isExternalLine(t, line, accounts)) deposits += line.amount;
+      });
+    });
+    byKind[product.kind] = (byKind[product.kind] || 0) + deposits;
+  });
+
+  // Flexible: simulate withdrawal/replacement ordering together, in date
+  // order across all of them, since a this-year withdrawal from one can
+  // be replaced into another.
+  const flexProducts = products.filter((p) => p.flexible);
+  if (flexProducts.length) {
+    const state = {};
+    const accountToProduct = {};
+    flexProducts.forEach((p) => {
+      state[p.account.id] = {
+        product: p,
+        priorBalance: priorPoolEntering(p, accounts, transactions, start),
+        priorReplaceable: 0,
+        thisYearBalance: 0,
+        used: 0,
+      };
+      p.accountIds.forEach((id) => (accountToProduct[id] = p));
+    });
+    let globalReplaceable = 0; // this-year money, replaceable into any flexible ISA
+
+    const events = [];
+    transactions.forEach((t) => {
+      t.lines.forEach((line) => {
+        const product = accountToProduct[line.accountId];
+        if (!product || !line.amount) return;
+        if (line.date < start || line.date > end) return;
+        if (isExternalLine(t, line, accounts)) events.push({ date: line.date, amount: line.amount, product });
+      });
+    });
+    events.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+    events.forEach((ev) => {
+      const s = state[ev.product.account.id];
+      if (ev.amount < 0) {
+        // Withdrawal: this year's own money goes first, freeing capacity
+        // usable anywhere; anything beyond that draws on older money,
+        // freeing capacity usable only back into this same ISA.
+        let w = -ev.amount;
+        const fromThisYear = Math.min(w, s.thisYearBalance);
+        s.thisYearBalance -= fromThisYear;
+        globalReplaceable += fromThisYear;
+        w -= fromThisYear;
+        const fromPrior = Math.min(w, s.priorBalance);
+        s.priorBalance -= fromPrior;
+        s.priorReplaceable += fromPrior;
+      } else {
+        // Deposit: first pays down this ISA's own same-account-only
+        // replacement obligation, then any outstanding this-year
+        // capacity from anywhere, and only what's left over is a
+        // genuinely new subscription.
+        let d = ev.amount;
+        const fillPrior = Math.min(d, s.priorReplaceable);
+        s.priorReplaceable -= fillPrior;
+        s.priorBalance += fillPrior;
+        d -= fillPrior;
+        const fillGlobal = Math.min(d, globalReplaceable);
+        globalReplaceable -= fillGlobal;
+        s.thisYearBalance += fillGlobal;
+        d -= fillGlobal;
+        s.used += d;
+        s.thisYearBalance += d;
+      }
+    });
+
+    Object.values(state).forEach((s) => {
+      byKind[s.product.kind] = (byKind[s.product.kind] || 0) + s.used;
+    });
+  }
+
+  const total = Object.values(byKind).reduce((sum, v) => sum + v, 0);
+  return { byKind, total };
+}
 
 function fmt(amount, currency) {
   const v = Number.isFinite(amount) ? amount : 0;
@@ -241,9 +446,11 @@ function balanceHint(lines, accounts) {
 export default function App() {
   const [accounts, setAccounts] = useState([]);
   const [transactions, setTransactions] = useState([]);
+  const [settings, setSettings] = useState({ over65: false });
   const [loaded, setLoaded] = useState(false);
   const [storageOK, setStorageOK] = useState(true);
   const [selectedId, setSelectedIdRaw] = useState(null);
+  const [showAllowance, setShowAllowance] = useState(false);
   const [accountForm, setAccountForm] = useState(null);
   const [error, setError] = useState("");
   const hashInitialized = useRef(false);
@@ -254,6 +461,7 @@ export default function App() {
   // the two actually survives however the host reloads this page.
   function setSelectedId(id) {
     setSelectedIdRaw(id);
+    setShowAllowance(false);
     setHashForAccount(id);
     if (hasStorage()) {
       try {
@@ -278,6 +486,7 @@ export default function App() {
           const parsed = JSON.parse(res.value);
           setAccounts(parsed.accounts || []);
           setTransactions(parsed.transactions || []);
+          if (parsed.settings) setSettings({ over65: false, ...parsed.settings });
         }
       } catch (e) {
         /* no data saved yet */
@@ -313,21 +522,27 @@ export default function App() {
   useEffect(() => {
     function onPopState() {
       const hashId = accountIdFromHash();
+      setShowAllowance(false);
       setSelectedIdRaw(hashId && accounts.some((a) => a.id === hashId) ? hashId : null);
     }
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, [accounts]);
 
-  async function persist(nextAccounts, nextTransactions) {
+  async function persist(nextAccounts, nextTransactions, nextSettings) {
     setAccounts(nextAccounts);
     setTransactions(nextTransactions);
+    if (nextSettings) setSettings(nextSettings);
     if (!hasStorage()) return;
     try {
-      await window.storage.set("ledger-data", JSON.stringify({ accounts: nextAccounts, transactions: nextTransactions }));
+      await window.storage.set("ledger-data", JSON.stringify({ accounts: nextAccounts, transactions: nextTransactions, settings: nextSettings || settings }));
     } catch (e) {
       setStorageOK(false);
     }
+  }
+
+  function saveSettings(next) {
+    persist(accounts, transactions, next);
   }
 
   const balances = useMemo(() => {
@@ -344,7 +559,13 @@ export default function App() {
   // Each investment account holds exactly one security, so its balance —
   // computed the same way as any other account's — already *is* the unit
   // count. Only the display differs: units and a symbol, not a currency.
+  // An ISA wrapper holds no balance of its own — it's shown by how many
+  // subaccounts it groups.
   function accountDisplay(a) {
+    if (a.type === "isa-parent") {
+      const n = accounts.filter((x) => x.isaParentId === a.id).length;
+      return `${n} subaccount${n === 1 ? "" : "s"}`;
+    }
     const bal = balances[a.id] || 0;
     return a.type === "investment" ? `${fmtUnits(bal)} ${a.symbol}` : fmt(bal, a.currency);
   }
@@ -359,6 +580,11 @@ export default function App() {
     const used = transactions.some((t) => t.lines.some((l) => l.accountId === id));
     if (used) {
       setError("Can't delete an account that has ledger entries. Delete its entries first.");
+      return;
+    }
+    const hasSubaccounts = accounts.some((a) => a.isaParentId === id);
+    if (hasSubaccounts) {
+      setError("Can't delete an ISA that still has subaccounts. Delete those first.");
       return;
     }
     persist(accounts.filter((a) => a.id !== id), transactions);
@@ -421,8 +647,15 @@ export default function App() {
 
       <div className="flex" style={{ minHeight: "calc(100vh - 73px)" }}>
         <aside className="shrink-0" style={{ width: 260, borderRight: `1px solid ${C.line}`, padding: "18px 12px" }}>
-          <button onClick={() => setSelectedId(null)} className="w-full text-left px-2 py-1.5 rounded mb-3" style={{ background: selectedId === null ? C.paperDim : "transparent", fontSize: 13, fontWeight: 600, color: C.inkSoft }}>
+          <button onClick={() => setSelectedId(null)} className="w-full text-left px-2 py-1.5 rounded mb-1" style={{ background: selectedId === null && !showAllowance ? C.paperDim : "transparent", fontSize: 13, fontWeight: 600, color: C.inkSoft }}>
             Overview
+          </button>
+          <button
+            onClick={() => { setSelectedIdRaw(null); setShowAllowance(true); }}
+            className="w-full text-left px-2 py-1.5 rounded mb-3"
+            style={{ background: showAllowance ? C.paperDim : "transparent", fontSize: 13, fontWeight: 600, color: C.inkSoft }}
+          >
+            ISA Allowance
           </button>
 
           {loaded && accounts.length === 0 && (
@@ -437,7 +670,10 @@ export default function App() {
                 <div style={{ fontSize: 10.5, letterSpacing: 1, textTransform: "uppercase", color: C.inkFaint, padding: "4px 8px" }}>{t.label}</div>
                 {list.map((a) => (
                   <button key={a.id} onClick={() => setSelectedId(a.id)} className="w-full text-left px-2 py-1.5 rounded flex items-center justify-between" style={{ background: selectedId === a.id ? C.paperDim : "transparent" }}>
-                    <span style={{ fontSize: 13.5, color: C.ink }}>{a.name}</span>
+                    <span style={{ fontSize: 13.5, color: C.ink, display: "flex", alignItems: "center", gap: 5 }}>
+                      {a.name}
+                      {a.isaKind && <span title={ISA_KINDS.find((k) => k.key === a.isaKind)?.label} style={{ fontSize: 9.5, fontWeight: 700, color: C.gold, border: `1px solid ${C.goldDim}`, borderRadius: 3, padding: "1px 3px", letterSpacing: 0.3 }}>ISA</span>}
+                    </span>
                     <span className="ll-mono" style={{ fontSize: a.type === "investment" ? 11 : 12, color: (balances[a.id] || 0) < 0 ? C.debit : C.inkSoft }}>{accountDisplay(a)}</span>
                   </button>
                 ))}
@@ -447,8 +683,19 @@ export default function App() {
         </aside>
 
         <main className="flex-1 p-6">
-          {selected ? (
-            selected.type === "investment" ? (
+          {showAllowance ? (
+            <AllowanceView accounts={accounts} transactions={transactions} settings={settings} onSaveSettings={saveSettings} onSelect={setSelectedId} />
+          ) : selected ? (
+            selected.type === "isa-parent" ? (
+              <IsaParentView
+                account={selected}
+                accounts={accounts}
+                balances={balances}
+                onEditAccount={() => setAccountForm(selected)}
+                onSelect={setSelectedId}
+                onNewSubaccount={(kind) => setAccountForm({ isaParentPreset: selected.id, typePreset: kind })}
+              />
+            ) : selected.type === "investment" ? (
               <StockLedger
                 account={selected}
                 accounts={accounts}
@@ -476,7 +723,7 @@ export default function App() {
       </div>
 
       {accountForm !== null && (
-        <AccountFormModal initial={accountForm} onCancel={() => setAccountForm(null)} onSave={saveAccount} onDelete={accountForm.id ? () => deleteAccount(accountForm.id) : null} />
+        <AccountFormModal initial={accountForm} accounts={accounts} onCancel={() => setAccountForm(null)} onSave={saveAccount} onDelete={accountForm.id ? () => deleteAccount(accountForm.id) : null} />
       )}
     </div>
   );
@@ -499,7 +746,7 @@ function Overview({ accounts, balances, onSelect, onNew }) {
     );
   }
   const totalsByCurrency = {};
-  accounts.filter((a) => a.type !== "investment").forEach((a) => { totalsByCurrency[a.currency] = (totalsByCurrency[a.currency] || 0) + (balances[a.id] || 0); });
+  accounts.filter((a) => a.type !== "investment" && a.type !== "isa-parent").forEach((a) => { totalsByCurrency[a.currency] = (totalsByCurrency[a.currency] || 0) + (balances[a.id] || 0); });
 
   return (
     <div>
@@ -510,9 +757,14 @@ function Overview({ accounts, balances, onSelect, onNew }) {
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
         {accounts.map((a) => (
           <button key={a.id} onClick={() => onSelect(a.id)} className="text-left p-4 rounded" style={{ background: C.card, border: `1px solid ${C.line}` }}>
-            <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>{TYPES.find((t) => t.key === a.type)?.label}{a.type === "investment" ? ` · ${a.symbol}` : ""}</div>
+            <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>
+              {TYPES.find((t) => t.key === a.type)?.label}{a.type === "investment" ? ` · ${a.symbol}` : ""}
+              {a.isaKind ? ` · ${ISA_KINDS.find((k) => k.key === a.isaKind)?.label}` : ""}
+            </div>
             <div style={{ fontSize: 15, fontWeight: 600, marginTop: 4 }}>{a.name}</div>
-            {a.type === "investment" ? (
+            {a.type === "isa-parent" ? (
+              <div className="ll-mono" style={{ fontSize: 14, marginTop: 8, color: C.inkFaint }}>{accounts.filter((x) => x.isaParentId === a.id).length} subaccounts</div>
+            ) : a.type === "investment" ? (
               <div className="ll-mono" style={{ fontSize: 16, marginTop: 8, color: C.ink }}>{fmtUnits(balances[a.id] || 0)} <span style={{ fontSize: 13, color: C.inkFaint }}>units</span></div>
             ) : (
               <div className="ll-mono" style={{ fontSize: 18, marginTop: 8, color: (balances[a.id] || 0) < 0 ? C.debit : C.ink }}>{fmt(balances[a.id] || 0, a.currency)}</div>
@@ -520,6 +772,161 @@ function Overview({ accounts, balances, onSelect, onNew }) {
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   ISA parent (Stocks & Shares ISA wrapper) — holds no ledger of its own,
+   just groups its cash and stock subaccounts.
+--------------------------------------------------------- */
+function IsaParentView({ account, accounts, balances, onEditAccount, onSelect, onNewSubaccount }) {
+  const subs = accounts.filter((a) => a.isaParentId === account.id);
+  const cashSubs = subs.filter((a) => a.type === "asset");
+  const stockSubs = subs.filter((a) => a.type === "investment");
+
+  return (
+    <div>
+      <div className="flex items-start justify-between mb-5">
+        <div>
+          <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>Stocks & Shares ISA</div>
+          <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{account.name}</h2>
+          <div style={{ fontSize: 13, color: C.inkFaint, marginTop: 6 }}>{subs.length} subaccount{subs.length === 1 ? "" : "s"}</div>
+        </div>
+        <button onClick={onEditAccount} className="px-3 py-1.5 rounded" style={{ border: `1px solid ${C.line}`, fontSize: 13 }}>Edit ISA</button>
+      </div>
+
+      <div className="mb-6">
+        <div className="flex items-center justify-between mb-2">
+          <div style={{ fontSize: 11, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.6 }}>Cash</div>
+          <button onClick={() => onNewSubaccount("asset")} className="flex items-center gap-1" style={{ fontSize: 12.5, color: C.gold }}><Plus size={13} /> Add cash subaccount</button>
+        </div>
+        {cashSubs.length === 0 ? (
+          <div style={{ fontSize: 13, color: C.inkFaint, padding: "8px 0" }}>No cash subaccounts yet.</div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {cashSubs.map((a) => (
+              <button key={a.id} onClick={() => onSelect(a.id)} className="flex items-center justify-between px-3 py-2.5 rounded text-left" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+                <span style={{ fontSize: 13.5 }}>{a.name} <span style={{ color: C.inkFaint, fontSize: 12 }}>({a.currency})</span></span>
+                <span className="ll-mono" style={{ fontSize: 13.5, color: (balances[a.id] || 0) < 0 ? C.debit : C.ink }}>{fmt(balances[a.id] || 0, a.currency)}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <div style={{ fontSize: 11, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.6 }}>Holdings</div>
+          <button onClick={() => onNewSubaccount("investment")} className="flex items-center gap-1" style={{ fontSize: 12.5, color: C.gold }}><Plus size={13} /> Add stock subaccount</button>
+        </div>
+        {stockSubs.length === 0 ? (
+          <div style={{ fontSize: 13, color: C.inkFaint, padding: "8px 0" }}>No stock subaccounts yet.</div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {stockSubs.map((a) => (
+              <button key={a.id} onClick={() => onSelect(a.id)} className="flex items-center justify-between px-3 py-2.5 rounded text-left" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+                <span style={{ fontSize: 13.5 }}>{a.name} <span style={{ color: C.gold, fontSize: 12 }}>{a.symbol}</span></span>
+                <span className="ll-mono" style={{ fontSize: 13.5 }}>{fmtUnits(balances[a.id] || 0)} units</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   ISA Allowance — how much of the current (or a nearby) UK tax year's
+   allowance has been used, per ISA kind, against whichever rules apply
+   to that tax year. The 2027/28 Cash ISA sub-cap appears automatically
+   once that tax year is in view — nothing here needed manual updating.
+--------------------------------------------------------- */
+function AllowanceView({ accounts, transactions, settings, onSaveSettings, onSelect }) {
+  const currentStartYear = taxYearStartYearFor(todayISO());
+  const [startYear, setStartYear] = useState(currentStartYear);
+
+  const { label } = taxYearBounds(startYear);
+  const rules = isaRulesFor(startYear, settings.over65);
+  const usage = useMemo(() => computeIsaUsage(accounts, transactions, startYear), [accounts, transactions, startYear]);
+
+  function Bar({ used, cap, color }) {
+    const pct = cap ? Math.min(100, (used / cap) * 100) : 0;
+    return (
+      <div style={{ height: 6, borderRadius: 3, background: C.paperDim, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${pct}%`, background: color, transition: "width 300ms ease" }} />
+      </div>
+    );
+  }
+
+  const products = useMemo(() => isaProducts(accounts), [accounts]);
+  const productsByKind = {};
+  products.forEach((p) => {
+    productsByKind[p.kind] = productsByKind[p.kind] || [];
+    productsByKind[p.kind].push(p);
+  });
+
+  return (
+    <div>
+      <div className="flex items-start justify-between mb-5">
+        <div>
+          <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>ISA Allowance</div>
+          <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>Tax year {label}</h2>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setStartYear((y) => y - 1)} className="px-2.5 py-1.5 rounded" style={{ border: `1px solid ${C.line}`, fontSize: 13 }}>←</button>
+          <button onClick={() => setStartYear(currentStartYear)} disabled={startYear === currentStartYear} className="px-3 py-1.5 rounded" style={{ border: `1px solid ${C.line}`, fontSize: 13, opacity: startYear === currentStartYear ? 0.4 : 1 }}>This year</button>
+          <button onClick={() => setStartYear((y) => y + 1)} className="px-2.5 py-1.5 rounded" style={{ border: `1px solid ${C.line}`, fontSize: 13 }}>→</button>
+        </div>
+      </div>
+
+      <label className="flex items-center gap-2 mb-6" style={{ fontSize: 13, color: C.inkSoft }}>
+        <input type="checkbox" checked={!!settings.over65} onChange={(e) => onSaveSettings({ ...settings, over65: e.target.checked })} />
+        I'm 65 or over (keeps the full £20,000 Cash ISA capacity once the lower cap applies)
+      </label>
+
+      <div className="p-4 rounded mb-4" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+        <div className="flex items-center justify-between mb-2">
+          <div style={{ fontSize: 13, fontWeight: 600 }}>Overall</div>
+          <div className="ll-mono" style={{ fontSize: 13 }}>{fmt(usage.total, "GBP")} <span style={{ color: C.inkFaint }}>of {fmt(rules.total, "GBP")}</span></div>
+        </div>
+        <Bar used={usage.total} cap={rules.total} color={usage.total > rules.total ? C.debit : C.gold} />
+      </div>
+
+      <div className="flex flex-col gap-3">
+        {ISA_KINDS.map((k) => {
+          const used = usage.byKind[k.key] || 0;
+          const cap = rules.subCaps[k.key];
+          const holders = productsByKind[k.key] || [];
+          if (used === 0 && holders.length === 0) return null;
+          return (
+            <div key={k.key} className="p-4 rounded" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+              <div className="flex items-center justify-between mb-2">
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{k.label}</div>
+                <div className="ll-mono" style={{ fontSize: 13 }}>
+                  {fmt(used, "GBP")} {cap ? <span style={{ color: C.inkFaint }}>of {fmt(cap, "GBP")}</span> : <span style={{ color: C.inkFaint }}>· no sub-cap</span>}
+                </div>
+              </div>
+              {cap && <Bar used={used} cap={cap} color={used > cap ? C.debit : C.goldDim} />}
+              {holders.length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {holders.map((p) => (
+                    <button key={p.account.id} onClick={() => onSelect(p.account.id)} className="flex items-center gap-1.5" style={{ fontSize: 11.5, color: C.inkFaint, border: `1px solid ${C.line}`, borderRadius: 4, padding: "2px 6px" }}>
+                      <span className="ll-mono">{p.account.name}</span>
+                      {p.flexible && <span style={{ color: C.gold, fontWeight: 700, fontSize: 10 }}>FLEX</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <p style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 16, lineHeight: 1.5 }}>
+        Counts new money entering an ISA from outside your ISAs this tax year — a transfer between two of your own ISAs, or moving cash within the same Stocks & Shares ISA, is never new money and never counts. Opening balances aren't included, though they still count as "older money" for the rule below. For a flexible ISA (marked FLEX above), a withdrawal is treated as this year's own money first — replaceable into any flexible ISA — then older money, which is only replaceable back into that same ISA, matching HMRC's actual ordering. Non-flexible ISAs get none of this: withdrawals never free up allowance.
+      </p>
     </div>
   );
 }
@@ -1763,24 +2170,52 @@ const miniInput = { width: "100%", padding: "7px 8px", borderRadius: 4, border: 
 /* ---------------------------------------------------------
    Account form modal
 --------------------------------------------------------- */
-function AccountFormModal({ initial, onCancel, onSave, onDelete }) {
+function AccountFormModal({ initial, accounts, onCancel, onSave, onDelete }) {
+  const wrappers = accounts.filter((a) => a.type === "isa-parent");
+
   const [name, setName] = useState(initial.name || "");
-  const [type, setType] = useState(initial.type || "asset");
+  const [type, setType] = useState(initial.typePreset || initial.type || "asset");
   const [currency, setCurrency] = useState(initial.currency || "GBP");
   const [symbol, setSymbol] = useState(initial.symbol || "");
   const [opening, setOpening] = useState(initial.openingBalance ? String(initial.openingBalance) : "0");
+  const [flexible, setFlexible] = useState(!!initial.flexible);
+  // "" = not an ISA, "cash-isa"/"lifetime-isa"/"innovative-finance-isa" = a
+  // standalone flat ISA, or an isa-parent account id = "this is a
+  // subaccount of that Stocks & Shares ISA wrapper".
+  const [isaChoice, setIsaChoice] = useState(initial.isaParentPreset || initial.isaParentId || initial.isaKind || "");
+
+  const isWrapper = type === "isa-parent";
+  const isSubaccount = wrappers.some((w) => w.id === isaChoice);
+  // Flexibility is a property of the ISA product itself (the wrapper, for
+  // a Stocks & Shares ISA), not of each subaccount — so the toggle only
+  // appears where it actually applies.
+  const showFlexible = isWrapper || (!isSubaccount && !!isaChoice);
 
   function submit() {
     if (!name.trim()) return;
     if (type === "investment" && !symbol.trim()) return;
-    onSave({
+    const data = {
       id: initial.id,
       name: name.trim(),
       type,
       currency,
       openingBalance: parseFloat(opening) || 0,
       ...(type === "investment" ? { symbol: symbol.trim().toUpperCase() } : {}),
-    });
+    };
+    const isaEligible = type === "asset" || type === "investment";
+    if (isWrapper) {
+      // A wrapper holds nothing directly — no currency or opening balance.
+      delete data.currency;
+      delete data.openingBalance;
+      data.flexible = flexible;
+    } else if (isaEligible && isSubaccount) {
+      data.isaKind = "stocks-shares-isa";
+      data.isaParentId = isaChoice;
+    } else if (isaEligible && isaChoice) {
+      data.isaKind = isaChoice;
+      data.flexible = flexible;
+    }
+    onSave(data);
   }
 
   return (
@@ -1788,23 +2223,51 @@ function AccountFormModal({ initial, onCancel, onSave, onDelete }) {
       <div className="flex flex-col gap-3" onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}>
         <Field label="Name"><input autoFocus value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} placeholder="e.g. Barclays Current Account" /></Field>
         <Field label="Type">
-          <select value={type} onChange={(e) => setType(e.target.value)} style={inputStyle}>
+          <select value={type} onChange={(e) => { setType(e.target.value); setIsaChoice(""); }} style={inputStyle} disabled={!!initial.typePreset}>
             {TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
           </select>
         </Field>
-        {type === "investment" && (
+
+        {!isWrapper && type === "investment" && (
           <Field label="Symbol">
             <input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} style={{ ...inputStyle, textTransform: "uppercase" }} placeholder="e.g. AAPL" />
           </Field>
         )}
-        <Field label={type === "investment" ? "Trading currency" : "Currency"}>
-          <select value={currency} onChange={(e) => setCurrency(e.target.value)} style={inputStyle}>
-            {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
-        </Field>
-        {type !== "investment" && (
+        {!isWrapper && (
+          <Field label={type === "investment" ? "Trading currency" : "Currency"}>
+            <select value={currency} onChange={(e) => setCurrency(e.target.value)} style={inputStyle}>
+              {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </Field>
+        )}
+        {!isWrapper && type !== "investment" && (
           <Field label="Opening balance"><input type="number" step="0.01" value={opening} onChange={(e) => setOpening(e.target.value)} style={inputStyle} /></Field>
         )}
+
+        {!isWrapper && (type === "asset" || type === "investment") && (
+          <Field label="ISA">
+            <select value={isaChoice} onChange={(e) => setIsaChoice(e.target.value)} style={inputStyle} disabled={!!initial.isaParentPreset}>
+              <option value="">Not an ISA</option>
+              {type === "asset" && ISA_KINDS.filter((k) => k.key !== "stocks-shares-isa").map((k) => (
+                <option key={k.key} value={k.key}>{k.label}</option>
+              ))}
+              {wrappers.map((w) => (
+                <option key={w.id} value={w.id}>{type === "investment" ? "Part of" : "Cash within"}: {w.name}</option>
+              ))}
+            </select>
+            {type === "investment" && wrappers.length === 0 && (
+              <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 4 }}>Create a Stocks & Shares ISA wrapper first to hold this as a subaccount.</div>
+            )}
+          </Field>
+        )}
+
+        {showFlexible && (
+          <label className="flex items-center gap-2" style={{ fontSize: 13, color: C.inkSoft }}>
+            <input type="checkbox" checked={flexible} onChange={(e) => setFlexible(e.target.checked)} />
+            Flexible ISA — withdrawals this tax year can be replaced without using extra allowance
+          </label>
+        )}
+
         <div className="flex justify-between items-center mt-2">
           {onDelete ? <button type="button" onClick={onDelete} className="flex items-center gap-1 text-sm" style={{ color: C.debit }}><Trash2 size={14} /> Delete</button> : <span />}
           <div className="flex gap-2">
