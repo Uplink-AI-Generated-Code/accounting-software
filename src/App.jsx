@@ -308,7 +308,6 @@ export default function App() {
 
   function deleteTransaction(id) {
     persist(accounts, transactions.filter((t) => t.id !== id));
-    setSplitForm(null);
   }
 
   const selected = accounts.find((a) => a.id === selectedId) || null;
