@@ -152,6 +152,28 @@ function hasStorage() {
   return typeof window !== "undefined" && !!window.storage && typeof window.storage.get === "function" && typeof window.storage.set === "function";
 }
 
+/* ---------------------------------------------------------
+   A minimal hash router — no server, so the URL fragment is the only
+   thing that survives a refresh unprompted. #/account/<id> selects an
+   account; #/ (or nothing) is the overview. pushState (not replaceState)
+   so the browser's back/forward buttons move between accounts too.
+--------------------------------------------------------- */
+function accountIdFromHash() {
+  if (typeof window === "undefined") return null;
+  const m = (window.location.hash || "").match(/^#\/account\/([^/]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+function setHashForAccount(id) {
+  if (typeof window === "undefined") return;
+  try {
+    const next = id ? `#/account/${encodeURIComponent(id)}` : "#/";
+    if (window.location.hash !== next) window.history.pushState(null, "", next);
+  } catch (e) {
+    // Some embedding contexts restrict history manipulation — the app
+    // still works, it just won't survive a refresh in that case.
+  }
+}
+
 // The value a line contributes to a balance check, in real cash terms.
 // For an ordinary account this is just its amount in its own currency.
 // For a stock account, the line's `amount` is a unit count, not cash —
@@ -221,9 +243,27 @@ export default function App() {
   const [transactions, setTransactions] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [storageOK, setStorageOK] = useState(true);
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedId, setSelectedIdRaw] = useState(null);
   const [accountForm, setAccountForm] = useState(null);
   const [error, setError] = useState("");
+  const hashInitialized = useRef(false);
+  const storedSelectedIdRef = useRef(null);
+
+  // Selecting an account updates the URL and remembered storage together,
+  // so a refresh lands back on the same account either way — whichever of
+  // the two actually survives however the host reloads this page.
+  function setSelectedId(id) {
+    setSelectedIdRaw(id);
+    setHashForAccount(id);
+    if (hasStorage()) {
+      try {
+        if (id) window.storage.set("ledger-selected-account", id, false);
+        else window.storage.delete("ledger-selected-account", false);
+      } catch (e) {
+        /* non-fatal — selection just won't be remembered */
+      }
+    }
+  }
 
   useEffect(() => {
     (async () => {
@@ -241,11 +281,43 @@ export default function App() {
         }
       } catch (e) {
         /* no data saved yet */
+      }
+      try {
+        const sel = await window.storage.get("ledger-selected-account", false);
+        if (sel && sel.value) storedSelectedIdRef.current = sel.value;
+      } catch (e) {
+        /* nothing remembered yet */
       } finally {
         setLoaded(true);
       }
     })();
   }, []);
+
+  // Once accounts have loaded, resolve which account to land on. The URL
+  // wins if it names a valid account (so bookmarks/shared links work);
+  // otherwise fall back to whatever was last selected. Only runs once —
+  // after that, navigation is driven by the app itself.
+  useEffect(() => {
+    if (!loaded || hashInitialized.current) return;
+    hashInitialized.current = true;
+    const hashId = accountIdFromHash();
+    if (hashId && accounts.some((a) => a.id === hashId)) {
+      setSelectedIdRaw(hashId);
+    } else if (storedSelectedIdRef.current && accounts.some((a) => a.id === storedSelectedIdRef.current)) {
+      setSelectedIdRaw(storedSelectedIdRef.current);
+      setHashForAccount(storedSelectedIdRef.current);
+    }
+  }, [loaded, accounts]);
+
+  // Browser back/forward: follow the hash rather than fight it.
+  useEffect(() => {
+    function onPopState() {
+      const hashId = accountIdFromHash();
+      setSelectedIdRaw(hashId && accounts.some((a) => a.id === hashId) ? hashId : null);
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [accounts]);
 
   async function persist(nextAccounts, nextTransactions) {
     setAccounts(nextAccounts);
