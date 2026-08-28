@@ -83,6 +83,49 @@ function isaRulesFor(startYear, over65) {
   return rules;
 }
 
+// An ISA subaccount doesn't set its own institution — it inherits its
+// wrapper's, the same way it inherits flexibility.
+function institutionOf(account, accounts) {
+  if (account.institution) return account.institution;
+  if (account.isaParentId) {
+    const parent = accounts.find((a) => a.id === account.isaParentId);
+    if (parent && parent.institution) return parent.institution;
+  }
+  return "";
+}
+
+// Buckets every account (including ISA subaccounts) for the sidebar and
+// Overview. "type" is the original chart-of-accounts grouping and is
+// handled by the caller directly, since it already has its own labels;
+// this covers the two new lenses.
+function groupAccounts(accounts, mode) {
+  if (mode === "currency") {
+    const byCur = {};
+    const wrappers = [];
+    accounts.forEach((a) => {
+      if (a.type === "isa-parent") { wrappers.push(a); return; }
+      const cur = a.currency || "—";
+      byCur[cur] = byCur[cur] || [];
+      byCur[cur].push(a);
+    });
+    const order = Object.keys(byCur).sort((a, b) => (a === "GBP" ? -1 : b === "GBP" ? 1 : a.localeCompare(b)));
+    const groups = order.map((cur) => ({ key: cur, label: cur, items: byCur[cur] }));
+    if (wrappers.length) groups.push({ key: "__isa", label: "Stocks & Shares ISAs", items: wrappers });
+    return groups;
+  }
+  if (mode === "institution") {
+    const byInst = {};
+    accounts.forEach((a) => {
+      const inst = institutionOf(a, accounts) || "No institution";
+      byInst[inst] = byInst[inst] || [];
+      byInst[inst].push(a);
+    });
+    const keys = Object.keys(byInst).sort((a, b) => (a === "No institution" ? 1 : b === "No institution" ? -1 : a.localeCompare(b)));
+    return keys.map((k) => ({ key: k, label: k, items: byInst[k] }));
+  }
+  return [];
+}
+
 // Groups accounts into ISA "products" for allowance purposes — a flat ISA
 // account is its own product; a Stocks & Shares ISA wrapper and all of
 // its subaccounts together form one product, since both the allowance
@@ -446,7 +489,7 @@ function balanceHint(lines, accounts) {
 export default function App() {
   const [accounts, setAccounts] = useState([]);
   const [transactions, setTransactions] = useState([]);
-  const [settings, setSettings] = useState({ over65: false });
+  const [settings, setSettings] = useState({ over65: false, groupBy: "type" });
   const [loaded, setLoaded] = useState(false);
   const [storageOK, setStorageOK] = useState(true);
   const [selectedId, setSelectedIdRaw] = useState(null);
@@ -486,7 +529,7 @@ export default function App() {
           const parsed = JSON.parse(res.value);
           setAccounts(parsed.accounts || []);
           setTransactions(parsed.transactions || []);
-          if (parsed.settings) setSettings({ over65: false, ...parsed.settings });
+          if (parsed.settings) setSettings({ over65: false, groupBy: "type", ...parsed.settings });
         }
       } catch (e) {
         /* no data saved yet */
@@ -658,17 +701,29 @@ export default function App() {
             ISA Allowance
           </button>
 
+          <div className="flex rounded overflow-hidden mb-3" style={{ border: `1px solid ${C.line}` }}>
+            {[{ v: "type", label: "Type" }, { v: "institution", label: "Institution" }, { v: "currency", label: "Currency" }].map((o) => (
+              <button
+                key={o.v}
+                onClick={() => saveSettings({ ...settings, groupBy: o.v })}
+                className="flex-1"
+                style={{ padding: "5px 0", fontSize: 11, background: settings.groupBy === o.v ? C.paperDim : "transparent", color: settings.groupBy === o.v ? C.ink : C.inkFaint, fontWeight: settings.groupBy === o.v ? 600 : 400 }}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+
           {loaded && accounts.length === 0 && (
             <p style={{ fontSize: 12.5, color: C.inkFaint, padding: "0 8px", lineHeight: 1.5 }}>No accounts yet. Add one to start keeping books.</p>
           )}
 
-          {TYPES.map((t) => {
-            const list = accounts.filter((a) => a.type === t.key);
-            if (list.length === 0) return null;
+          {(settings.groupBy === "type" ? TYPES.map((t) => ({ key: t.key, label: t.label, items: accounts.filter((a) => a.type === t.key) })) : groupAccounts(accounts, settings.groupBy)).map((g) => {
+            if (!g.items || g.items.length === 0) return null;
             return (
-              <div key={t.key} className="mb-3">
-                <div style={{ fontSize: 10.5, letterSpacing: 1, textTransform: "uppercase", color: C.inkFaint, padding: "4px 8px" }}>{t.label}</div>
-                {list.map((a) => (
+              <div key={g.key} className="mb-3">
+                <div style={{ fontSize: 10.5, letterSpacing: 1, textTransform: "uppercase", color: C.inkFaint, padding: "4px 8px" }}>{g.label}</div>
+                {g.items.map((a) => (
                   <button key={a.id} onClick={() => setSelectedId(a.id)} className="w-full text-left px-2 py-1.5 rounded flex items-center justify-between" style={{ background: selectedId === a.id ? C.paperDim : "transparent" }}>
                     <span style={{ fontSize: 13.5, color: C.ink, display: "flex", alignItems: "center", gap: 5 }}>
                       {a.name}
@@ -681,6 +736,7 @@ export default function App() {
             );
           })}
         </aside>
+
 
         <main className="flex-1 p-6">
           {showAllowance ? (
@@ -717,7 +773,7 @@ export default function App() {
               />
             )
           ) : (
-            <Overview accounts={accounts} balances={balances} onSelect={setSelectedId} onNew={() => setAccountForm({})} />
+            <Overview accounts={accounts} balances={balances} settings={settings} onSaveSettings={saveSettings} onSelect={setSelectedId} onNew={() => setAccountForm({})} />
           )}
         </main>
       </div>
@@ -732,7 +788,7 @@ export default function App() {
 /* ---------------------------------------------------------
    Overview
 --------------------------------------------------------- */
-function Overview({ accounts, balances, onSelect, onNew }) {
+function Overview({ accounts, balances, settings, onSaveSettings, onSelect, onNew }) {
   if (accounts.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center" style={{ marginTop: 100, color: C.inkFaint }}>
@@ -748,30 +804,67 @@ function Overview({ accounts, balances, onSelect, onNew }) {
   const totalsByCurrency = {};
   accounts.filter((a) => a.type !== "investment" && a.type !== "isa-parent").forEach((a) => { totalsByCurrency[a.currency] = (totalsByCurrency[a.currency] || 0) + (balances[a.id] || 0); });
 
+  const groups = settings.groupBy === "type"
+    ? TYPES.map((t) => ({ key: t.key, label: t.label, items: accounts.filter((a) => a.type === t.key) }))
+    : groupAccounts(accounts, settings.groupBy);
+
+  function subtotalsFor(items) {
+    const sub = {};
+    items.filter((a) => a.type !== "investment" && a.type !== "isa-parent").forEach((a) => { sub[a.currency] = (sub[a.currency] || 0) + (balances[a.id] || 0); });
+    return sub;
+  }
+
   return (
     <div>
-      <h2 className="ll-serif" style={{ fontSize: 20, marginBottom: 4 }}>Chart of accounts</h2>
+      <div className="flex items-center justify-between mb-1">
+        <h2 className="ll-serif" style={{ fontSize: 20 }}>Chart of accounts</h2>
+        <div className="flex items-center gap-2">
+          <span style={{ fontSize: 11.5, color: C.inkFaint }}>Group by</span>
+          <div className="flex rounded overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
+            {[{ v: "type", label: "Type" }, { v: "institution", label: "Institution" }, { v: "currency", label: "Currency" }].map((o) => (
+              <button key={o.v} onClick={() => onSaveSettings({ ...settings, groupBy: o.v })} style={{ padding: "5px 10px", fontSize: 12, background: settings.groupBy === o.v ? C.paperDim : "transparent", color: settings.groupBy === o.v ? C.ink : C.inkFaint, fontWeight: settings.groupBy === o.v ? 600 : 400 }}>
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
       <p style={{ fontSize: 13, color: C.inkFaint, marginBottom: 20 }}>
         Combined balance by currency: {Object.entries(totalsByCurrency).map(([c, v]) => fmt(v, c)).join("  ·  ")}
       </p>
-      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
-        {accounts.map((a) => (
-          <button key={a.id} onClick={() => onSelect(a.id)} className="text-left p-4 rounded" style={{ background: C.card, border: `1px solid ${C.line}` }}>
-            <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>
-              {TYPES.find((t) => t.key === a.type)?.label}{a.type === "investment" ? ` · ${a.symbol}` : ""}
-              {a.isaKind ? ` · ${ISA_KINDS.find((k) => k.key === a.isaKind)?.label}` : ""}
+
+      {groups.map((g) => {
+        if (!g.items || g.items.length === 0) return null;
+        const sub = settings.groupBy !== "type" ? subtotalsFor(g.items) : null;
+        return (
+          <div key={g.key} className="mb-6">
+            <div className="flex items-baseline justify-between mb-2">
+              <div style={{ fontSize: 12, fontWeight: 600, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.6 }}>{g.label}</div>
+              {sub && Object.keys(sub).length > 0 && (
+                <div className="ll-mono" style={{ fontSize: 12, color: C.inkFaint }}>{Object.entries(sub).map(([c, v]) => fmt(v, c)).join("  ·  ")}</div>
+              )}
             </div>
-            <div style={{ fontSize: 15, fontWeight: 600, marginTop: 4 }}>{a.name}</div>
-            {a.type === "isa-parent" ? (
-              <div className="ll-mono" style={{ fontSize: 14, marginTop: 8, color: C.inkFaint }}>{accounts.filter((x) => x.isaParentId === a.id).length} subaccounts</div>
-            ) : a.type === "investment" ? (
-              <div className="ll-mono" style={{ fontSize: 16, marginTop: 8, color: C.ink }}>{fmtUnits(balances[a.id] || 0)} <span style={{ fontSize: 13, color: C.inkFaint }}>units</span></div>
-            ) : (
-              <div className="ll-mono" style={{ fontSize: 18, marginTop: 8, color: (balances[a.id] || 0) < 0 ? C.debit : C.ink }}>{fmt(balances[a.id] || 0, a.currency)}</div>
-            )}
-          </button>
-        ))}
-      </div>
+            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
+              {g.items.map((a) => (
+                <button key={a.id} onClick={() => onSelect(a.id)} className="text-left p-4 rounded" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+                  <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>
+                    {TYPES.find((t) => t.key === a.type)?.label}{a.type === "investment" ? ` · ${a.symbol}` : ""}
+                    {a.isaKind ? ` · ${ISA_KINDS.find((k) => k.key === a.isaKind)?.label}` : ""}
+                  </div>
+                  <div style={{ fontSize: 15, fontWeight: 600, marginTop: 4 }}>{a.name}</div>
+                  {a.type === "isa-parent" ? (
+                    <div className="ll-mono" style={{ fontSize: 14, marginTop: 8, color: C.inkFaint }}>{accounts.filter((x) => x.isaParentId === a.id).length} subaccounts</div>
+                  ) : a.type === "investment" ? (
+                    <div className="ll-mono" style={{ fontSize: 16, marginTop: 8, color: C.ink }}>{fmtUnits(balances[a.id] || 0)} <span style={{ fontSize: 13, color: C.inkFaint }}>units</span></div>
+                  ) : (
+                    <div className="ll-mono" style={{ fontSize: 18, marginTop: 8, color: (balances[a.id] || 0) < 0 ? C.debit : C.ink }}>{fmt(balances[a.id] || 0, a.currency)}</div>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -2179,6 +2272,7 @@ function AccountFormModal({ initial, accounts, onCancel, onSave, onDelete }) {
   const [symbol, setSymbol] = useState(initial.symbol || "");
   const [opening, setOpening] = useState(initial.openingBalance ? String(initial.openingBalance) : "0");
   const [flexible, setFlexible] = useState(!!initial.flexible);
+  const [institution, setInstitution] = useState(initial.institution || "");
   // "" = not an ISA, "cash-isa"/"lifetime-isa"/"innovative-finance-isa" = a
   // standalone flat ISA, or an isa-parent account id = "this is a
   // subaccount of that Stocks & Shares ISA wrapper".
@@ -2188,8 +2282,10 @@ function AccountFormModal({ initial, accounts, onCancel, onSave, onDelete }) {
   const isSubaccount = wrappers.some((w) => w.id === isaChoice);
   // Flexibility is a property of the ISA product itself (the wrapper, for
   // a Stocks & Shares ISA), not of each subaccount — so the toggle only
-  // appears where it actually applies.
+  // appears where it actually applies. Institution works the same way.
   const showFlexible = isWrapper || (!isSubaccount && !!isaChoice);
+  const showInstitution = !isSubaccount;
+  const knownInstitutions = Array.from(new Set(accounts.map((a) => a.institution).filter(Boolean))).sort();
 
   function submit() {
     if (!name.trim()) return;
@@ -2201,6 +2297,7 @@ function AccountFormModal({ initial, accounts, onCancel, onSave, onDelete }) {
       currency,
       openingBalance: parseFloat(opening) || 0,
       ...(type === "investment" ? { symbol: symbol.trim().toUpperCase() } : {}),
+      ...(showInstitution && institution.trim() ? { institution: institution.trim() } : {}),
     };
     const isaEligible = type === "asset" || type === "investment";
     if (isWrapper) {
@@ -2222,6 +2319,14 @@ function AccountFormModal({ initial, accounts, onCancel, onSave, onDelete }) {
     <ModalShell onCancel={onCancel} title={initial.id ? "Edit account" : "New account"}>
       <div className="flex flex-col gap-3" onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}>
         <Field label="Name"><input autoFocus value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} placeholder="e.g. Barclays Current Account" /></Field>
+        {showInstitution && (
+          <Field label="Institution">
+            <input value={institution} onChange={(e) => setInstitution(e.target.value)} style={inputStyle} placeholder="e.g. Barclays" list="ll-institutions" />
+            <datalist id="ll-institutions">
+              {knownInstitutions.map((i) => <option key={i} value={i} />)}
+            </datalist>
+          </Field>
+        )}
         <Field label="Type">
           <select value={type} onChange={(e) => { setType(e.target.value); setIsaChoice(""); }} style={inputStyle} disabled={!!initial.typePreset}>
             {TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
