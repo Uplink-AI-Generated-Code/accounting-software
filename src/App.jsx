@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
-import { Plus, Trash2, Check, X, Wallet, ArrowLeftRight, AlertTriangle, BookOpen, Pencil, Unlink2, TrendingUp, TableProperties, BookmarkPlus } from "lucide-react";
+import { Plus, Trash2, Check, X, Wallet, ArrowLeftRight, AlertTriangle, BookOpen, Pencil, Unlink2, TrendingUp, TableProperties, BookmarkPlus, ChevronUp, ChevronDown } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 /* ---------------------------------------------------------
@@ -156,6 +156,32 @@ function subtotalsForItems(items, balances) {
   const sub = {};
   items.filter((a) => a.type !== "investment" && a.type !== "isa-parent").forEach((a) => { sub[a.currency] = (sub[a.currency] || 0) + (balances[a.id] || 0); });
   return sub;
+}
+
+// Computes the renumbered `order` values needed to move one row earlier
+// or later among its same-date neighbours in this account's ledger.
+// Rows with the same date otherwise have no inherent order, so this
+// stamps a fresh 0..n-1 sequence across the whole same-date group rather
+// than just swapping two values — which stays correct even when three or
+// more rows share a date. Returns null if there's no same-date neighbour
+// in that direction to move past.
+function reorderSameDate(rows, idx, dir, accountId) {
+  const date = rows[idx].line.date;
+  let start = idx, end = idx;
+  while (start > 0 && rows[start - 1].line.date === date) start--;
+  while (end < rows.length - 1 && rows[end + 1].line.date === date) end++;
+  if (start === end) return null;
+  const groupIdxs = [];
+  for (let i = start; i <= end; i++) groupIdxs.push(i);
+  const localPos = idx - start;
+  const targetLocalPos = localPos + dir;
+  if (targetLocalPos < 0 || targetLocalPos >= groupIdxs.length) return null;
+  const newOrderArr = [...groupIdxs];
+  [newOrderArr[localPos], newOrderArr[targetLocalPos]] = [newOrderArr[targetLocalPos], newOrderArr[localPos]];
+  return newOrderArr.map((absIdx, seq) => {
+    const r = rows[absIdx];
+    return { id: r.txn.id, lines: r.txn.lines.map((l) => (l.accountId === accountId ? { ...l, order: seq } : l)) };
+  });
 }
 
 // A compact cascading picker for up to three nested grouping levels — the
@@ -833,6 +859,17 @@ export default function App() {
     persist(accounts, next);
   }
 
+  // Applies line changes to several transactions at once (e.g. re-stamping
+  // a whole same-date group's order after a reorder) — one persist call,
+  // so none of the updates can be lost to a stale read of `transactions`.
+  function updateTransactions(updates) {
+    const next = transactions.map((t) => {
+      const u = updates.find((x) => x.id === t.id);
+      return u ? { ...t, lines: u.lines } : t;
+    });
+    persist(accounts, next);
+  }
+
   function deleteTransaction(id) {
     persist(accounts, transactions.filter((t) => t.id !== id));
   }
@@ -934,6 +971,7 @@ export default function App() {
                 onEditAccount={() => setAccountForm(selected)}
                 onSaveTxn={saveTransaction}
                 onDeleteTxn={deleteTransaction}
+                onUpdateTxns={updateTransactions}
               />
             ) : (
               <AccountLedger
@@ -944,6 +982,7 @@ export default function App() {
                 onEditAccount={() => setAccountForm(selected)}
                 onSaveTxn={saveTransaction}
                 onDeleteTxn={deleteTransaction}
+                onUpdateTxns={updateTransactions}
               />
             )
           ) : (
@@ -1407,7 +1446,7 @@ function blankDraft(presetOtherId) {
   };
 }
 
-function AccountLedger({ account, accounts, transactions, balance, onEditAccount, onSaveTxn, onDeleteTxn }) {
+function AccountLedger({ account, accounts, transactions, balance, onEditAccount, onSaveTxn, onDeleteTxn, onUpdateTxns }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
   const [view, setView] = useState("ledger");
@@ -1553,7 +1592,12 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     const relevant = effectiveTxns
       .filter((t) => t.lines.some((l) => l.accountId === account.id))
       .map((t) => ({ txn: t, line: t.lines.find((l) => l.accountId === account.id) }));
-    const sorted = relevant.sort((a, b) => (a.line.date < b.line.date ? -1 : a.line.date > b.line.date ? 1 : String(a.txn.id).localeCompare(String(b.txn.id))));
+    const sorted = relevant.sort((a, b) => {
+      if (a.line.date !== b.line.date) return a.line.date < b.line.date ? -1 : 1;
+      const ao = a.line.order ?? 0, bo = b.line.order ?? 0;
+      if (ao !== bo) return ao - bo;
+      return String(a.txn.id).localeCompare(String(b.txn.id));
+    });
     let running = account.openingBalance || 0;
     return sorted.map(({ txn: t, line }) => {
       running += line.amount || 0;
@@ -1682,6 +1726,13 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     setDraftError("");
   }
 
+  // Rows sharing a date otherwise fall back to an arbitrary tiebreak — this
+  // lets that order be set deliberately instead.
+  function moveRow(idx, dir) {
+    const updates = reorderSameDate(rows, idx, dir, account.id);
+    if (updates) onUpdateTxns(updates);
+  }
+
   function commit() {
     if (!draft) return;
     const delta = draftDelta(draft);
@@ -1748,12 +1799,14 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
 
         {rows.length === 0 && !draft && <div style={{ padding: "24px 16px", fontSize: 13, color: C.inkFaint }}>No entries yet in this account.</div>}
 
-        {rows.map((r) => {
+        {rows.map((r, idx) => {
           const isEditing = r.txn.id === editingKey;
           const out = r.line.amount < 0 ? -r.line.amount : 0;
           const inn = r.line.amount > 0 ? r.line.amount : 0;
           const hint = balanceHint(r.txn.lines, accounts);
           const unbalanced = hint.type === "unbalanced";
+          const hasAbove = idx > 0 && rows[idx - 1].line.date === r.line.date;
+          const hasBelow = idx < rows.length - 1 && rows[idx + 1].line.date === r.line.date;
 
           if (isEditing) {
             return (
@@ -1948,7 +2001,19 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
               <div className="ll-mono text-right" style={{ color: out ? C.debit : C.inkFaint }}>{out ? fmt(out, account.currency) : "—"}</div>
               <div className="ll-mono text-right" style={{ color: inn ? C.credit : C.inkFaint }}>{inn ? fmt(inn, account.currency) : "—"}</div>
               <div className="ll-mono text-right" style={{ fontWeight: 600, color: r.running < 0 ? C.debit : C.ink }}>{fmt(r.running, account.currency)}</div>
-              <div className="flex justify-end"><Pencil size={13} color={C.inkFaint} /></div>
+              <div className="flex justify-end items-center gap-0.5">
+                {hasAbove && (
+                  <button onClick={(e) => { e.stopPropagation(); moveRow(idx, -1); }} title="Move earlier among same-date entries" style={{ padding: 2 }}>
+                    <ChevronUp size={13} color={C.inkFaint} />
+                  </button>
+                )}
+                {hasBelow && (
+                  <button onClick={(e) => { e.stopPropagation(); moveRow(idx, 1); }} title="Move later among same-date entries" style={{ padding: 2 }}>
+                    <ChevronDown size={13} color={C.inkFaint} />
+                  </button>
+                )}
+                <Pencil size={13} color={C.inkFaint} />
+              </div>
             </div>
           );
         })}
@@ -1983,7 +2048,7 @@ function blankStockDraft(account) {
   };
 }
 
-function StockLedger({ account, accounts, transactions, balance, onEditAccount, onSaveTxn, onDeleteTxn }) {
+function StockLedger({ account, accounts, transactions, balance, onEditAccount, onSaveTxn, onDeleteTxn, onUpdateTxns }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
   const [view, setView] = useState("ledger");
@@ -2076,7 +2141,12 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
     const relevant = effectiveTxns
       .filter((t) => t.lines.some((l) => l.accountId === account.id))
       .map((t) => ({ txn: t, line: t.lines.find((l) => l.accountId === account.id) }));
-    const sorted = relevant.sort((a, b) => (a.line.date < b.line.date ? -1 : a.line.date > b.line.date ? 1 : String(a.txn.id).localeCompare(String(b.txn.id))));
+    const sorted = relevant.sort((a, b) => {
+      if (a.line.date !== b.line.date) return a.line.date < b.line.date ? -1 : 1;
+      const ao = a.line.order ?? 0, bo = b.line.order ?? 0;
+      if (ao !== bo) return ao - bo;
+      return String(a.txn.id).localeCompare(String(b.txn.id));
+    });
     let running = account.openingBalance || 0;
     return sorted.map(({ txn: t, line }) => {
       running += line.amount || 0;
@@ -2175,6 +2245,13 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
     setDraftError("");
   }
 
+  // Rows sharing a date otherwise fall back to an arbitrary tiebreak — this
+  // lets that order be set deliberately instead.
+  function moveRow(idx, dir) {
+    const updates = reorderSameDate(rows, idx, dir, account.id);
+    if (updates) onUpdateTxns(updates);
+  }
+
   function commit() {
     if (!draft) return;
     if (unitsDeltaOf(draft) === 0) { setDraftError("Enter units in or out."); return; }
@@ -2241,12 +2318,14 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
 
         {rows.length === 0 && !draft && <div style={{ padding: "24px 16px", fontSize: 13, color: C.inkFaint }}>No trades yet in this account.</div>}
 
-        {rows.map((r) => {
+        {rows.map((r, idx) => {
           const isEditing = r.txn.id === editingKey;
           const unitsOut = r.line.amount < 0 ? -r.line.amount : 0;
           const unitsIn = r.line.amount > 0 ? r.line.amount : 0;
           const natural = r.line.cashValue !== undefined ? -r.line.cashValue : null;
           const unmatched = r.txn.lines.length === 1;
+          const hasAbove = idx > 0 && rows[idx - 1].line.date === r.line.date;
+          const hasBelow = idx < rows.length - 1 && rows[idx + 1].line.date === r.line.date;
 
           if (isEditing) {
             return (
@@ -2374,7 +2453,19 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
                 <div className="ll-mono text-right" style={{ color: unitsOut ? C.debit : C.inkFaint }}>{unitsOut ? fmtUnits(unitsOut) : "—"}</div>
                 <div className="ll-mono text-right" style={{ color: unitsIn ? C.credit : C.inkFaint }}>{unitsIn ? fmtUnits(unitsIn) : "—"}</div>
                 <div className="ll-mono text-right" style={{ fontWeight: 600 }}>{fmtUnits(r.running)}</div>
-                <div className="flex justify-end"><Pencil size={13} color={C.inkFaint} /></div>
+                <div className="flex justify-end items-center gap-0.5">
+                  {hasAbove && (
+                    <button onClick={(e) => { e.stopPropagation(); moveRow(idx, -1); }} title="Move earlier among same-date entries" style={{ padding: 2 }}>
+                      <ChevronUp size={13} color={C.inkFaint} />
+                    </button>
+                  )}
+                  {hasBelow && (
+                    <button onClick={(e) => { e.stopPropagation(); moveRow(idx, 1); }} title="Move later among same-date entries" style={{ padding: 2 }}>
+                      <ChevronDown size={13} color={C.inkFaint} />
+                    </button>
+                  )}
+                  <Pencil size={13} color={C.inkFaint} />
+                </div>
               </div>
               {natural !== null && (
                 <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 3, paddingLeft: 118 }}>
