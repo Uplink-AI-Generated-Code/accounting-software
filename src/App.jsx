@@ -390,7 +390,6 @@ function computeIsaUsage(accounts, transactions, startYear) {
         priorBalance: priorPoolEntering(p, accounts, transactions, start),
         priorReplaceable: 0,
         thisYearBalance: 0,
-        used: 0,
       };
       p.accountIds.forEach((id) => (accountToProduct[id] = p));
     });
@@ -435,13 +434,18 @@ function computeIsaUsage(accounts, transactions, startYear) {
         globalReplaceable -= fillGlobal;
         s.thisYearBalance += fillGlobal;
         d -= fillGlobal;
-        s.used += d;
         s.thisYearBalance += d;
       }
     });
 
+    // A product's displayed usage is simply how much this-year-sourced
+    // money is currently sitting in it: it went up on every genuinely new
+    // subscription and every replacement received, and back down on every
+    // withdrawal — so money withdrawn and never replaced anywhere
+    // correctly stops counting, immediately, without waiting on a future
+    // deposit to "cancel it out".
     Object.values(state).forEach((s) => {
-      byKind[s.product.kind] = (byKind[s.product.kind] || 0) + s.used;
+      byKind[s.product.kind] = (byKind[s.product.kind] || 0) + Math.max(0, s.thisYearBalance);
     });
   }
 
