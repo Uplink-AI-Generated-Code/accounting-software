@@ -690,6 +690,7 @@ export default function App() {
   const [selectedId, setSelectedIdRaw] = useState(null);
   const [showAllowance, setShowAllowance] = useState(false);
   const [accountForm, setAccountForm] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null); // { id, entryCount, name }
   const [error, setError] = useState("");
   const hashInitialized = useRef(false);
   const storedSelectedIdRef = useRef(null);
@@ -831,20 +832,37 @@ export default function App() {
     setAccountForm(null);
   }
 
-  function deleteAccount(id) {
-    const used = transactions.some((t) => t.lines.some((l) => l.accountId === id));
-    if (used) {
-      setError("Can't delete an account that has ledger entries. Delete its entries first.");
-      return;
-    }
+  function requestDeleteAccount(id) {
     const hasSubaccounts = accounts.some((a) => a.isaParentId === id);
     if (hasSubaccounts) {
       setError("Can't delete an ISA that still has subaccounts. Delete those first.");
       return;
     }
-    persist(accounts.filter((a) => a.id !== id), transactions);
+    const entryCount = transactions.filter((t) => t.lines.some((l) => l.accountId === id)).length;
+    if (entryCount === 0) {
+      performDeleteAccount(id);
+      return;
+    }
+    const acc = accounts.find((a) => a.id === id);
+    setDeleteConfirm({ id, entryCount, name: acc ? acc.name : "" });
+  }
+
+  // Removing an account never destroys the other side of a linked entry —
+  // it just strips this account's own line out of each transaction
+  // (deleting the transaction outright only if nothing else was on it),
+  // same principle as Unlink and removing a split line elsewhere.
+  function performDeleteAccount(id) {
+    const nextTransactions = transactions
+      .map((t) => {
+        if (!t.lines.some((l) => l.accountId === id)) return t;
+        const remaining = t.lines.filter((l) => l.accountId !== id);
+        return remaining.length ? { ...t, lines: remaining } : null;
+      })
+      .filter(Boolean);
+    persist(accounts.filter((a) => a.id !== id), nextTransactions);
     if (selectedId === id) setSelectedId(null);
     setAccountForm(null);
+    setDeleteConfirm(null);
   }
 
   function saveTransaction(data, mergeDeleteId, insertExtras) {
@@ -992,7 +1010,19 @@ export default function App() {
       </div>
 
       {accountForm !== null && (
-        <AccountFormModal initial={accountForm} accounts={accounts} onCancel={() => setAccountForm(null)} onSave={saveAccount} onDelete={accountForm.id ? () => deleteAccount(accountForm.id) : null} />
+        <AccountFormModal initial={accountForm} accounts={accounts} onCancel={() => setAccountForm(null)} onSave={saveAccount} onDelete={accountForm.id ? () => requestDeleteAccount(accountForm.id) : null} />
+      )}
+
+      {deleteConfirm && (
+        <ModalShell onCancel={() => setDeleteConfirm(null)} title="Delete account">
+          <p style={{ fontSize: 13.5, color: C.inkSoft, lineHeight: 1.5, marginBottom: 18 }}>
+            <strong>{deleteConfirm.name}</strong> has {deleteConfirm.entryCount} ledger {deleteConfirm.entryCount === 1 ? "entry" : "entries"}. Deleting it removes those entries from this account. If any of them are linked to another account, that other side is kept as its own standalone entry — nothing else gets deleted.
+          </p>
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setDeleteConfirm(null)} className="px-3 py-1.5 rounded text-sm" style={{ border: `1px solid ${C.line}` }}>Cancel</button>
+            <button onClick={() => performDeleteAccount(deleteConfirm.id)} className="px-3 py-1.5 rounded text-sm" style={{ background: C.debit, color: C.paper }}>Delete account</button>
+          </div>
+        </ModalShell>
       )}
     </div>
   );
