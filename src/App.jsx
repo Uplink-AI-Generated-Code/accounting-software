@@ -213,18 +213,6 @@ function balanceHint(lines, accounts) {
   return { type: "unbalanced", message: curs.map((c) => fmt(byCur[c], c)).join("  ·  ") + " left over" };
 }
 
-// Per-symbol currency memory for one investment account — the same rule
-// used inside the stock ledger itself: a symbol keeps the currency it
-// was first traded in, so it never needs asking twice.
-function symbolCurrencyMap(transactions, accountId) {
-  const map = {};
-  transactions.forEach((t) => {
-    const line = t.lines.find((l) => l.accountId === accountId);
-    if (line && line.symbol && line.cashCurrency && !map[line.symbol]) map[line.symbol] = line.cashCurrency;
-  });
-  return map;
-}
-
 /* ---------------------------------------------------------
    App
 --------------------------------------------------------- */
@@ -281,27 +269,12 @@ export default function App() {
     return map;
   }, [accounts, transactions]);
 
-  // Per-symbol unit totals for stock accounts — summing raw `amount` across
-  // an investment account (like `balances` does) would mix different
-  // symbols' unit counts together meaninglessly.
-  const holdings = useMemo(() => {
-    const map = {}; // accountId -> { SYMBOL: units }
-    transactions.forEach((t) =>
-      t.lines.forEach((l) => {
-        const acc = accounts.find((a) => a.id === l.accountId);
-        if (!acc || acc.type !== "investment" || !l.symbol) return;
-        map[acc.id] = map[acc.id] || {};
-        map[acc.id][l.symbol] = (map[acc.id][l.symbol] || 0) + (l.amount || 0);
-      })
-    );
-    return map;
-  }, [accounts, transactions]);
-
-  function holdingsSummary(accountId) {
-    const h = holdings[accountId] || {};
-    const parts = Object.entries(h).filter(([, u]) => Math.abs(u) > 1e-9);
-    if (parts.length === 0) return "No holdings";
-    return parts.map(([sym, u]) => `${sym} ${fmtUnits(u)}`).join("  ·  ");
+  // Each investment account holds exactly one security, so its balance —
+  // computed the same way as any other account's — already *is* the unit
+  // count. Only the display differs: units and a symbol, not a currency.
+  function accountDisplay(a) {
+    const bal = balances[a.id] || 0;
+    return a.type === "investment" ? `${fmtUnits(bal)} ${a.symbol}` : fmt(bal, a.currency);
   }
 
   function saveAccount(data) {
@@ -394,11 +367,7 @@ export default function App() {
                 {list.map((a) => (
                   <button key={a.id} onClick={() => setSelectedId(a.id)} className="w-full text-left px-2 py-1.5 rounded flex items-center justify-between" style={{ background: selectedId === a.id ? C.paperDim : "transparent" }}>
                     <span style={{ fontSize: 13.5, color: C.ink }}>{a.name}</span>
-                    {a.type === "investment" ? (
-                      <span className="ll-mono" style={{ fontSize: 11, color: C.inkSoft, textAlign: "right" }}>{holdingsSummary(a.id)}</span>
-                    ) : (
-                      <span className="ll-mono" style={{ fontSize: 12, color: (balances[a.id] || 0) < 0 ? C.debit : C.inkSoft }}>{fmt(balances[a.id] || 0, a.currency)}</span>
-                    )}
+                    <span className="ll-mono" style={{ fontSize: a.type === "investment" ? 11 : 12, color: (balances[a.id] || 0) < 0 ? C.debit : C.inkSoft }}>{accountDisplay(a)}</span>
                   </button>
                 ))}
               </div>
@@ -413,6 +382,7 @@ export default function App() {
                 account={selected}
                 accounts={accounts}
                 transactions={transactions}
+                balance={balances[selected.id] || 0}
                 onEditAccount={() => setAccountForm(selected)}
                 onSaveTxn={saveTransaction}
                 onDeleteTxn={deleteTransaction}
@@ -429,7 +399,7 @@ export default function App() {
               />
             )
           ) : (
-            <Overview accounts={accounts} balances={balances} holdingsSummary={holdingsSummary} onSelect={setSelectedId} onNew={() => setAccountForm({})} />
+            <Overview accounts={accounts} balances={balances} onSelect={setSelectedId} onNew={() => setAccountForm({})} />
           )}
         </main>
       </div>
@@ -444,7 +414,7 @@ export default function App() {
 /* ---------------------------------------------------------
    Overview
 --------------------------------------------------------- */
-function Overview({ accounts, balances, holdingsSummary, onSelect, onNew }) {
+function Overview({ accounts, balances, onSelect, onNew }) {
   if (accounts.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center" style={{ marginTop: 100, color: C.inkFaint }}>
@@ -469,10 +439,10 @@ function Overview({ accounts, balances, holdingsSummary, onSelect, onNew }) {
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
         {accounts.map((a) => (
           <button key={a.id} onClick={() => onSelect(a.id)} className="text-left p-4 rounded" style={{ background: C.card, border: `1px solid ${C.line}` }}>
-            <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>{TYPES.find((t) => t.key === a.type)?.label}</div>
+            <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>{TYPES.find((t) => t.key === a.type)?.label}{a.type === "investment" ? ` · ${a.symbol}` : ""}</div>
             <div style={{ fontSize: 15, fontWeight: 600, marginTop: 4 }}>{a.name}</div>
             {a.type === "investment" ? (
-              <div className="ll-mono" style={{ fontSize: 13, marginTop: 8, color: C.ink }}>{holdingsSummary(a.id)}</div>
+              <div className="ll-mono" style={{ fontSize: 16, marginTop: 8, color: C.ink }}>{fmtUnits(balances[a.id] || 0)} <span style={{ fontSize: 13, color: C.inkFaint }}>units</span></div>
             ) : (
               <div className="ll-mono" style={{ fontSize: 18, marginTop: 8, color: (balances[a.id] || 0) < 0 ? C.debit : C.ink }}>{fmt(balances[a.id] || 0, a.currency)}</div>
             )}
@@ -663,45 +633,30 @@ function BalanceChart({ account, transactions }) {
 function UnitsChart({ account, transactions }) {
   const [interval, setInterval_] = useState("3m");
   const [compareYoY, setCompareYoY] = useState(false);
-  const symbols = useMemo(
-    () => Array.from(new Set(transactions.flatMap((t) => t.lines).filter((l) => l.accountId === account.id && l.symbol).map((l) => l.symbol))).sort(),
-    [transactions, account]
-  );
-  const [symbol, setSymbol] = useState("");
-  useEffect(() => {
-    if (!symbol && symbols.length) setSymbol(symbols[0]);
-    if (symbol && !symbols.includes(symbol)) setSymbol(symbols[0] || "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbols]);
 
   const lines = useMemo(
-    () => transactions.map((t) => t.lines.find((l) => l.accountId === account.id && l.symbol === symbol)).filter(Boolean).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
-    [transactions, account, symbol]
+    () => transactions.map((t) => t.lines.find((l) => l.accountId === account.id)).filter(Boolean).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
+    [transactions, account]
   );
-  const merged = useChartSeries(0, lines, interval, compareYoY);
+  const merged = useChartSeries(account.openingBalance || 0, lines, interval, compareYoY);
 
-  if (symbols.length === 0) {
+  if (lines.length === 0) {
     return <div style={{ padding: "40px 0", textAlign: "center", color: C.inkFaint, fontSize: 13 }}>Not enough trades yet to chart.</div>;
   }
 
   return (
     <div>
-      <div className="flex items-center gap-3 flex-wrap mb-4">
-        <select value={symbol} onChange={(e) => setSymbol(e.target.value)} style={{ width: 100, padding: "7px 8px", borderRadius: 4, border: `1px solid ${C.line}`, background: C.paper, fontSize: 13, color: C.ink }}>
-          {symbols.map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
-        <IntervalControls interval={interval} setInterval={setInterval_} compareYoY={compareYoY} setCompareYoY={setCompareYoY} disableCompare={interval === "all"} />
-      </div>
+      <div className="mb-4"><IntervalControls interval={interval} setInterval={setInterval_} compareYoY={compareYoY} setCompareYoY={setCompareYoY} disableCompare={interval === "all"} /></div>
       <div style={{ height: 320 }}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={merged} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
             <CartesianGrid stroke={C.lineSoft} vertical={false} />
             <XAxis dataKey="offset" tickFormatter={(o) => (merged[o] ? fmtDateShort(merged[o].date) : "")} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={{ stroke: C.line }} tickLine={false} minTickGap={40} />
             <YAxis tickFormatter={(v) => fmtUnits(v)} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={60} />
-            <Tooltip content={<ChartTooltip formatValue={(v) => `${fmtUnits(v)} ${symbol}`} compareYoY={compareYoY} />} />
+            <Tooltip content={<ChartTooltip formatValue={(v) => `${fmtUnits(v)} ${account.symbol}`} compareYoY={compareYoY} />} />
             {compareYoY && <Legend wrapperStyle={{ fontSize: 12 }} />}
             {compareYoY && <Line type="stepAfter" dataKey="previous" name="Same period last year" stroke={C.goldDim} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
-            <Line type="stepAfter" dataKey="current" name={`${symbol} units`} stroke={C.gold} strokeWidth={2} dot={false} isAnimationActive={false} />
+            <Line type="stepAfter" dataKey="current" name={`${account.symbol} units`} stroke={C.gold} strokeWidth={2} dot={false} isAnimationActive={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -721,13 +676,13 @@ function blankOtherLine(accountId) {
     // cash-account fields
     isOut: true,
     amountStr: "",
-    // investment-account fields
-    symbol: "",
+    // investment-account fields — symbol and currency come from the
+    // account itself (one security per account), so only direction and
+    // magnitude are ever entered here.
     unitsIsOut: false,
     unitsStr: "",
     cashIsOut: true,
     cashStr: "",
-    cashCurrency: "",
   };
 }
 
@@ -778,13 +733,12 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       const unitsMag = Math.abs(parseFloat(ol.unitsStr));
       const units = isNaN(unitsMag) ? 0 : ol.unitsIsOut ? -unitsMag : unitsMag;
       const base = unchanged ? { ...ol.snapshot } : { accountId: ol.accountId, date: d.date || todayISO() };
-      base.symbol = (ol.symbol || "").trim().toUpperCase();
       base.amount = units;
       const cashMag = Math.abs(parseFloat(ol.cashStr));
-      if (ol.cashCurrency && ol.cashStr !== "" && !isNaN(cashMag)) {
+      if (ol.cashStr !== "" && !isNaN(cashMag)) {
         const cashNatural = ol.cashIsOut ? -cashMag : cashMag;
         base.cashValue = -cashNatural;
-        base.cashCurrency = ol.cashCurrency;
+        base.cashCurrency = olAcc.currency;
       } else {
         delete base.cashValue;
         delete base.cashCurrency;
@@ -906,20 +860,19 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
 
   // Converts a resolved line (from a matched candidate, or a pre-existing
   // line on the entry being opened) into the editable "other account" row
-  // shape — branching on account type since a stock line needs symbol/
-  // units/cash fields instead of a plain amount.
+  // shape — branching on account type since a stock line needs units/cash
+  // fields instead of a plain amount (symbol and currency are implied by
+  // the account itself).
   function otherLineFromLine(o, snapshot) {
     const oAcc = accounts.find((a) => a.id === o.accountId);
     const base = blankOtherLine(o.accountId);
     base.snapshot = snapshot || null;
     if (oAcc && oAcc.type === "investment") {
       const naturalCash = o.cashValue !== undefined ? -o.cashValue : 0;
-      base.symbol = o.symbol || "";
       base.unitsIsOut = o.amount < 0;
       base.unitsStr = String(Math.abs(o.amount));
       base.cashIsOut = naturalCash < 0;
       base.cashStr = naturalCash !== 0 ? String(Math.abs(naturalCash)) : "";
-      base.cashCurrency = o.cashCurrency || oAcc.currency || "GBP";
     } else {
       base.isOut = o.amount < 0;
       base.amountStr = String(Math.abs(o.amount));
@@ -997,24 +950,12 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
           }
           const newAcc = accounts.find((a) => a.id === patch.accountId);
           if (newAcc && newAcc.type === "investment" && !stillSame) {
-            next = { ...next, symbol: "", unitsIsOut: false, unitsStr: "", cashIsOut: true, cashStr: "", cashCurrency: newAcc.currency || "GBP" };
+            next = { ...next, unitsIsOut: false, unitsStr: "", cashIsOut: true, cashStr: "" };
           }
         }
         return next;
       });
       return { ...d, otherLines, splitOffLines };
-    });
-  }
-
-  // Symbol changed on an investment other-line: lock in the currency it's
-  // already known to trade in, same rule as the stock ledger itself.
-  function updateOtherLineSymbol(key, accountId, rawSymbol) {
-    const sym = rawSymbol.toUpperCase();
-    const known = symbolCurrencyMap(transactions, accountId)[sym];
-    setDraft((d) => {
-      if (!d) return d;
-      const otherLines = d.otherLines.map((ol) => (ol.key === key ? { ...ol, symbol: sym, cashCurrency: known || ol.cashCurrency, matchedTxnId: null } : ol));
-      return { ...d, otherLines };
     });
   }
 
@@ -1141,23 +1082,17 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                     {draft.otherLines.map((ol) => {
                       const olAcc = accounts.find((a) => a.id === ol.accountId);
                       const isStock = olAcc && olAcc.type === "investment";
-                      const knownCurrency = isStock ? symbolCurrencyMap(transactions, ol.accountId)[ol.symbol.trim().toUpperCase()] : null;
                       return (
                         <div key={ol.key} className="flex items-center gap-2 flex-wrap">
                           <select value={ol.accountId} onChange={(e) => updateOtherLine(ol.key, { accountId: e.target.value })} style={{ ...miniInput, width: 190 }}>
                             <option value="">Select account…</option>
                             {accounts.filter((a) => a.id !== account.id).map((a) => (
-                              <option key={a.id} value={a.id}>{a.name} ({a.type === "investment" ? "stocks" : a.currency})</option>
+                              <option key={a.id} value={a.id}>{a.name} ({a.type === "investment" ? a.symbol : a.currency})</option>
                             ))}
                           </select>
 
                           {isStock ? (
                             <>
-                              <input
-                                type="text" list="ll-shared-symbols" placeholder="AAPL" value={ol.symbol}
-                                onChange={(e) => updateOtherLineSymbol(ol.key, ol.accountId, e.target.value)}
-                                style={{ ...miniInput, width: 80, textTransform: "uppercase" }}
-                              />
                               <div className="flex rounded overflow-hidden shrink-0" style={{ border: `1px solid ${C.line}` }}>
                                 {[{ v: false, label: "Units in" }, { v: true, label: "Units out" }].map((o) => (
                                   <button key={o.label} type="button" onClick={() => updateOtherLine(ol.key, { unitsIsOut: o.v })}
@@ -1184,13 +1119,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                                 onChange={(e) => updateOtherLine(ol.key, { cashStr: e.target.value })}
                                 className="ll-mono" style={{ ...miniInput, width: 90 }}
                               />
-                              {knownCurrency ? (
-                                <span className="ll-mono" style={{ fontSize: 12.5, color: C.inkFaint, padding: "0 4px" }}>{ol.cashCurrency}</span>
-                              ) : (
-                                <select value={ol.cashCurrency} onChange={(e) => updateOtherLine(ol.key, { cashCurrency: e.target.value })} style={{ ...miniInput, width: 80 }} title="New symbol — sets the currency it'll always trade in">
-                                  {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                                </select>
-                              )}
+                              <span className="ll-mono" style={{ fontSize: 12.5, color: C.inkFaint, padding: "0 4px" }}>{olAcc.currency}</span>
                             </>
                           ) : (
                             <>
@@ -1319,20 +1248,17 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
         })}
       </div>
       )}
-      <datalist id="ll-shared-symbols">
-        {Array.from(new Set(transactions.flatMap((t) => t.lines).filter((l) => l.symbol).map((l) => l.symbol))).map((s) => (
-          <option key={s} value={s} />
-        ))}
-      </datalist>
     </div>
   );
 }
 
 /* ---------------------------------------------------------
-   Stock Ledger — trades of symbol + units against a cash value.
-   No price-per-unit field exists anywhere: it's always cashValue
-   divided by units, computed on the fly, exactly like the FX rate
-   in the cash ledger's currency exchange tag.
+   Stock Ledger — one account, one security. Trades are units against a
+   cash value; no price-per-unit field exists anywhere — it's always
+   cashValue divided by units, computed on the fly, exactly like the FX
+   rate in the cash ledger's currency exchange tag. Since the account has
+   exactly one symbol and one trading currency (set at account creation),
+   trades don't need to ask for either.
 --------------------------------------------------------- */
 function blankStockDraft(account) {
   return {
@@ -1340,7 +1266,6 @@ function blankStockDraft(account) {
     txnId: null,
     date: todayISO(),
     description: "",
-    symbol: "",
     otherAccountId: "",
     otherLineSnapshot: null,
     splitOffLines: [],
@@ -1349,11 +1274,10 @@ function blankStockDraft(account) {
     unitsOutStr: "",
     cashInStr: "",
     cashOutStr: "",
-    cashCurrency: account.currency || "GBP",
   };
 }
 
-function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn, onDeleteTxn }) {
+function StockLedger({ account, accounts, transactions, balance, onEditAccount, onSaveTxn, onDeleteTxn }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
   const [view, setView] = useState("ledger");
@@ -1369,6 +1293,8 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
     return (isNaN(i) ? 0 : i) - (isNaN(o) ? 0 : o);
   }
 
+  // Clears anything tied to a previously-selected match — used whenever a
+  // change to the draft (amount, account) would make that match stale.
   function clearMatch(d) {
     return { ...d, matchedTxnId: null, otherAccountId: "" };
   }
@@ -1380,10 +1306,10 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
   function draftToTxn(d, forcedId) {
     const unitsDelta = unitsDeltaOf(d);
     const cashNatural = cashDeltaOf(d);
-    const line1 = { accountId: account.id, symbol: (d.symbol || "").trim().toUpperCase(), amount: unitsDelta, date: d.date || todayISO() };
-    if (d.cashCurrency && (d.cashInStr !== "" || d.cashOutStr !== "")) {
+    const line1 = { accountId: account.id, amount: unitsDelta, date: d.date || todayISO() };
+    if (d.cashInStr !== "" || d.cashOutStr !== "") {
       line1.cashValue = -cashNatural;
-      line1.cashCurrency = d.cashCurrency;
+      line1.cashCurrency = account.currency;
     }
     const lines = [line1];
     if (d.otherAccountId) {
@@ -1409,13 +1335,14 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
   const editingKey = draft ? (draft.mode === "edit" ? draft.txnId : "DRAFT_NEW") : null;
 
   // Search other (non-investment) accounts for the cash leg of this trade:
-  // the opposite of what this line's cash tag says, in that same currency.
+  // the opposite of what this line's cash tag says, in this account's
+  // trading currency.
   const matchCandidates = useMemo(() => {
     if (!draft || draft.otherAccountId || draft.matchedTxnId) return [];
     if (unitsDeltaOf(draft) === 0 || !draft.date) return [];
-    if (!draft.cashCurrency || (draft.cashInStr === "" && draft.cashOutStr === "")) return [];
+    if (draft.cashInStr === "" && draft.cashOutStr === "") return [];
     const targetAmount = cashDeltaOf(draft); // = -cashValue, i.e. the real counterpart's own amount
-    const targetCurrency = draft.cashCurrency;
+    const targetCurrency = account.currency;
 
     return transactions
       .filter((t) => t.id !== draft.txnId && t.lines.length === 1)
@@ -1436,71 +1363,38 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transactions, draft, account, accounts]);
 
-  // Rows are shown in one chronological list across all symbols (like a
-  // real brokerage statement), sorted and balanced by this account's own
-  // line's own date — the cash leg of a trade can carry a different date.
+  // One security per account, so a single running total — sorted and
+  // balanced by this account's own line's own date, since the cash leg of
+  // a trade can carry a different date.
   const rows = useMemo(() => {
     const relevant = effectiveTxns
       .filter((t) => t.lines.some((l) => l.accountId === account.id))
       .map((t) => ({ txn: t, line: t.lines.find((l) => l.accountId === account.id) }));
     const sorted = relevant.sort((a, b) => (a.line.date < b.line.date ? -1 : a.line.date > b.line.date ? 1 : String(a.txn.id).localeCompare(String(b.txn.id))));
-    const runningBySymbol = {};
+    let running = account.openingBalance || 0;
     return sorted.map(({ txn: t, line }) => {
-      const symbol = line.symbol || "—";
-      runningBySymbol[symbol] = (runningBySymbol[symbol] || 0) + (line.amount || 0);
+      running += line.amount || 0;
       const others = t.lines.filter((l) => l.accountId !== account.id).map((l) => accounts.find((a) => a.id === l.accountId)).filter(Boolean);
-      return { txn: t, line, symbol, running: runningBySymbol[symbol], others };
+      return { txn: t, line, running, others };
     });
   }, [effectiveTxns, account, accounts]);
 
   const { rowRefs, pendingSettleId } = useLedgerRowAnimation(rows, editingKey);
 
-  const holdingsList = useMemo(() => {
-    const totals = {}; // symbol -> { units, spent, spentCurrency }
+  // Average buy price for the current holding — total spent on buys
+  // divided by units bought. Doesn't adjust for sales, so it's a simple
+  // "what you paid on average," not a precise post-sale cost basis.
+  const avgCost = useMemo(() => {
+    let spent = 0, unitsBought = 0;
     transactions.forEach((t) => {
       const line = t.lines.find((l) => l.accountId === account.id);
-      if (!line || !line.symbol) return;
-      const sym = line.symbol;
-      totals[sym] = totals[sym] || { units: 0, spent: 0, spentUnits: 0, currency: null, mixed: false };
-      totals[sym].units += line.amount || 0;
-      if (line.amount > 0 && line.cashValue !== undefined && line.cashCurrency) {
-        if (totals[sym].currency && totals[sym].currency !== line.cashCurrency) totals[sym].mixed = true;
-        totals[sym].currency = totals[sym].currency || line.cashCurrency;
-        totals[sym].spent += Math.abs(line.cashValue);
-        totals[sym].spentUnits += line.amount;
+      if (line && line.amount > 0 && line.cashValue !== undefined) {
+        spent += Math.abs(line.cashValue);
+        unitsBought += line.amount;
       }
     });
-    return Object.entries(totals)
-      .filter(([, v]) => Math.abs(v.units) > 1e-9)
-      .map(([sym, v]) => ({
-        symbol: sym,
-        units: v.units,
-        avgCost: !v.mixed && v.spentUnits > 0 ? v.spent / v.spentUnits : null,
-        currency: v.currency,
-      }))
-      .sort((a, b) => a.symbol.localeCompare(b.symbol));
+    return unitsBought > 0 ? spent / unitsBought : null;
   }, [transactions, account]);
-
-  const knownSymbols = useMemo(
-    () => Array.from(new Set(transactions.flatMap((t) => t.lines).filter((l) => l.accountId === account.id && l.symbol).map((l) => l.symbol))),
-    [transactions, account]
-  );
-
-  // Each symbol keeps the currency it was first traded in — AAPL is
-  // always USD, VOD.L is always GBP — so once that's established there's
-  // nothing left to pick per trade.
-  const symbolCurrency = useMemo(() => {
-    const map = {};
-    transactions.forEach((t) => {
-      const line = t.lines.find((l) => l.accountId === account.id);
-      if (line && line.symbol && line.cashCurrency && !map[line.symbol]) map[line.symbol] = line.cashCurrency;
-    });
-    return map;
-  }, [transactions, account]);
-
-  function symbolCurrencyOf(sym) {
-    return symbolCurrency[(sym || "").trim().toUpperCase()];
-  }
 
   function startEdit(t) {
     if (t.lines.length > 2) return;
@@ -1515,14 +1409,12 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
       splitOffLines: [],
       date: line.date,
       description: t.description || "",
-      symbol: line.symbol || "",
       otherAccountId: other ? other.accountId : "",
       matchedTxnId: null,
       unitsInStr: line.amount > 0 ? String(line.amount) : "",
       unitsOutStr: line.amount < 0 ? String(-line.amount) : "",
       cashInStr: naturalCash > 0 ? String(naturalCash) : "",
       cashOutStr: naturalCash < 0 ? String(-naturalCash) : "",
-      cashCurrency: line.cashCurrency || account.currency || "GBP",
     });
     setDraftError("");
   }
@@ -1579,7 +1471,6 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
 
   function commit() {
     if (!draft) return;
-    if (!draft.symbol.trim()) { setDraftError("Enter a symbol."); return; }
     if (unitsDeltaOf(draft) === 0) { setDraftError("Enter units in or out."); return; }
     const data = draftToTxn(draft, draft.mode === "edit" ? draft.txnId : undefined);
     const splitOffExtras = draft.splitOffLines.length
@@ -1600,26 +1491,18 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
     setDraftError("");
   }
 
-  const gridCols = "110px 1fr 90px 90px 90px 100px 50px";
+  const gridCols = "110px 1fr 90px 90px 110px 60px";
 
   return (
     <div>
       <div className="flex items-start justify-between mb-5">
         <div>
-          <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>Stocks & Shares</div>
-          <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{account.name}</h2>
-          {holdingsList.length === 0 ? (
-            <div style={{ fontSize: 13, color: C.inkFaint, marginTop: 8 }}>No holdings yet</div>
-          ) : (
-            <div className="flex flex-wrap gap-x-5 gap-y-1 mt-2">
-              {holdingsList.map((h) => (
-                <div key={h.symbol} className="ll-mono" style={{ fontSize: 13.5 }}>
-                  <strong>{h.symbol}</strong> {fmtUnits(h.units)}
-                  {h.avgCost !== null && <span style={{ color: C.inkFaint, fontSize: 12 }}> · avg {fmt(h.avgCost, h.currency)}/unit</span>}
-                </div>
-              ))}
-            </div>
-          )}
+          <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>Stocks & Shares · {account.currency}</div>
+          <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{account.name} <span style={{ color: C.gold }}>{account.symbol}</span></h2>
+          <div className="ll-mono" style={{ fontSize: 22, marginTop: 6 }}>
+            {fmtUnits(balance)} <span style={{ fontSize: 14, color: C.inkFaint }}>units</span>
+            {avgCost !== null && <span style={{ fontSize: 13, color: C.inkFaint, marginLeft: 10 }}>avg {fmt(avgCost, account.currency)}/unit</span>}
+          </div>
         </div>
         <div className="flex gap-2">
           <div className="flex rounded overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
@@ -1647,7 +1530,7 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
       ) : (
       <div style={{ border: `1px solid ${C.line}`, borderRadius: 6, overflow: "hidden", background: C.card }}>
         <div className="grid" style={{ gridTemplateColumns: gridCols, fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.6, color: C.inkFaint, padding: "10px 16px", borderBottom: `1px solid ${C.line}` }}>
-          <div>Date</div><div>Description</div><div>Symbol</div><div className="text-right">Units out</div><div className="text-right">Units in</div><div className="text-right">Balance</div><div />
+          <div>Date</div><div>Description</div><div className="text-right">Units out</div><div className="text-right">Units in</div><div className="text-right">Balance</div><div />
         </div>
 
         {rows.length === 0 && !draft && <div style={{ padding: "24px 16px", fontSize: 13, color: C.inkFaint }}>No trades yet in this account.</div>}
@@ -1665,15 +1548,6 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
                 <div className="grid items-center" style={{ gridTemplateColumns: gridCols, gap: 8 }}>
                   <input type="date" autoFocus value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} style={miniInput} />
                   <input type="text" placeholder="Description" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} style={miniInput} />
-                  <input
-                    type="text" list="ll-symbols" placeholder="AAPL" value={draft.symbol}
-                    onChange={(e) => {
-                      const sym = e.target.value.toUpperCase();
-                      const known = symbolCurrency[sym];
-                      setDraft({ ...draft, symbol: sym, cashCurrency: known || draft.cashCurrency });
-                    }}
-                    style={{ ...miniInput, textTransform: "uppercase" }}
-                  />
                   <input
                     type="number" step="0.000001" placeholder="Out" value={draft.unitsOutStr}
                     onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), unitsOutStr: e.target.value } : { ...draft, unitsOutStr: e.target.value })}
@@ -1706,13 +1580,7 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
                     onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), cashInStr: e.target.value } : { ...draft, cashInStr: e.target.value })}
                     className="ll-mono" style={{ ...miniInput, width: 90, color: C.credit }}
                   />
-                  {symbolCurrency[draft.symbol.trim().toUpperCase()] ? (
-                    <span className="ll-mono" style={{ fontSize: 12.5, color: C.inkFaint, padding: "0 4px" }}>{draft.cashCurrency}</span>
-                  ) : (
-                    <select value={draft.cashCurrency} onChange={(e) => setDraft({ ...draft, cashCurrency: e.target.value })} style={{ ...miniInput, width: 80 }} title="New symbol — sets the currency it'll always trade in">
-                      {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                  )}
+                  <span className="ll-mono" style={{ fontSize: 12.5, color: C.inkFaint, padding: "0 4px" }}>{account.currency}</span>
                   <select
                     value={draft.otherAccountId}
                     onChange={(e) => repointOtherAccount(e.target.value)}
@@ -1797,7 +1665,6 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
                   {r.txn.description || <span style={{ color: C.inkFaint }}>—</span>}
                   {unmatched && <span title="Cash side not yet matched to another account"><AlertTriangle size={12} color={C.gold} /></span>}
                 </div>
-                <div className="ll-mono" style={{ fontWeight: 600 }}>{r.symbol}</div>
                 <div className="ll-mono text-right" style={{ color: unitsOut ? C.debit : C.inkFaint }}>{unitsOut ? fmtUnits(unitsOut) : "—"}</div>
                 <div className="ll-mono text-right" style={{ color: unitsIn ? C.credit : C.inkFaint }}>{unitsIn ? fmtUnits(unitsIn) : "—"}</div>
                 <div className="ll-mono text-right" style={{ fontWeight: 600 }}>{fmtUnits(r.running)}</div>
@@ -1814,9 +1681,6 @@ function StockLedger({ account, accounts, transactions, onEditAccount, onSaveTxn
         })}
       </div>
       )}
-      <datalist id="ll-symbols">
-        {knownSymbols.map((s) => <option key={s} value={s} />)}
-      </datalist>
     </div>
   );
 }
@@ -1832,11 +1696,20 @@ function AccountFormModal({ initial, onCancel, onSave, onDelete }) {
   const [name, setName] = useState(initial.name || "");
   const [type, setType] = useState(initial.type || "asset");
   const [currency, setCurrency] = useState(initial.currency || "GBP");
+  const [symbol, setSymbol] = useState(initial.symbol || "");
   const [opening, setOpening] = useState(initial.openingBalance ? String(initial.openingBalance) : "0");
 
   function submit() {
     if (!name.trim()) return;
-    onSave({ id: initial.id, name: name.trim(), type, currency, openingBalance: parseFloat(opening) || 0 });
+    if (type === "investment" && !symbol.trim()) return;
+    onSave({
+      id: initial.id,
+      name: name.trim(),
+      type,
+      currency,
+      openingBalance: parseFloat(opening) || 0,
+      ...(type === "investment" ? { symbol: symbol.trim().toUpperCase() } : {}),
+    });
   }
 
   return (
@@ -1848,7 +1721,12 @@ function AccountFormModal({ initial, onCancel, onSave, onDelete }) {
             {TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
           </select>
         </Field>
-        <Field label={type === "investment" ? "Default cash currency" : "Currency"}>
+        {type === "investment" && (
+          <Field label="Symbol">
+            <input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} style={{ ...inputStyle, textTransform: "uppercase" }} placeholder="e.g. AAPL" />
+          </Field>
+        )}
+        <Field label={type === "investment" ? "Trading currency" : "Currency"}>
           <select value={currency} onChange={(e) => setCurrency(e.target.value)} style={inputStyle}>
             {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
