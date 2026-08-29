@@ -26,7 +26,7 @@ class Transaction
     private string $id;
 
     /** @var Collection<int, Line> */
-    #[ORM\OneToMany(targetEntity: Line::class, mappedBy: 'transaction', cascade: ['persist'], orphanRemoval: true)]
+    #[ORM\OneToMany(targetEntity: Line::class, mappedBy: 'transaction', cascade: ['persist', 'remove'], orphanRemoval: true)]
     private Collection $lines;
 
     public function __construct()

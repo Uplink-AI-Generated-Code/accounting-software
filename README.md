@@ -78,6 +78,6 @@ Investment accounts hold exactly one security. Nothing about price-per-share is 
 
 **Frontend:** React, Tailwind, [Recharts](https://recharts.org/) for the combined stock chart, [Lucide](https://lucide.dev/) for icons — split into `src/lib/` (formatting, matching, ISA rules, stock math — no JSX) and `src/components/` (the views).
 
-**Backend:** Symfony (API-only, no Twig), Doctrine ORM + Migrations, SQLite. Two endpoints — `GET`/`PUT /api/state` — that read and replace the whole ledger at once, mirroring how the frontend already saves.
+**Backend:** Symfony (API-only, no Twig), Doctrine ORM + Migrations, SQLite. `GET /api/state` covers the frontend's initial load; every write after that goes through discrete per-entity endpoints (`/api/accounts/{id}`, `/api/settings`, `/api/transactions/batch`) instead of replacing the whole ledger at once.
 
 See `CLAUDE.md` if you're developing this further with Claude Code — it documents the sign conventions and shared logic that aren't obvious from the code alone.

@@ -4,7 +4,8 @@ import { C } from "./lib/theme";
 import { uid, fmt, fmtUnits } from "./lib/format";
 import { buildNestedGroups } from "./lib/grouping";
 import { currentCostBasis, currentPortfolioValue } from "./lib/stockMath";
-import { hasStorage, accountIdFromHash, setHashForAccount } from "./lib/hash";
+import { accountIdFromHash, setHashForAccount } from "./lib/hash";
+import * as api from "./api";
 import { ModalShell } from "./components/ui";
 import { GroupLevelPicker } from "./components/GroupLevelPicker";
 import { SidebarGroupTree } from "./components/SidebarGroupTree";
@@ -81,18 +82,18 @@ export default function App() {
 
   // Selecting an account updates the URL and remembered storage together,
   // so a refresh (or a bookmark, or the back/forward buttons) lands back
-  // on the same account instead of always resetting to the overview.
+  // on the same account instead of always resetting to the overview. This
+  // is a per-browser convenience, not ledger data, so it stays in
+  // localStorage rather than going through the backend.
   function selectAccount(id) {
     setSelectedIdRaw(id);
     setShowAllowance(false);
     setHashForAccount(id);
-    if (hasStorage()) {
-      try {
-        if (id) window.storage.set("ledger-selected-account", id, false);
-        else window.storage.delete("ledger-selected-account", false);
-      } catch (e) {
-        /* non-fatal — selection just won't be remembered */
-      }
+    try {
+      if (id) localStorage.setItem("ledger-selected-account", id);
+      else localStorage.removeItem("ledger-selected-account");
+    } catch (e) {
+      /* non-fatal — selection just won't be remembered */
     }
   }
   function setSelectedId(id) {
@@ -104,36 +105,25 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      if (!hasStorage()) {
-        setStorageOK(false);
-        setLoaded(true);
-        return;
-      }
       try {
-        const res = await window.storage.get("ledger-data", false);
-        if (res && res.value) {
-          const parsed = JSON.parse(res.value);
-          setAccounts(parsed.accounts || []);
-          setTransactions(parsed.transactions || []);
-          if (parsed.settings) {
-            const s = { over65: false, groupLevels: ["type"], savedGroupings: [], ...parsed.settings };
-            // Migrate the old single-level "groupBy" setting if that's all a
-            // previously-saved session has.
-            if (parsed.settings.groupBy && !parsed.settings.groupLevels) s.groupLevels = [parsed.settings.groupBy];
-            delete s.groupBy;
-            setSettings(s);
-          }
+        const state = await api.getState();
+        setAccounts(state.accounts || []);
+        setTransactions(state.transactions || []);
+        if (state.settings) {
+          setSettings({ over65: false, groupLevels: ["type"], savedGroupings: [], ...state.settings });
         }
       } catch (e) {
-        /* no data saved yet */
-      }
-      try {
-        const sel = await window.storage.get("ledger-selected-account", false);
-        if (sel && sel.value) storedSelectedIdRef.current = sel.value;
-      } catch (e) {
-        /* nothing remembered yet */
+        // Can't reach the backend — start from an empty ledger rather than
+        // leaving the app stuck loading; the banner below explains why.
+        setStorageOK(false);
       } finally {
         setLoaded(true);
+      }
+      try {
+        const sel = localStorage.getItem("ledger-selected-account");
+        if (sel) storedSelectedIdRef.current = sel;
+      } catch (e) {
+        /* nothing remembered yet */
       }
     })();
   }, []);
@@ -165,20 +155,11 @@ export default function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, [accounts]);
 
-  async function persist(nextAccounts, nextTransactions, nextSettings) {
-    setAccounts(nextAccounts);
-    setTransactions(nextTransactions);
-    if (nextSettings) setSettings(nextSettings);
-    if (!hasStorage()) return;
-    try {
-      await window.storage.set("ledger-data", JSON.stringify({ accounts: nextAccounts, transactions: nextTransactions, settings: nextSettings || settings }));
-    } catch (e) {
-      setStorageOK(false);
-    }
-  }
-
   function saveSettings(next) {
-    persist(accounts, transactions, next);
+    // Optimistic: a flat replace with no cascading effect on accounts or
+    // transactions, so there's nothing to reconcile once the request lands.
+    setSettings(next);
+    api.putSettings(next).then(() => setStorageOK(true)).catch(() => setStorageOK(false));
   }
 
   function saveGroupingPreset(levels) {
@@ -247,9 +228,14 @@ export default function App() {
   }
 
   function saveAccount(data) {
-    if (data.id) persist(accounts.map((a) => (a.id === data.id ? data : a)), transactions);
-    else persist([...accounts, { ...data, id: uid() }], transactions);
+    // Optimistic: a plain PUT/upsert with no cascading effect elsewhere,
+    // so the account we already have locally is exactly what the server
+    // will end up storing — no need to wait on the round trip to update
+    // the UI.
+    const account = data.id ? data : { ...data, id: uid() };
+    setAccounts((prev) => (prev.some((a) => a.id === account.id) ? prev.map((a) => (a.id === account.id ? account : a)) : [...prev, account]));
     setAccountForm(null);
+    api.putAccount(account).then(() => setStorageOK(true)).catch(() => setStorageOK(false));
   }
 
   function requestDeleteAccount(id) {
@@ -268,48 +254,68 @@ export default function App() {
   }
 
   // Removing an account never destroys the other side of a linked entry —
-  // it just strips this account's own line out of each transaction
+  // the backend strips this account's own line out of each transaction
   // (deleting the transaction outright only if nothing else was on it),
-  // same principle as Unlink and removing a split line elsewhere.
+  // same principle as Unlink and removing a split line elsewhere. Not
+  // optimistic — that stripping logic lives server-side now (see
+  // LedgerStateService::deleteAccount), so the accurate next transactions
+  // list has to come from its response rather than being recomputed here.
   function performDeleteAccount(id) {
-    const nextTransactions = transactions
-      .map((t) => {
-        if (!t.lines.some((l) => l.accountId === id)) return t;
-        const remaining = t.lines.filter((l) => l.accountId !== id);
-        return remaining.length ? { ...t, lines: remaining } : null;
+    api
+      .deleteAccount(id)
+      .then(({ transactions: fresh }) => {
+        setStorageOK(true);
+        setAccounts((prev) => prev.filter((a) => a.id !== id));
+        setTransactions(fresh);
       })
-      .filter(Boolean);
-    persist(accounts.filter((a) => a.id !== id), nextTransactions);
+      .catch(() => setStorageOK(false));
     if (selectedId === id) setSelectedId(null);
     setAccountForm(null);
     setDeleteConfirm(null);
   }
 
+  // Every transaction write — a plain save, a merge (mergeDeleteId), a
+  // split-off (insertExtras) — becomes one batch of upsert/delete
+  // operations, applied atomically by the backend. Not optimistic, same
+  // reasoning as performDeleteAccount: the resulting transactions list
+  // comes back from the call rather than being recomputed here.
   function saveTransaction(data, mergeDeleteId, insertExtras) {
-    // All edits computed from the same snapshot of `transactions` in one
-    // shot — doing this as separate calls would have each read the same
-    // stale array and clobber one another.
-    let next = transactions;
-    if (mergeDeleteId) next = next.filter((t) => t.id !== mergeDeleteId);
-    if (data.id) next = next.map((t) => (t.id === data.id ? { ...data } : t));
-    else next = [...next, { ...data, id: uid() }];
-    if (insertExtras && insertExtras.length) next = [...next, ...insertExtras.map((e) => ({ ...e, id: uid() }))];
-    persist(accounts, next);
+    const operations = [{ op: "upsert", transaction: { id: data.id || uid(), lines: data.lines } }];
+    if (mergeDeleteId) operations.push({ op: "delete", id: mergeDeleteId });
+    if (insertExtras && insertExtras.length) {
+      insertExtras.forEach((e) => operations.push({ op: "upsert", transaction: { id: uid(), lines: e.lines } }));
+    }
+    api
+      .applyTransactionOperations(operations)
+      .then(({ transactions: fresh }) => {
+        setStorageOK(true);
+        setTransactions(fresh);
+      })
+      .catch(() => setStorageOK(false));
   }
 
   // Applies line changes to several transactions at once (e.g. re-stamping
-  // a whole same-date group's order after a reorder) — one persist call,
-  // so none of the updates can be lost to a stale read of `transactions`.
+  // a whole same-date group's order after a reorder) — one batch call, so
+  // none of the updates can be lost or applied out of order.
   function updateTransactions(updates) {
-    const next = transactions.map((t) => {
-      const u = updates.find((x) => x.id === t.id);
-      return u ? { ...t, lines: u.lines } : t;
-    });
-    persist(accounts, next);
+    const operations = updates.map((u) => ({ op: "upsert", transaction: { id: u.id, lines: u.lines } }));
+    api
+      .applyTransactionOperations(operations)
+      .then(({ transactions: fresh }) => {
+        setStorageOK(true);
+        setTransactions(fresh);
+      })
+      .catch(() => setStorageOK(false));
   }
 
   function deleteTransaction(id) {
-    persist(accounts, transactions.filter((t) => t.id !== id));
+    api
+      .applyTransactionOperations([{ op: "delete", id }])
+      .then(({ transactions: fresh }) => {
+        setStorageOK(true);
+        setTransactions(fresh);
+      })
+      .catch(() => setStorageOK(false));
   }
 
   const selected = accounts.find((a) => a.id === selectedId) || null;
@@ -339,7 +345,7 @@ export default function App() {
 
       {!storageOK && (
         <div className="mx-6 mt-4 px-3 py-2 rounded flex items-center gap-2" style={{ background: C.paperDim, color: C.inkSoft, fontSize: 12.5 }}>
-          <AlertTriangle size={14} color={C.gold} /> This preview can't save between sessions here — your work will stay only for this visit.
+          <AlertTriangle size={14} color={C.gold} /> Can't reach the backend — check that the Symfony server is running. Changes won't be saved until it's back.
         </div>
       )}
       {error && (

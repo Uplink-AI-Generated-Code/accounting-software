@@ -1,7 +1,3 @@
-export function hasStorage() {
-  return typeof window !== "undefined" && !!window.storage && typeof window.storage.get === "function" && typeof window.storage.set === "function";
-}
-
 /* ---------------------------------------------------------
    A minimal hash router — no server, so the URL fragment is the only
    thing that survives a refresh unprompted. #/account/<id> selects an

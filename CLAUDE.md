@@ -11,11 +11,12 @@ Symfony backend (`backend/`) into SQLite via Doctrine — see "Backend" below.
 
 `src/App.jsx` is the top-level component (state, persistence, routing, the
 modal/nav-guard wiring) — it renders the pieces below but holds no ledger
-math itself. `src/main.jsx` is just the React mount point; `src/apiStorage.js`
-installs `window.storage` (the app's only persistence interface — get/set/
-delete/list) backed by the Symfony API for the ledger's own data, and by
-`localStorage` for the one purely-local UI convenience key
-(`ledger-selected-account`).
+math itself. `src/main.jsx` is just the React mount point. `src/api.js` is
+the typed client for the Symfony backend's discrete endpoints (see
+"Backend" below) — every mutation in `App.jsx` goes through it. The one
+piece of state that isn't ledger data at all — `ledger-selected-account`,
+which account was last viewed, a per-browser convenience — is read/written
+directly via `localStorage` in `App.jsx`, not through `api.js`.
 
 The app was originally one ~3100-line `ledger-app.jsx` file and was split by
 domain, not by component-per-file dogma — some UI pieces still share a file
@@ -28,7 +29,7 @@ because they're small or tightly coupled:
   `stockMath.js` (cost basis / portfolio value), `matching.js`
   (`getComparableAmount`, `getDirectComparableAmount`, `balanceHint`),
   `chartSeries.js` (daily-series builder for charts), `hash.js` (the
-  `#/account/<id>` router + `hasStorage`).
+  `#/account/<id>` router).
 - `src/components/` — UI: `AccountLedger.jsx` and `StockLedger.jsx` are the
   two ledger views; both depend on `otherLines.jsx`, which holds the
   `useOtherLines` hook and `OtherLinesEditor` component **shared between
@@ -73,6 +74,10 @@ SQLite. All commands run from `backend/`.
   save it as a JSON file, then `php bin/console app:import-local-storage
   path/to/file.json` — see `src/Command/ImportLocalStorageCommand.php`.
   **This replaces the whole database**, it's not a merge.
+- Backup/export the current database: `php bin/console app:export-state
+  path/to/file.json` — see `src/Command/ExportStateCommand.php`. Writes
+  the same shape `GET /api/state` returns, so the file round-trips
+  straight back through `app:import-local-storage`.
 - The SQLite file lives at `backend/var/data_dev.db` (gitignored, along with
   the rest of `var/`).
 
@@ -84,21 +89,43 @@ There is no test suite and no linter configured in either half of the repo.
   entity and no login. If that ever changes, every controller and the
   `LedgerStateService` write path need an ownership check added, not just a
   login screen bolted on.
-- **Two endpoints only**: `GET /api/state` and `PUT /api/state`
-  (`src/Controller/StateController.php`), returning/accepting exactly the
-  `{ accounts, transactions, settings }` shape the frontend already works
-  with via `persist()` in `App.jsx`. This is deliberate — the frontend
-  always saves its whole state at once, so a REST resource-per-entity API
-  would just be more surface for no benefit. Don't add per-resource CRUD
-  endpoints without a real reason (e.g. a second client that needs partial
-  updates).
-- **`PUT` is a full wipe-and-rebuild**, not a diff/merge — see
-  `LedgerStateService::writeState()`. It runs inside one DB transaction, so
-  a bad request can't leave the ledger half-written. This matches the
-  frontend's own model (it already computes the full next state before
-  calling `persist`), and sidesteps having to reimplement the same
-  reference-integrity ordering (accounts → transactions → lines) a merge
-  would also need.
+- **The live app uses discrete, per-entity endpoints**, not one bulk
+  save — `PUT`/`DELETE /api/accounts/{id}` (`AccountController.php`),
+  `PUT /api/settings` (`SettingsController.php`), and
+  `POST /api/transactions/batch` (`TransactionController.php`).
+  `GET /api/state` (`StateController.php`) still returns the full
+  `{ accounts, transactions, settings }` shape for the frontend's one-shot
+  initial load — reads never had the atomicity problem writes did, so
+  there was no reason to split that into three requests.
+- **Compound frontend actions become one `POST /api/transactions/batch`
+  call**, not several separate requests. Merging two entries, splitting a
+  removed line off into its own standalone record, and reordering several
+  same-date rows all used to need one atomic "save everything" call
+  because the old model kept state only in memory; with a real database
+  each row is independently authoritative, so the *only* remaining reason
+  for a batch is that these specific frontend actions still need several
+  DB rows to change together. The endpoint takes an ordered list of
+  `{op: "upsert", transaction: {...}}` / `{op: "delete", id}` and applies
+  them in one DB transaction — see
+  `LedgerStateService::applyTransactionOperations()`. A plain single save
+  or delete just sends a one-element list; don't special-case that into a
+  separate endpoint, it'd be a second code path doing the same thing.
+- **Accounts and settings never had that compound-atomicity problem**, so
+  they're plain single-resource endpoints: `PUT` upserts one account (ids
+  are frontend-provided, so PUT-with-client-chosen-id doubles as create),
+  `DELETE` removes one. Deleting an account still has to cascade —
+  stripping its line out of every transaction and deleting any transaction
+  that becomes fully empty as a result — so `DELETE` returns the fresh
+  transactions list (`LedgerStateService::deleteAccount()`) rather than
+  the frontend recomputing that itself, the way it used to.
+- **None of the discrete write handlers are optimistic on the frontend**
+  except `saveAccount`/`saveSettings` in `App.jsx` (plain replaces with no
+  side effects elsewhere). Account deletion and every transaction write
+  wait for the response and set state from it, specifically to avoid
+  re-implementing the cascade/merge/split-off logic a second time in JS —
+  see the comments on `performDeleteAccount`/`saveTransaction` in
+  `App.jsx`. If this ever needs to feel snappier, that's the place to add
+  optimistic updates, not by moving business logic back to the frontend.
 - **`Account`/`Transaction` ids are frontend-provided strings** (the
   frontend already generates them with `uid()`), not Doctrine-generated —
   this is what lets a round-trip save keep every id stable. `Line` has no
@@ -114,10 +141,11 @@ There is no test suite and no linter configured in either half of the repo.
   `accountToArray()`/`lineToArray()`'s `array_filter`. This matches the
   frontend's own convention of fields like `line.order` or `line.cashValue`
   being entirely absent rather than present-but-null.
-- `ImportLocalStorageCommand` reuses `LedgerStateService::writeState()` —
-  the exact same code path the live `PUT` endpoint uses — so an import
-  behaves identically to the frontend saving that data itself. Don't give
-  the command its own separate insert logic.
+- `writeState()` (a full wipe-and-rebuild in one DB transaction) still
+  exists on `LedgerStateService`, but only `ImportLocalStorageCommand`
+  calls it — a first-time import is genuinely a "replace everything"
+  operation. Don't route live app traffic through it; that's what the
+  discrete endpoints above are for.
 
 ## Data model — read this before touching transactions
 
