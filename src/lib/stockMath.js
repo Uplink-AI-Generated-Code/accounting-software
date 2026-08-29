@@ -45,16 +45,6 @@ export function buildCostBasisSeries(sortedLines, startISO, endISO) {
   return points;
 }
 
-// The current cost basis — no daily walk needed, just the end result of
-// applying every line once in order. Used anywhere that only needs
-// "what's it worth right now" (sidebar, Overview, the ledger's own
-// header) rather than a full time series.
-export function currentCostBasis(sortedLines) {
-  const state = { units: 0, cost: 0 };
-  sortedLines.forEach((l) => applyCostBasisLine(state, l));
-  return state.cost;
-}
-
 // A "mark to last trade" portfolio value: with no live price feed, the
 // most recent trade's own price (its cash value ÷ its units) is the best
 // available stand-in for a current price, applied to the *whole*
@@ -92,9 +82,4 @@ export function buildPortfolioValueSeries(sortedLines, startISO, endISO) {
     safety++;
   }
   return points;
-}
-export function currentPortfolioValue(sortedLines) {
-  const state = { units: 0, lastPrice: 0, value: 0 };
-  sortedLines.forEach((l) => applyPortfolioValueLine(state, l));
-  return state.value;
 }

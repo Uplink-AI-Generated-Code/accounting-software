@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Plus, AlertTriangle, BookOpen, X } from "lucide-react";
 import { C } from "./lib/theme";
 import { uid, fmt, fmtUnits } from "./lib/format";
 import { buildNestedGroups } from "./lib/grouping";
-import { currentCostBasis, currentPortfolioValue } from "./lib/stockMath";
 import { accountIdFromHash, setHashForAccount } from "./lib/hash";
 import * as api from "./api";
 import { ModalShell } from "./components/ui";
@@ -20,8 +19,12 @@ import { AccountFormModal } from "./components/AccountFormModal";
    App
 --------------------------------------------------------- */
 export default function App() {
+  // The one thing kept loaded app-wide — a lightweight list, each account
+  // carrying its own computed balance (and, for investment accounts, cost
+  // basis / portfolio value). No line-level data lives here; that's
+  // fetched per account view by AccountLedger/StockLedger and discarded
+  // on navigating away — see CLAUDE.md's "Backend" section.
   const [accounts, setAccounts] = useState([]);
-  const [transactions, setTransactions] = useState([]);
   const [settings, setSettings] = useState({ over65: false, groupLevels: ["type"], savedGroupings: [] });
   const [loaded, setLoaded] = useState(false);
   const [storageOK, setStorageOK] = useState(true);
@@ -103,14 +106,19 @@ export default function App() {
     attemptNavigation(() => { setSelectedIdRaw(null); setShowAllowance(true); });
   }
 
+  async function refreshAccounts() {
+    const list = await api.getAccounts();
+    setAccounts(list);
+    return list;
+  }
+
   useEffect(() => {
     (async () => {
       try {
-        const state = await api.getState();
-        setAccounts(state.accounts || []);
-        setTransactions(state.transactions || []);
-        if (state.settings) {
-          setSettings({ over65: false, groupLevels: ["type"], savedGroupings: [], ...state.settings });
+        await refreshAccounts();
+        const s = await api.getSettings().catch(() => null);
+        if (s) {
+          setSettings({ over65: false, groupLevels: ["type"], savedGroupings: [], ...s });
         }
       } catch (e) {
         // Can't reach the backend — start from an empty ledger rather than
@@ -172,70 +180,31 @@ export default function App() {
     saveSettings({ ...settings, savedGroupings: (settings.savedGroupings || []).filter((s) => s.id !== id) });
   }
 
-  const balances = useMemo(() => {
-    const map = {};
-    accounts.forEach((a) => (map[a.id] = a.openingBalance || 0));
-    transactions.forEach((t) =>
-      t.lines.forEach((l) => {
-        map[l.accountId] = (map[l.accountId] || 0) + l.amount;
-      })
-    );
-    return map;
-  }, [accounts, transactions]);
-
-  // Current cost basis per stock account — what's actually tied up in it
-  // right now, average-cost method — and a "mark to last trade" portfolio
-  // value, using the most recent trade's own price applied to the whole
-  // holding. Neither is a live market value (no price feed here); cost
-  // basis is an honest "how much of your own money is in this," and
-  // portfolio value is the closest stand-in for "what it's worth" that
-  // can be derived purely from your own trading history.
-  const stockCostBasis = useMemo(() => {
-    const map = {};
-    accounts.filter((a) => a.type === "investment").forEach((a) => {
-      const lines = transactions
-        .map((t) => t.lines.find((l) => l.accountId === a.id))
-        .filter(Boolean)
-        .sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : 0));
-      map[a.id] = currentCostBasis(lines);
-    });
-    return map;
-  }, [accounts, transactions]);
-  const stockPortfolioValues = useMemo(() => {
-    const map = {};
-    accounts.filter((a) => a.type === "investment").forEach((a) => {
-      const lines = transactions
-        .map((t) => t.lines.find((l) => l.accountId === a.id))
-        .filter(Boolean)
-        .sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : 0));
-      map[a.id] = currentPortfolioValue(lines);
-    });
-    return map;
-  }, [accounts, transactions]);
-
   // Each investment account holds exactly one security, so its balance —
   // computed the same way as any other account's — already *is* the unit
   // count. Only the display differs: units and a symbol, not a currency.
   // An ISA wrapper holds no balance of its own — it's shown by how many
-  // subaccounts it groups.
+  // subaccounts it groups. balance/portfolioValue are computed server-side
+  // now (see GET /api/accounts) rather than derived here.
   function accountDisplay(a) {
     if (a.type === "isa-parent") {
       const n = accounts.filter((x) => x.isaParentId === a.id).length;
       return `${n} subaccount${n === 1 ? "" : "s"}`;
     }
-    const bal = balances[a.id] || 0;
-    return a.type === "investment" ? `${fmtUnits(bal)} ${a.symbol} · ${fmt(stockPortfolioValues[a.id] || 0, a.currency)}` : fmt(bal, a.currency);
+    const bal = a.balance || 0;
+    return a.type === "investment" ? `${fmtUnits(bal)} ${a.symbol} · ${fmt(a.portfolioValue || 0, a.currency)}` : fmt(bal, a.currency);
   }
 
   function saveAccount(data) {
     // Optimistic: a plain PUT/upsert with no cascading effect elsewhere,
     // so the account we already have locally is exactly what the server
     // will end up storing — no need to wait on the round trip to update
-    // the UI.
+    // the UI. (balance/entryCount/costBasis/portfolioValue on a brand new
+    // account are all correctly absent/zero until the next refresh.)
     const account = data.id ? data : { ...data, id: uid() };
-    setAccounts((prev) => (prev.some((a) => a.id === account.id) ? prev.map((a) => (a.id === account.id ? account : a)) : [...prev, account]));
+    setAccounts((prev) => (prev.some((a) => a.id === account.id) ? prev.map((a) => (a.id === account.id ? { ...a, ...account } : a)) : [...prev, account]));
     setAccountForm(null);
-    api.putAccount(account).then(() => setStorageOK(true)).catch(() => setStorageOK(false));
+    api.putAccount(account).then(() => { setStorageOK(true); refreshAccounts(); }).catch(() => setStorageOK(false));
   }
 
   function requestDeleteAccount(id) {
@@ -244,30 +213,25 @@ export default function App() {
       setError("Can't delete an ISA that still has subaccounts. Delete those first.");
       return;
     }
-    const entryCount = transactions.filter((t) => t.lines.some((l) => l.accountId === id)).length;
+    const acc = accounts.find((a) => a.id === id);
+    const entryCount = (acc && acc.entryCount) || 0;
     if (entryCount === 0) {
       performDeleteAccount(id);
       return;
     }
-    const acc = accounts.find((a) => a.id === id);
     setDeleteConfirm({ id, entryCount, name: acc ? acc.name : "" });
   }
 
   // Removing an account never destroys the other side of a linked entry —
   // the backend strips this account's own line out of each transaction
   // (deleting the transaction outright only if nothing else was on it),
-  // same principle as Unlink and removing a split line elsewhere. Not
-  // optimistic — that stripping logic lives server-side now (see
-  // LedgerStateService::deleteAccount), so the accurate next transactions
-  // list has to come from its response rather than being recomputed here.
+  // same principle as Unlink and removing a split line elsewhere. Deleting
+  // always navigates away from the account being viewed, so there's no
+  // ledger screen left that needs patching — just refresh the account list.
   function performDeleteAccount(id) {
     api
       .deleteAccount(id)
-      .then(({ transactions: fresh }) => {
-        setStorageOK(true);
-        setAccounts((prev) => prev.filter((a) => a.id !== id));
-        setTransactions(fresh);
-      })
+      .then(() => { setStorageOK(true); return refreshAccounts(); })
       .catch(() => setStorageOK(false));
     if (selectedId === id) setSelectedId(null);
     setAccountForm(null);
@@ -276,21 +240,18 @@ export default function App() {
 
   // Every transaction write — a plain save, a merge (mergeDeleteId), a
   // split-off (insertExtras) — becomes one batch of upsert/delete
-  // operations, applied atomically by the backend. Not optimistic, same
-  // reasoning as performDeleteAccount: the resulting transactions list
-  // comes back from the call rather than being recomputed here.
+  // operations, applied atomically by the backend. Returns the refreshed
+  // account list's promise so the calling ledger screen can chain its own
+  // re-fetch of just-changed rows after this resolves.
   function saveTransaction(data, mergeDeleteId, insertExtras) {
     const operations = [{ op: "upsert", transaction: { id: data.id || uid(), lines: data.lines } }];
     if (mergeDeleteId) operations.push({ op: "delete", id: mergeDeleteId });
     if (insertExtras && insertExtras.length) {
       insertExtras.forEach((e) => operations.push({ op: "upsert", transaction: { id: uid(), lines: e.lines } }));
     }
-    api
+    return api
       .applyTransactionOperations(operations)
-      .then(({ transactions: fresh }) => {
-        setStorageOK(true);
-        setTransactions(fresh);
-      })
+      .then(() => { setStorageOK(true); return refreshAccounts(); })
       .catch(() => setStorageOK(false));
   }
 
@@ -299,22 +260,16 @@ export default function App() {
   // none of the updates can be lost or applied out of order.
   function updateTransactions(updates) {
     const operations = updates.map((u) => ({ op: "upsert", transaction: { id: u.id, lines: u.lines } }));
-    api
+    return api
       .applyTransactionOperations(operations)
-      .then(({ transactions: fresh }) => {
-        setStorageOK(true);
-        setTransactions(fresh);
-      })
+      .then(() => { setStorageOK(true); return refreshAccounts(); })
       .catch(() => setStorageOK(false));
   }
 
   function deleteTransaction(id) {
-    api
+    return api
       .applyTransactionOperations([{ op: "delete", id }])
-      .then(({ transactions: fresh }) => {
-        setStorageOK(true);
-        setTransactions(fresh);
-      })
+      .then(() => { setStorageOK(true); return refreshAccounts(); })
       .catch(() => setStorageOK(false));
   }
 
@@ -387,7 +342,6 @@ export default function App() {
             depth={0}
             selectedId={selectedId}
             onSelect={setSelectedId}
-            balances={balances}
             accountDisplay={accountDisplay}
           />
         </aside>
@@ -395,14 +349,12 @@ export default function App() {
 
         <main className="flex-1 p-6">
           {showAllowance ? (
-            <AllowanceView accounts={accounts} transactions={transactions} settings={settings} onSaveSettings={saveSettings} onSelect={setSelectedId} />
+            <AllowanceView accounts={accounts} settings={settings} onSaveSettings={saveSettings} onSelect={setSelectedId} />
           ) : selected ? (
             selected.type === "isa-parent" ? (
               <IsaParentView
                 account={selected}
                 accounts={accounts}
-                balances={balances}
-                stockPortfolioValues={stockPortfolioValues}
                 onEditAccount={() => setAccountForm(selected)}
                 onSelect={setSelectedId}
                 onNewSubaccount={(kind) => setAccountForm({ isaParentPreset: selected.id, typePreset: kind })}
@@ -411,8 +363,7 @@ export default function App() {
               <StockLedger
                 account={selected}
                 accounts={accounts}
-                transactions={transactions}
-                balance={balances[selected.id] || 0}
+                balance={selected.balance || 0}
                 onEditAccount={() => setAccountForm(selected)}
                 onSaveTxn={saveTransaction}
                 onDeleteTxn={deleteTransaction}
@@ -423,8 +374,7 @@ export default function App() {
               <AccountLedger
                 account={selected}
                 accounts={accounts}
-                transactions={transactions}
-                balance={balances[selected.id] || 0}
+                balance={selected.balance || 0}
                 onEditAccount={() => setAccountForm(selected)}
                 onSaveTxn={saveTransaction}
                 onDeleteTxn={deleteTransaction}
@@ -433,7 +383,7 @@ export default function App() {
               />
             )
           ) : (
-            <Overview accounts={accounts} balances={balances} stockCostBasis={stockCostBasis} stockPortfolioValues={stockPortfolioValues} settings={settings} onSaveSettings={saveSettings} onSaveGrouping={saveGroupingPreset} onRemoveGrouping={removeGroupingPreset} onSelect={setSelectedId} onNew={() => setAccountForm({})} />
+            <Overview accounts={accounts} settings={settings} onSaveSettings={saveSettings} onSaveGrouping={saveGroupingPreset} onRemoveGrouping={removeGroupingPreset} onSelect={setSelectedId} onNew={() => setAccountForm({})} />
           )}
         </main>
       </div>

@@ -17,11 +17,6 @@ export function fmtDate(d) {
 export function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
-export function daysDiff(a, b) {
-  const t1 = new Date(a + "T00:00:00").getTime();
-  const t2 = new Date(b + "T00:00:00").getTime();
-  return Math.round((t2 - t1) / 86400000);
-}
 export function addDays(dateISO, days) {
   const d = new Date(dateISO + "T00:00:00");
   d.setDate(d.getDate() + days);

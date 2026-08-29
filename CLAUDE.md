@@ -9,39 +9,58 @@ ISA support with allowance tracking, and one-security-per-account stock
 accounts with cost basis / portfolio value tracking. State is persisted by a
 Symfony backend (`backend/`) into SQLite via Doctrine — see "Backend" below.
 
+**The frontend is a per-account editor, not a "load everything" app.**
+Exactly one thing is kept loaded app-wide: a lightweight account list (id,
+name, type, currency, and a server-computed `balance` / `costBasis` /
+`portfolioValue` per account — no line-level data). Everything below that —
+one account's own transactions, ISA allowance usage, match candidates while
+linking an entry — is fetched from the backend on demand and never held in
+one big client-side array. This is a deliberate rewrite of an earlier
+version that loaded the whole ledger into React state up front; see
+"Backend" for what moved server-side and why.
+
 `src/App.jsx` is the top-level component (state, persistence, routing, the
 modal/nav-guard wiring) — it renders the pieces below but holds no ledger
-math itself. `src/main.jsx` is just the React mount point. `src/api.js` is
-the typed client for the Symfony backend's discrete endpoints (see
-"Backend" below) — every mutation in `App.jsx` goes through it. The one
-piece of state that isn't ledger data at all — `ledger-selected-account`,
-which account was last viewed, a per-browser convenience — is read/written
-directly via `localStorage` in `App.jsx`, not through `api.js`.
+math itself, and holds no transaction data at all (that's fetched per
+account view — see `useAccountLedger`). `src/main.jsx` is just the React
+mount point. `src/api.js` is the typed client for the Symfony backend's
+endpoints — every mutation in `App.jsx`, and every per-account/per-search
+fetch in the components below, goes through it. The one piece of state that
+isn't ledger data at all — `ledger-selected-account`, which account was
+last viewed, a per-browser convenience — is read/written directly via
+`localStorage` in `App.jsx`, not through `api.js`.
 
 The app was originally one ~3100-line `ledger-app.jsx` file and was split by
 domain, not by component-per-file dogma — some UI pieces still share a file
 because they're small or tightly coupled:
 
-- `src/lib/` — pure logic, no JSX: `theme.js` (colors/tokens, `TYPES`,
-  `ISA_KINDS`, `CURRENCIES`, `GROUP_DIMENSIONS`), `format.js` (date/currency
-  formatting, `uid`), `grouping.js` (sidebar/Overview nesting, `bucketBy`,
-  `reorderSameDate`), `isa.js` (tax-year rules, `computeIsaUsage`),
-  `stockMath.js` (cost basis / portfolio value), `matching.js`
-  (`getComparableAmount`, `getDirectComparableAmount`, `balanceHint`),
-  `chartSeries.js` (daily-series builder for charts), `hash.js` (the
-  `#/account/<id>` router).
+- `src/lib/` — pure logic, no JSX, no fetching: `theme.js` (colors/tokens,
+  `TYPES`, `ISA_KINDS`, `CURRENCIES`, `GROUP_DIMENSIONS`), `format.js`
+  (date/currency formatting, `uid`), `grouping.js` (sidebar/Overview
+  nesting, `bucketBy`, `reorderSameDate`), `isa.js` (the static tax-year
+  rules and `isaProducts` grouping — the actual usage computation is
+  server-side now, see below), `stockMath.js` (the running cost-basis /
+  portfolio-value walk, still used client-side for a ledger's own running
+  column and its chart), `matching.js` (`formatCandidateAmount`,
+  `candidateIsNegative`, `balanceHint` — the actual match *search* is
+  server-side now), `chartSeries.js` (daily-series builder for charts),
+  `hash.js` (the `#/account/<id>` router).
 - `src/components/` — UI: `AccountLedger.jsx` and `StockLedger.jsx` are the
   two ledger views; both depend on `otherLines.jsx`, which holds the
   `useOtherLines` hook and `OtherLinesEditor` component **shared between
-  them** (see below — do not fork this per-ledger). `charts.jsx` holds all
-  the Recharts wrappers together since they share tooltip/series-hook
-  plumbing. `Overview.jsx`, `OverviewGroupTree.jsx`, `SidebarGroupTree.jsx`,
-  `AccountCard.jsx`, `GroupLevelPicker.jsx` are the grouping/browsing UI.
-  `IsaParentView.jsx`, `AllowanceView.jsx`, `AccountFormModal.jsx` are the
-  remaining top-level views/modals. `ui.jsx` holds tiny shared primitives
-  (`ModalShell`, `Field`, `miniInput`/`inputStyle`, `iconBtn`).
-  `useLedgerRowAnimation.js` is the FLIP/autoscroll hook shared by both
-  ledgers' row lists.
+  them** (see below — do not fork this per-ledger), and on two small fetch
+  hooks: `useAccountLedger.js` (loads/reloads one account's transactions)
+  and `useMatchCandidates.js` (debounced match search for the row currently
+  being edited). `charts.jsx` holds all the Recharts wrappers together
+  since they share tooltip/series-hook plumbing. `Overview.jsx`,
+  `OverviewGroupTree.jsx`, `SidebarGroupTree.jsx`, `AccountCard.jsx`,
+  `GroupLevelPicker.jsx` are the grouping/browsing UI — all read
+  `balance`/`costBasis`/`portfolioValue` straight off each account object
+  rather than from a separately-computed lookup map. `IsaParentView.jsx`,
+  `AllowanceView.jsx`, `AccountFormModal.jsx` are the remaining top-level
+  views/modals. `ui.jsx` holds tiny shared primitives (`ModalShell`,
+  `Field`, `miniInput`/`inputStyle`, `iconBtn`). `useLedgerRowAnimation.js`
+  is the FLIP/autoscroll hook shared by both ledgers' row lists.
 
 When adding a helper, put it in the `lib/` module that already owns that
 domain rather than inlining it into a component or creating a new module for
@@ -76,56 +95,84 @@ SQLite. All commands run from `backend/`.
   **This replaces the whole database**, it's not a merge.
 - Backup/export the current database: `php bin/console app:export-state
   path/to/file.json` — see `src/Command/ExportStateCommand.php`. Writes
-  the same shape `GET /api/state` returns, so the file round-trips
-  straight back through `app:import-local-storage`.
+  the same shape `LedgerStateService::readState()` produces internally, so
+  the file round-trips straight back through `app:import-local-storage`.
 - The SQLite file lives at `backend/var/data_dev.db` (gitignored, along with
-  the rest of `var/`).
+  the rest of `var/`); a separate `var/data_test.db` is used for the test
+  suite (see below).
+- Run the backend test suite: `php bin/phpunit` (from `backend/`). Uses the
+  `test` environment's own SQLite file — run `php bin/console
+  doctrine:migrations:migrate --env=test` once after a fresh clone or a new
+  migration, same as for `dev`.
 
-There is no test suite and no linter configured in either half of the repo.
+There is a small PHPUnit suite for the backend (see "Backend" below for what
+it covers and why); no test suite and no linter on the frontend.
 
 ## Backend
 
 - **Single user, no auth.** This is a personal local app; there's no `User`
-  entity and no login. If that ever changes, every controller and the
-  `LedgerStateService` write path need an ownership check added, not just a
-  login screen bolted on.
-- **The live app uses discrete, per-entity endpoints**, not one bulk
-  save — `PUT`/`DELETE /api/accounts/{id}` (`AccountController.php`),
-  `PUT /api/settings` (`SettingsController.php`), and
-  `POST /api/transactions/batch` (`TransactionController.php`).
-  `GET /api/state` (`StateController.php`) still returns the full
-  `{ accounts, transactions, settings }` shape for the frontend's one-shot
-  initial load — reads never had the atomicity problem writes did, so
-  there was no reason to split that into three requests.
-- **Compound frontend actions become one `POST /api/transactions/batch`
-  call**, not several separate requests. Merging two entries, splitting a
-  removed line off into its own standalone record, and reordering several
-  same-date rows all used to need one atomic "save everything" call
-  because the old model kept state only in memory; with a real database
-  each row is independently authoritative, so the *only* remaining reason
-  for a batch is that these specific frontend actions still need several
-  DB rows to change together. The endpoint takes an ordered list of
-  `{op: "upsert", transaction: {...}}` / `{op: "delete", id}` and applies
-  them in one DB transaction — see
-  `LedgerStateService::applyTransactionOperations()`. A plain single save
-  or delete just sends a one-element list; don't special-case that into a
-  separate endpoint, it'd be a second code path doing the same thing.
-- **Accounts and settings never had that compound-atomicity problem**, so
-  they're plain single-resource endpoints: `PUT` upserts one account (ids
-  are frontend-provided, so PUT-with-client-chosen-id doubles as create),
-  `DELETE` removes one. Deleting an account still has to cascade —
-  stripping its line out of every transaction and deleting any transaction
-  that becomes fully empty as a result — so `DELETE` returns the fresh
-  transactions list (`LedgerStateService::deleteAccount()`) rather than
-  the frontend recomputing that itself, the way it used to.
-- **None of the discrete write handlers are optimistic on the frontend**
-  except `saveAccount`/`saveSettings` in `App.jsx` (plain replaces with no
-  side effects elsewhere). Account deletion and every transaction write
-  wait for the response and set state from it, specifically to avoid
-  re-implementing the cascade/merge/split-off logic a second time in JS —
-  see the comments on `performDeleteAccount`/`saveTransaction` in
-  `App.jsx`. If this ever needs to feel snappier, that's the place to add
-  optimistic updates, not by moving business logic back to the frontend.
+  entity and no login. If that ever changes, every controller and every
+  service's write path need an ownership check added, not just a login
+  screen bolted on.
+- **Endpoints, grouped by what the frontend uses them for:**
+  - `GET /api/accounts` (`AccountController::list`) — the lightweight,
+    app-wide list. `LedgerStateService::accountsWithStats()` computes each
+    account's `balance` (a SQL `SUM`) and `entryCount`, plus — for
+    investment accounts — `costBasis`/`portfolioValue` by walking that
+    one account's own lines in the same order the frontend's ledger rows
+    use (see "Stock valuation" below). Called on load and after every
+    mutation (`App.jsx`'s `refreshAccounts()`).
+  - `GET /api/accounts/{id}/ledger` (`AccountController::ledger`) — every
+    transaction touching one account, complete with *all* of that
+    transaction's lines (not just this account's own), in the same
+    `{id, lines: [...]}` shape the old full-ledger load used — see
+    `LedgerStateService::accountLedger()`. Fetched by
+    `useAccountLedger.js` on mount/account-change and re-fetched after
+    that ledger's own mutations; nothing else holds this data, so
+    navigating away discards it.
+  - `PUT`/`DELETE /api/accounts/{id}` (`AccountController`) — plain
+    single-account upsert/delete. Ids are frontend-provided (see below),
+    so `PUT` doubles as create. `DELETE` cascades server-side — stripping
+    the account's line out of every transaction and deleting any
+    transaction left with zero lines — and returns no data: deleting
+    always navigates the frontend away from the account being viewed, so
+    there's no ledger screen left to patch (`LedgerStateService::deleteAccount()`).
+  - `GET`/`PUT /api/settings` (`SettingsController`) — plain singleton
+    read/replace.
+  - `POST /api/transactions/batch` (`TransactionController`) — the one
+    endpoint that still takes a *list*: `{operations: [{op: "upsert",
+    transaction: {...}} | {op: "delete", id}]}`, applied atomically in one
+    DB transaction (`LedgerStateService::applyTransactionOperations()`).
+    Merging two entries, splitting a removed line off into its own
+    standalone record, and reordering several same-date rows all become
+    one call here; a plain single save or delete just sends a
+    one-element list — don't give that its own endpoint, it'd be a second
+    code path doing the same thing. This is the *only* place several rows
+    still need to change together: with a real database every other write
+    is independently atomic per-row, which is what let the old "compute
+    the whole next state, save it all at once" pattern go away.
+  - `GET /api/match-candidates` (`MatchController` /
+    `MatchingService::findCandidates()`) — replaces the old client-side
+    "scan every transaction for a plausible counterpart" search. Query
+    params: `currency`, `amount`, `date`, `mode` (`mirrored` or `direct` —
+    same distinction `getComparableAmount`/`getDirectComparableAmount`
+    used to draw, see "Matching and linking" below), optionally
+    `excludeTransactionId` and `excludeAccountIds`. Called debounced
+    (`useMatchCandidates.js`, and the per-split-leg search inside
+    `otherLines.jsx`) as the user types an amount into an unmatched leg,
+    not on every keystroke synchronously.
+  - `GET /api/isa-allowance?taxYearStart=YYYY` (`IsaAllowanceController` /
+    `IsaAllowanceService::computeUsage()`) — see "ISA allowance engine"
+    below.
+- **None of the write handlers are optimistic on the frontend** except
+  `saveAccount`/`saveSettings` in `App.jsx` (plain replaces with no
+  cascading effect elsewhere). Account deletion and every transaction
+  write wait for the response, then re-fetch (`refreshAccounts()` for the
+  account list; each ledger's own `reload()` for its rows) rather than
+  trying to patch local state — specifically so the cascade/merge/
+  split-off logic lives in exactly one place (the backend), not
+  duplicated in JS. If this ever needs to feel snappier, that's the place
+  to add optimism, not to move business logic back to the frontend.
 - **`Account`/`Transaction` ids are frontend-provided strings** (the
   frontend already generates them with `uid()`), not Doctrine-generated —
   this is what lets a round-trip save keep every id stable. `Line` has no
@@ -137,15 +184,32 @@ There is no test suite and no linter configured in either half of the repo.
   masked this until ORM-generated (unquoted) INSERT/DELETE statements hit
   it. If you add another entity whose class name collides with a SQL
   keyword, expect the same failure mode and fix it the same way.
+- **Always hydrate a bidirectional `Transaction`↔`Line` pair via
+  `$transaction->addLine($line)`, never `$line->setTransaction($transaction)`
+  alone.** `addLine()` keeps the Transaction's own in-memory `lines`
+  collection in sync; without it, reading that Transaction's lines back
+  *within the same request* (e.g. `IsaAllowanceService`/`MatchingService`
+  reading a just-written transaction, or a test that writes then reads)
+  sees Doctrine's stale, still-empty collection from construction, even
+  though the DB row is correct — the identity map serves back the same PHP
+  object rather than re-querying. This bit `IsaAllowanceServiceTest`
+  before the fix; see `LedgerStateService::hydrateLine()`'s comment.
 - **Nullable columns are omitted from the JSON**, not sent as `null` — see
   `accountToArray()`/`lineToArray()`'s `array_filter`. This matches the
   frontend's own convention of fields like `line.order` or `line.cashValue`
   being entirely absent rather than present-but-null.
-- `writeState()` (a full wipe-and-rebuild in one DB transaction) still
-  exists on `LedgerStateService`, but only `ImportLocalStorageCommand`
-  calls it — a first-time import is genuinely a "replace everything"
-  operation. Don't route live app traffic through it; that's what the
-  discrete endpoints above are for.
+- `readState()`/`writeState()` (a full read/wipe-and-rebuild) still exist
+  on `LedgerStateService`, used only by `ExportStateCommand` and
+  `ImportLocalStorageCommand` — a backup or a first-time import is
+  genuinely a "everything at once" operation. Live app traffic never calls
+  either; that's what the endpoints above are for.
+- **Test suite** (`backend/tests/`, run via `php bin/phpunit`): covers
+  `IsaAllowanceService` specifically — the flexible-ISA lot-tracking
+  simulation is the one piece of logic in this app subtle enough to have
+  produced a real bug before (see "ISA allowance engine"), so it gets a
+  safety net where everything else relies on manual browser verification.
+  Add a case there before changing that algorithm; don't feel obliged to
+  add tests elsewhere in the backend to match.
 
 ## Data model — read this before touching transactions
 
@@ -174,33 +238,47 @@ There is no test suite and no linter configured in either half of the repo.
   `amount`**, not the natural cash direction — a buy has positive units
   *and* positive `cashValue`, even though cash actually left the account.
   Natural cash paid/received is always `-cashValue`. This mirror
-  convention is intentional (see `getComparableAmount` below) — don't
+  convention is intentional (see "Matching and linking" below) — don't
   "fix" the sign without re-deriving every call site that depends on it.
 - `line.exchangeAmount` / `line.exchangeCurrency`: same mirror convention,
   for a currency-exchange tag on a plain cash line.
 
-## Matching and linking — two different comparison functions, on purpose
+## Matching and linking — two different comparison modes, on purpose
 
-- `getComparableAmount(line, acc, targetCurrency)`: returns the *mirrored*
-  value (raw `amount`, or `cashValue`/`exchangeAmount` as stored). Used
-  wherever the target itself was computed as `-delta` of the line being
-  edited — the double negation is what makes a cash outflow correctly
-  find a stock purchase's positive `cashValue`.
-- `getDirectComparableAmount(line, acc, targetCurrency)`: returns the
-  *natural* value (un-mirrors an investment line's `cashValue`). Used
-  when the user has directly typed "In 14" / "Out 226.95" into a specific
-  split leg and expects to find a record that literally reads that way.
+The search itself is server-side (`MatchingService::findCandidates()`,
+`GET /api/match-candidates`); this is about the two ways it can compare a
+line's value against a target, and where each is used.
+
+- **Mirrored mode** (`MatchingService::comparableAmount($line, $acc,
+  $targetCurrency, direct: false)`): returns the *mirrored* value (raw
+  `amount`, or `cashValue`/`exchangeAmount` as stored). Used wherever the
+  search target itself was computed as `-delta` of the line being edited —
+  the double negation is what makes a cash outflow correctly find a stock
+  purchase's positive `cashValue`. This is `AccountLedger`/`StockLedger`'s
+  own primary-leg search (`useMatchCandidates.js`, `mode: "mirrored"`).
+- **Direct mode** (`direct: true`): returns the *natural* value (un-mirrors
+  an investment line's `cashValue`). Used when the user has directly typed
+  "In 14" / "Out 226.95" into a specific split leg and expects to find a
+  record that literally reads that way. This is the per-leg search inside
+  `useOtherLines` (`otherLines.jsx`, `mode: "direct"`).
 - Getting these two swapped silently breaks matching for one direction
-  (cash↔cash still looks fine; cash↔stock doesn't). If you touch either
-  function, re-verify both a plain 2-way match and a split leg that finds
-  a stock trade.
-- `useOtherLines(account, accounts, transactions, draft, setDraft,
-  smartDefaultForFirst)` is a shared hook used by **both** `AccountLedger`
-  and `StockLedger` for their arrays of linked "other account" legs —
-  adding, removing, updating, resolving to a savable line, and per-leg
-  match search. `OtherLinesEditor` is the shared row-rendering component.
-  Do not reintroduce a per-component copy of this logic; extend the
-  shared hook/component instead.
+  (cash↔cash still looks fine; cash↔stock doesn't). If you touch
+  `comparableAmount()`, re-verify both a plain 2-way match and a split leg
+  that finds a stock trade — this was ported from the frontend's old
+  `getComparableAmount`/`getDirectComparableAmount` and has no test
+  coverage of its own yet.
+- `useOtherLines(account, accounts, draft, setDraft, smartDefaultForFirst)`
+  is a shared hook used by **both** `AccountLedger` and `StockLedger` for
+  their arrays of linked "other account" legs — adding, removing,
+  updating, resolving to a savable line, and a debounced per-leg match
+  search. `OtherLinesEditor` is the shared row-rendering component. Do not
+  reintroduce a per-component copy of this logic; extend the shared
+  hook/component instead.
+- A selected match candidate's line data is stored directly on the
+  `otherLine` as `matchedLine` (set in `selectMatch`/
+  `selectMatchForOtherLine`) rather than looked up from a `transactions`
+  array — there isn't one client-side anymore. `resolveOtherLine()` uses
+  `ol.matchedLine` when saving a matched leg.
 - Removing or re-pointing a linked leg never deletes the other side's
   data — it gets queued into `splitOffLines` and saved as its own
   standalone record. This is load-bearing behavior, not an edge case:
@@ -209,28 +287,57 @@ There is no test suite and no linter configured in either half of the repo.
 
 ## ISA allowance engine
 
-- `computeIsaUsage` treats a flat ISA account and a Stocks & Shares ISA
+Ported to PHP (`backend/src/Service/IsaAllowanceService.php`,
+`GET /api/isa-allowance?taxYearStart=YYYY`) — it needs every ISA-tagged
+account's full transaction history, which the frontend no longer loads.
+Kept deliberately close to the original `src/lib/isa.js` source (same
+variable names, same structure) to make auditing the two side by side
+easy; `isaProducts()`/`isaRulesFor()` stayed client-side in `lib/isa.js`
+since they're pure and only need the account list, which is loaded anyway.
+
+- `computeUsage()` treats a flat ISA account and a Stocks & Shares ISA
   wrapper (+ its subaccounts) as one "product" each. A transfer between
   two of the user's own ISAs (or between subaccounts of the same wrapper)
   never counts as a new subscription — detected by checking whether the
-  *other* side of a transaction is itself ISA-tagged.
-- Flexible ISAs are modeled with real lot-tracking (`priorPoolEntering`,
+  *other* side of a transaction is itself ISA-tagged
+  (`isExternalLine()`).
+- Flexible ISAs are modeled with real lot-tracking (`priorPoolEntering()`,
   chronological event simulation across all flexible products together),
   not a simple running total. Withdrawals draw down this year's own
   subscriptions first; only the this-year portion is replaceable into
   *any* flexible ISA, older money only back into the same one. Don't
   simplify this back to `deposits - withdrawals` — that was tried and
   produced wrong (negative) numbers when a withdrawal wasn't replaced.
+- **This is the one algorithm in the app with test coverage**
+  (`backend/tests/Service/IsaAllowanceServiceTest.php`) — non-flexible
+  deposits/withdrawals, a transfer between two own ISAs, a flexible
+  same-year withdrawal replaced into a *different* flexible ISA, and
+  prior-year money only being replaceable into the *same* ISA. Extend
+  these tests rather than relying on manual verification if you change
+  this file — that's exactly the class of regression they exist to catch.
 
 ## Stock valuation — three distinct, deliberately different numbers
 
 - **Units**: running balance, like any account.
-- **Cost basis** (`applyCostBasisLine` / `buildCostBasisSeries`):
-  average-cost method. A sale removes a *proportional* share of average
-  cost, not the sale proceeds — settles to exactly 0 once fully sold.
-- **Portfolio value** (`applyPortfolioValueLine` /
-  `buildPortfolioValueSeries`): "mark to last trade" — the most recent
+- **Cost basis** (`applyCostBasisLine`, ported to
+  `LedgerStateService::applyCostBasisLine()` for `GET /api/accounts`'
+  `costBasis`): average-cost method. A sale removes a *proportional*
+  share of average cost, not the sale proceeds — settles to exactly 0
+  once fully sold.
+- **Portfolio value** (`applyPortfolioValueLine`, same PHP-port
+  situation, → `portfolioValue`): "mark to last trade" — the most recent
   trade's own implied price, applied to the *whole* current holding.
+- Both live in **two places now**: `src/lib/stockMath.js` still has
+  `applyCostBasisLine`/`applyPortfolioValueLine`/`buildCostBasisSeries`/
+  `buildPortfolioValueSeries`, used client-side for a stock ledger's own
+  running-total column and its chart (both operate on the one account's
+  already-fetched lines — cheap, no reason to move). The *current totals*
+  shown in the sidebar/Overview/account header come from the backend's
+  port instead (`LedgerStateService::stockStatsFor()`), computed over
+  that account's lines in the exact same order
+  (`orderedLinesFor()`: date, then `order`, then transaction id) — same-day
+  ordering can change the result, so the tiebreak has to match exactly or
+  the two totals will silently disagree.
 - None of these is a live market value — there is no price feed anywhere
   in this app. Don't let a future request to "show current value" quietly
   turn into fabricating market prices; surface the distinction to the

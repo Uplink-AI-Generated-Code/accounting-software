@@ -76,8 +76,8 @@ Investment accounts hold exactly one security. Nothing about price-per-share is 
 
 ## Tech
 
-**Frontend:** React, Tailwind, [Recharts](https://recharts.org/) for the combined stock chart, [Lucide](https://lucide.dev/) for icons — split into `src/lib/` (formatting, matching, ISA rules, stock math — no JSX) and `src/components/` (the views).
+**Frontend:** React, Tailwind, [Recharts](https://recharts.org/) for the combined stock chart, [Lucide](https://lucide.dev/) for icons — split into `src/lib/` (formatting, ISA rules, stock math — no JSX, no fetching), `src/components/` (the views, plus the small hooks that fetch per-account/per-search data), and `src/api.js` (the backend client).
 
-**Backend:** Symfony (API-only, no Twig), Doctrine ORM + Migrations, SQLite. `GET /api/state` covers the frontend's initial load; every write after that goes through discrete per-entity endpoints (`/api/accounts/{id}`, `/api/settings`, `/api/transactions/batch`) instead of replacing the whole ledger at once.
+**Backend:** Symfony (API-only, no Twig), Doctrine ORM + Migrations, SQLite, a small PHPUnit suite for the ISA allowance engine. The frontend keeps only a lightweight, app-wide account list in memory (id, name, balance) — one account's own transactions, ISA allowance usage, and match candidates while linking an entry are all fetched from the backend on demand and discarded when you navigate away, rather than the whole ledger living in the browser.
 
 See `CLAUDE.md` if you're developing this further with Claude Code — it documents the sign conventions and shared logic that aren't obvious from the code alone.

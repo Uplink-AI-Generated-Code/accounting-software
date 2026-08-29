@@ -1,21 +1,34 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { C, ISA_KINDS } from "../lib/theme";
 import { fmt, todayISO } from "../lib/format";
-import { taxYearStartYearFor, taxYearBounds, isaRulesFor, isaProducts, computeIsaUsage } from "../lib/isa";
+import { taxYearStartYearFor, taxYearBounds, isaRulesFor, isaProducts } from "../lib/isa";
+import { getIsaAllowance } from "../api";
 
 /* ---------------------------------------------------------
    ISA Allowance — how much of the current (or a nearby) UK tax year's
    allowance has been used, per ISA kind, against whichever rules apply
    to that tax year. The 2027/28 Cash ISA sub-cap appears automatically
    once that tax year is in view — nothing here needed manual updating.
+   The usage numbers themselves come from the backend (see
+   IsaAllowanceService) — computing them needs every ISA-tagged account's
+   full transaction history, not just the lightweight account list this
+   page otherwise has. isaProducts()/isaRulesFor() stay client-side: pure,
+   and only need the account list already loaded.
 --------------------------------------------------------- */
-export function AllowanceView({ accounts, transactions, settings, onSaveSettings, onSelect }) {
+export function AllowanceView({ accounts, settings, onSaveSettings, onSelect }) {
   const currentStartYear = taxYearStartYearFor(todayISO());
   const [startYear, setStartYear] = useState(currentStartYear);
 
   const { label } = taxYearBounds(startYear);
   const rules = isaRulesFor(startYear, settings.over65);
-  const usage = useMemo(() => computeIsaUsage(accounts, transactions, startYear), [accounts, transactions, startYear]);
+  const [usage, setUsage] = useState({ byKind: {}, total: 0 });
+  useEffect(() => {
+    let cancelled = false;
+    getIsaAllowance(startYear)
+      .then((u) => { if (!cancelled) setUsage(u); })
+      .catch(() => { if (!cancelled) setUsage({ byKind: {}, total: 0 }); });
+    return () => { cancelled = true; };
+  }, [startYear]);
 
   function Bar({ used, cap, color }) {
     const pct = cap ? Math.min(100, (used / cap) * 100) : 0;

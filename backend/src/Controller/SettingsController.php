@@ -14,6 +14,12 @@ class SettingsController
     {
     }
 
+    #[Route('', methods: ['GET'])]
+    public function get(): JsonResponse
+    {
+        return new JsonResponse($this->state->getSettings());
+    }
+
     #[Route('', methods: ['PUT'])]
     public function put(Request $request): JsonResponse
     {

@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, Check, X, AlertTriangle, Pencil, Unlink2, TrendingUp, TableProperties, ChevronUp, ChevronDown } from "lucide-react";
 import { C } from "../lib/theme";
-import { fmt, fmtUnits, todayISO, daysDiff, fmtDate } from "../lib/format";
+import { fmt, fmtUnits, todayISO, fmtDate } from "../lib/format";
 import { reorderSameDate } from "../lib/grouping";
 import { applyCostBasisLine, applyPortfolioValueLine } from "../lib/stockMath";
-import { getComparableAmount, formatCandidateAmount, candidateIsNegative } from "../lib/matching";
+import { formatCandidateAmount, candidateIsNegative } from "../lib/matching";
 import { useOtherLines, OtherLinesEditor } from "./otherLines";
+import { useAccountLedger } from "./useAccountLedger";
+import { useMatchCandidates } from "./useMatchCandidates";
 import { useLedgerRowAnimation } from "./useLedgerRowAnimation";
 import { UnitsChart } from "./charts";
 import { iconBtn, miniInput } from "./ui";
@@ -32,10 +34,12 @@ function blankStockDraft(account) {
   };
 }
 
-export function StockLedger({ account, accounts, transactions, balance, onEditAccount, onSaveTxn, onDeleteTxn, onUpdateTxns, guardRef }) {
+export function StockLedger({ account, accounts, balance, onEditAccount, onSaveTxn, onDeleteTxn, onUpdateTxns, guardRef }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
   const [view, setView] = useState("ledger");
+
+  const { transactions, loaded, reload } = useAccountLedger(account.id);
 
   function unitsDeltaOf(d) {
     const i = parseFloat(d.unitsInStr);
@@ -58,7 +62,7 @@ export function StockLedger({ account, accounts, transactions, balance, onEditAc
   }
 
   const { otherLineFromLine, resolveOtherLine, addOtherLine, removeOtherLine, updateOtherLine, otherLineCandidates, selectMatchForOtherLine } = useOtherLines(
-    account, accounts, transactions, draft, setDraft,
+    account, accounts, draft, setDraft,
     (d) => {
       const natural = cashDeltaOf(d);
       return natural !== 0 ? { isOut: natural < 0, amountStr: String(Math.abs(natural)) } : null;
@@ -92,24 +96,17 @@ export function StockLedger({ account, accounts, transactions, balance, onEditAc
 
   // Match candidates for the trade's own tag — only offered before any
   // other leg has been added, since matching decides what the first one
-  // should be. Same "-cashValue" convention as getComparableAmount.
-  const matchCandidates = useMemo(() => {
-    if (!draft || draft.otherLines.length > 0) return [];
-    if (unitsDeltaOf(draft) === 0 || !draft.date) return [];
-    if (draft.valueStr === "") return [];
+  // should be. Same "-cashValue" convention as mirrored mode elsewhere —
+  // see api.getMatchCandidates.
+  const matchParams = useMemo(() => {
+    if (!draft || draft.otherLines.length > 0) return null;
+    if (unitsDeltaOf(draft) === 0 || !draft.date) return null;
+    if (draft.valueStr === "") return null;
     const targetAmount = cashDeltaOf(draft); // = -cashValue, i.e. the real counterpart's own amount
-    const targetCurrency = account.currency;
-
-    return transactions
-      .filter((t) => t.id !== draft.txnId && t.lines.length === 1)
-      .map((t) => ({ txn: t, line: t.lines[0], acc: accounts.find((a) => a.id === t.lines[0].accountId) }))
-      .filter((c) => c.acc && c.acc.id !== account.id)
-      .map((c) => ({ ...c, comparable: getComparableAmount(c.line, c.acc, targetCurrency) }))
-      .filter((c) => c.comparable !== undefined && Math.abs(c.comparable - targetAmount) < 0.005)
-      .filter((c) => Math.abs(daysDiff(draft.date, c.line.date)) <= 3)
-      .sort((a, b) => Math.abs(daysDiff(draft.date, a.line.date)) - Math.abs(daysDiff(draft.date, b.line.date)));
+    return { currency: account.currency, amount: targetAmount, date: draft.date, excludeTransactionId: draft.txnId, excludeAccountIds: [account.id] };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, transactions, accounts, account]);
+  }, [draft, account]);
+  const matchCandidates = useMatchCandidates(matchParams);
 
   const effectiveTxns = useMemo(() => {
     let list = transactions;
@@ -199,6 +196,7 @@ export function StockLedger({ account, accounts, transactions, balance, onEditAc
       if (!d) return d;
       const ol = otherLineFromLine(candidate.line, null);
       ol.matchedTxnId = candidate.txn.id;
+      ol.matchedLine = candidate.line;
       return { ...d, otherLines: [...d.otherLines, ol] };
     });
   }
@@ -215,7 +213,7 @@ export function StockLedger({ account, accounts, transactions, balance, onEditAc
       { id: t.id, lines: [mine] },
       undefined,
       rest.map((l) => ({ lines: [l] }))
-    );
+    ).then(reload);
     setDraft(null);
     setDraftError("");
   }
@@ -224,7 +222,7 @@ export function StockLedger({ account, accounts, transactions, balance, onEditAc
   // lets that order be set deliberately instead.
   function moveRow(idx, dir) {
     const updates = reorderSameDate(rows, idx, dir, account.id);
-    if (updates) onUpdateTxns(updates);
+    if (updates) onUpdateTxns(updates).then(reload);
   }
 
   function commit() {
@@ -239,7 +237,7 @@ export function StockLedger({ account, accounts, transactions, balance, onEditAc
       { id: draft.mode === "edit" ? draft.txnId : undefined, lines: data.lines },
       matchedId,
       splitOffExtras
-    );
+    ).then(reload);
     setDraft(null);
     setDraftError("");
     return true;
@@ -288,9 +286,9 @@ export function StockLedger({ account, accounts, transactions, balance, onEditAc
           <button onClick={onEditAccount} className="px-3 py-1.5 rounded" style={{ border: `1px solid ${C.line}`, fontSize: 13 }}>Edit account</button>
           <button
             onClick={() => { setDraft(blankStockDraft(account)); setDraftError(""); }}
-            disabled={!!draft}
+            disabled={!!draft || !loaded}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded"
-            style={{ background: draft ? C.inkFaint : C.ink, color: C.paper, fontSize: 13, cursor: draft ? "default" : "pointer" }}
+            style={{ background: draft || !loaded ? C.inkFaint : C.ink, color: C.paper, fontSize: 13, cursor: draft || !loaded ? "default" : "pointer" }}
           >
             <Plus size={14} /> Add trade
           </button>
@@ -305,7 +303,8 @@ export function StockLedger({ account, accounts, transactions, balance, onEditAc
           <div>Date</div><div>Description</div><div className="text-right">Units out</div><div className="text-right">Units in</div><div className="text-right">Balance</div><div />
         </div>
 
-        {rows.length === 0 && !draft && <div style={{ padding: "24px 16px", fontSize: 13, color: C.inkFaint }}>No trades yet in this account.</div>}
+        {!loaded && <div style={{ padding: "24px 16px", fontSize: 13, color: C.inkFaint }}>Loading…</div>}
+        {loaded && rows.length === 0 && !draft && <div style={{ padding: "24px 16px", fontSize: 13, color: C.inkFaint }}>No trades yet in this account.</div>}
 
         {rows.map((r, idx) => {
           const isEditing = r.txn.id === editingKey;
@@ -406,7 +405,7 @@ export function StockLedger({ account, accounts, transactions, balance, onEditAc
                       {draft.originalTxn && draft.originalTxn.lines.length >= 2 && (
                         <button onClick={unlinkNow} title="Split back into separate, unlinked entries" className="flex items-center gap-1" style={{ fontSize: 12, color: C.gold }}><Unlink2 size={12} /> Unlink</button>
                       )}
-                      <button onClick={() => { onDeleteTxn(draft.txnId); setDraft(null); setDraftError(""); }} className="flex items-center gap-1" style={{ fontSize: 12, color: C.debit }}><Trash2 size={12} /> Delete</button>
+                      <button onClick={() => { onDeleteTxn(draft.txnId).then(reload); setDraft(null); setDraftError(""); }} className="flex items-center gap-1" style={{ fontSize: 12, color: C.debit }}><Trash2 size={12} /> Delete</button>
                     </div>
                   )}
                 </div>

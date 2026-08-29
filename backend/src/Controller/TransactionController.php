@@ -30,6 +30,8 @@ class TransactionController
             return new JsonResponse(['error' => 'Expected {"operations": [...]}'], 400);
         }
 
-        return new JsonResponse(['transactions' => $this->state->applyTransactionOperations($operations)]);
+        $this->state->applyTransactionOperations($operations);
+
+        return new JsonResponse(['ok' => true]);
     }
 }

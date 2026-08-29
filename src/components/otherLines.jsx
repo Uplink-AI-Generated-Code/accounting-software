@@ -1,9 +1,12 @@
-import { useMemo } from "react";
+import { useEffect, useState } from "react";
 import { Plus, X, Check } from "lucide-react";
 import { C } from "../lib/theme";
-import { uid, todayISO, daysDiff, fmtDate } from "../lib/format";
-import { getDirectComparableAmount, formatCandidateAmount, candidateIsNegative } from "../lib/matching";
+import { uid, todayISO, fmtDate } from "../lib/format";
+import { getMatchCandidates } from "../api";
+import { formatCandidateAmount, candidateIsNegative } from "../lib/matching";
 import { miniInput } from "./ui";
+
+const DEBOUNCE_MS = 300;
 
 /* ---------------------------------------------------------
    Account Ledger — inline add/edit, live FLIP reorder + autoscroll
@@ -13,6 +16,7 @@ export function blankOtherLine(accountId) {
     key: uid(),
     accountId: accountId || "",
     matchedTxnId: null,
+    matchedLine: null,
     snapshot: null,
     // cash-account fields
     isOut: true,
@@ -33,7 +37,7 @@ export function blankOtherLine(accountId) {
 // match candidates for whichever legs don't have an account chosen yet.
 // Parameterized by whichever account is being edited (cash or stock) so
 // the same logic drives both without duplicating it.
-export function useOtherLines(account, accounts, transactions, draft, setDraft, smartDefaultForFirst) {
+export function useOtherLines(account, accounts, draft, setDraft, smartDefaultForFirst) {
   function otherLineFromLine(o, snapshot) {
     const oAcc = accounts.find((a) => a.id === o.accountId);
     const base = blankOtherLine(o.accountId);
@@ -52,11 +56,7 @@ export function useOtherLines(account, accounts, transactions, draft, setDraft, 
   }
 
   function resolveOtherLine(d, ol) {
-    if (ol.matchedTxnId) {
-      const matchedTxn = transactions.find((t) => t.id === ol.matchedTxnId);
-      const matchedLine = matchedTxn && matchedTxn.lines.find((l) => l.accountId === ol.accountId);
-      if (matchedLine) return { ...matchedLine };
-    }
+    if (ol.matchedTxnId && ol.matchedLine) return { ...ol.matchedLine };
     const olAcc = accounts.find((a) => a.id === ol.accountId);
     const unchanged = ol.snapshot && ol.snapshot.accountId === ol.accountId;
 
@@ -138,32 +138,54 @@ export function useOtherLines(account, accounts, transactions, draft, setDraft, 
 
   // Each not-yet-assigned leg gets its own candidate search, using
   // exactly what's typed into that leg's own In/Out + amount as a
-  // *direct* description of what the other record should show.
-  // getDirectComparableAmount un-mirrors a stock trade's cashValue so
-  // that means the same thing a plain account's amount already does.
-  const otherLineCandidates = useMemo(() => {
-    if (!draft || !draft.date) return {};
-    const usedAccountIds = new Set([account.id, ...draft.otherLines.map((o) => o.accountId).filter(Boolean)]);
-    const map = {};
-    draft.otherLines.forEach((ol) => {
-      if (ol.accountId || ol.matchedTxnId) return;
+  // *direct* description of what the other record should show — "direct"
+  // mode un-mirrors a stock trade's cashValue so that means the same
+  // thing a plain account's amount already does. Debounced and searched
+  // server-side now (see api.getMatchCandidates) rather than filtered
+  // from an in-memory transactions array that no longer exists here.
+  const [otherLineCandidates, setOtherLineCandidates] = useState({});
+  useEffect(() => {
+    if (!draft || !draft.date) {
+      setOtherLineCandidates({});
+      return;
+    }
+    const usedAccountIds = [account.id, ...draft.otherLines.map((o) => o.accountId).filter(Boolean)];
+    const pending = draft.otherLines.filter((ol) => {
+      if (ol.accountId || ol.matchedTxnId) return false;
       const mag = parseFloat(ol.amountStr);
-      if (isNaN(mag) || mag === 0) return;
-      const targetAmount = ol.isOut ? -mag : mag;
-      const targetCurrency = account.currency;
-      const candidates = transactions
-        .filter((t) => t.id !== draft.txnId && t.lines.length === 1)
-        .map((t) => ({ txn: t, line: t.lines[0], acc: accounts.find((a) => a.id === t.lines[0].accountId) }))
-        .filter((c) => c.acc && !usedAccountIds.has(c.acc.id))
-        .map((c) => ({ ...c, comparable: getDirectComparableAmount(c.line, c.acc, targetCurrency) }))
-        .filter((c) => c.comparable !== undefined && Math.abs(c.comparable - targetAmount) < 0.005)
-        .filter((c) => Math.abs(daysDiff(draft.date, c.line.date)) <= 3)
-        .sort((a, b) => Math.abs(daysDiff(draft.date, a.line.date)) - Math.abs(daysDiff(draft.date, b.line.date)));
-      if (candidates.length) map[ol.key] = candidates;
+      return !isNaN(mag) && mag !== 0;
     });
-    return map;
+    if (pending.length === 0) {
+      setOtherLineCandidates({});
+      return;
+    }
+    const handle = setTimeout(() => {
+      Promise.all(
+        pending.map((ol) => {
+          const mag = parseFloat(ol.amountStr);
+          const targetAmount = ol.isOut ? -mag : mag;
+          return getMatchCandidates({
+            currency: account.currency,
+            amount: targetAmount,
+            date: draft.date,
+            excludeTransactionId: draft.txnId,
+            excludeAccountIds: usedAccountIds,
+            mode: "direct",
+          }).then((candidates) => [ol.key, candidates]);
+        })
+      )
+        .then((pairs) => {
+          const map = {};
+          pairs.forEach(([key, candidates]) => {
+            if (candidates.length) map[key] = candidates;
+          });
+          setOtherLineCandidates(map);
+        })
+        .catch(() => setOtherLineCandidates({}));
+    }, DEBOUNCE_MS);
+    return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, transactions, accounts, account]);
+  }, [draft, account]);
 
   function selectMatchForOtherLine(key, candidate) {
     setDraft((d) => {
@@ -173,6 +195,7 @@ export function useOtherLines(account, accounts, transactions, draft, setDraft, 
         const resolved = otherLineFromLine(candidate.line, null);
         resolved.key = ol.key;
         resolved.matchedTxnId = candidate.txn.id;
+        resolved.matchedLine = candidate.line;
         return resolved;
       });
       return { ...d, otherLines };

@@ -18,6 +18,28 @@ class AccountController
     {
     }
 
+    /**
+     * The lightweight, app-wide account list — sidebar, Overview, the
+     * "link another account" dropdown, and every other place that needs
+     * to know about every account without loading any of their line-level
+     * history.
+     */
+    #[Route('', methods: ['GET'])]
+    public function list(): JsonResponse
+    {
+        return new JsonResponse($this->state->accountsWithStats());
+    }
+
+    /**
+     * The per-account ledger — fetched when a ledger screen opens,
+     * discarded when it closes. See LedgerStateService::accountLedger().
+     */
+    #[Route('/{id}/ledger', methods: ['GET'])]
+    public function ledger(string $id): JsonResponse
+    {
+        return new JsonResponse(['transactions' => $this->state->accountLedger($id)]);
+    }
+
     #[Route('/{id}', methods: ['PUT'])]
     public function put(string $id, Request $request): JsonResponse
     {
@@ -30,14 +52,15 @@ class AccountController
     }
 
     /**
-     * Deleting an account can also delete transactions that become fully
-     * empty as a result (see LedgerStateService::deleteAccount) — the
-     * response carries the fresh transactions list so the frontend can
-     * update its local state without a separate GET.
+     * Deleting an account always navigates the frontend away from it (see
+     * App.jsx's performDeleteAccount), so there's no ledger view left to
+     * patch — just an ack.
      */
     #[Route('/{id}', methods: ['DELETE'])]
     public function delete(string $id): JsonResponse
     {
-        return new JsonResponse(['transactions' => $this->state->deleteAccount($id)]);
+        $this->state->deleteAccount($id);
+
+        return new JsonResponse(['ok' => true]);
     }
 }

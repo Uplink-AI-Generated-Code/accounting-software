@@ -63,9 +63,9 @@ export function buildNestedGroups(subset, levels, allAccounts) {
   }));
 }
 
-export function subtotalsForItems(items, balances) {
+export function subtotalsForItems(items) {
   const sub = {};
-  items.filter((a) => a.type !== "investment" && a.type !== "isa-parent").forEach((a) => { sub[a.currency] = (sub[a.currency] || 0) + (balances[a.id] || 0); });
+  items.filter((a) => a.type !== "investment" && a.type !== "isa-parent").forEach((a) => { sub[a.currency] = (sub[a.currency] || 0) + (a.balance || 0); });
   return sub;
 }
 

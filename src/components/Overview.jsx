@@ -8,7 +8,7 @@ import { OverviewGroupTree } from "./OverviewGroupTree";
 /* ---------------------------------------------------------
    Overview
 --------------------------------------------------------- */
-export function Overview({ accounts, balances, stockCostBasis, stockPortfolioValues, settings, onSaveSettings, onSaveGrouping, onRemoveGrouping, onSelect, onNew }) {
+export function Overview({ accounts, settings, onSaveSettings, onSaveGrouping, onRemoveGrouping, onSelect, onNew }) {
   if (accounts.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center" style={{ marginTop: 100, color: C.inkFaint }}>
@@ -22,7 +22,7 @@ export function Overview({ accounts, balances, stockCostBasis, stockPortfolioVal
     );
   }
   const totalsByCurrency = {};
-  accounts.filter((a) => a.type !== "investment" && a.type !== "isa-parent").forEach((a) => { totalsByCurrency[a.currency] = (totalsByCurrency[a.currency] || 0) + (balances[a.id] || 0); });
+  accounts.filter((a) => a.type !== "investment" && a.type !== "isa-parent").forEach((a) => { totalsByCurrency[a.currency] = (totalsByCurrency[a.currency] || 0) + (a.balance || 0); });
 
   const groupLevels = settings.groupLevels || ["type"];
 
@@ -45,7 +45,7 @@ export function Overview({ accounts, balances, stockCostBasis, stockPortfolioVal
         Combined balance by currency: {Object.entries(totalsByCurrency).map(([c, v]) => fmt(v, c)).join("  ·  ")}
       </p>
 
-      <OverviewGroupTree groups={buildNestedGroups(accounts, groupLevels, accounts)} depth={0} accounts={accounts} balances={balances} stockCostBasis={stockCostBasis} stockPortfolioValues={stockPortfolioValues} onSelect={onSelect} />
+      <OverviewGroupTree groups={buildNestedGroups(accounts, groupLevels, accounts)} depth={0} accounts={accounts} onSelect={onSelect} />
     </div>
   );
 }

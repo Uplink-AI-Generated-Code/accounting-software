@@ -1,38 +1,14 @@
 import { CONTRA_TYPES } from "./theme";
 import { fmt, fmtUnits } from "./format";
 
-// The single per-line value comparable against a given currency, wherever
-// it's found: a plain amount in a matching-currency account, a currency
-// exchange tag, or (for stock accounts) the cash side of a trade. This is
-// what lets a cash entry and a stock trade — or two differently-tagged
-// entries in general — recognise each other as a possible match. Checks
-// investment accounts first: an investment account's own "amount" is
-// units, not cash, so it must never fall through to the plain-currency
-// branch just because its nominal trading currency happens to match.
-export function getComparableAmount(line, acc, targetCurrency) {
-  if (!acc) return undefined;
-  if (acc.type === "investment") {
-    return line.cashCurrency === targetCurrency ? line.cashValue : undefined;
-  }
-  if (acc.currency === targetCurrency) return line.amount;
-  if (line.exchangeCurrency === targetCurrency) return line.exchangeAmount;
-  return undefined;
-}
-// Like getComparableAmount, but returns the *natural* value — what would
-// actually show as this line's own In/Out if you looked at it directly —
-// rather than the self-referential mirror tag. Used when a search target
-// is itself a plain, directly-typed amount (e.g. "In 14" meant to find an
-// existing record that also literally reads "In 14"), where negating
-// anything would be wrong for an ordinary account but a stock trade's
-// cashValue still needs un-mirroring to mean the same thing.
-export function getDirectComparableAmount(line, acc, targetCurrency) {
-  if (!acc) return undefined;
-  if (acc.type === "investment") {
-    return line.cashCurrency === targetCurrency && line.cashValue !== undefined ? -line.cashValue : undefined;
-  }
-  if (acc.currency === targetCurrency) return line.amount;
-  return undefined;
-}
+// getComparableAmount/getDirectComparableAmount — the mirrored-vs-natural
+// sign logic used to search for a match — now live in the backend's
+// MatchingService (see api.getMatchCandidates). This file keeps only what
+// still runs client-side: formatting a candidate the API already found,
+// and validating the balance of a draft's own lines (which only ever
+// involves the handful of accounts already in that draft, not a search
+// across the whole ledger).
+
 // How a match candidate's own value should read in a suggestion list —
 // an investment line's "amount" is units, so it needs its cash side
 // (naturally signed) shown alongside, not just the raw unit count.

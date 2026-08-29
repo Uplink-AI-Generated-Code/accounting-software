@@ -5,9 +5,9 @@ import { AccountCard } from "./AccountCard";
 
 // Renders nested groups on the Overview page — a subtotal line at every
 // non-Type level, and a card grid once a branch reaches its leaf.
-export function OverviewGroupTree({ groups, depth, accounts, balances, stockCostBasis, stockPortfolioValues, onSelect }) {
+export function OverviewGroupTree({ groups, depth, accounts, onSelect }) {
   return groups.map((g) => {
-    const sub = g.dim !== "type" ? subtotalsForItems(g.items, balances) : null;
+    const sub = g.dim !== "type" ? subtotalsForItems(g.items) : null;
     return (
       <div key={g.key} className="mb-6" style={{ marginLeft: depth * 14 }}>
         <div className="flex items-baseline justify-between mb-2">
@@ -18,10 +18,10 @@ export function OverviewGroupTree({ groups, depth, accounts, balances, stockCost
         </div>
         {g.leaf ? (
           <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
-            {g.items.map((a) => <AccountCard key={a.id} a={a} accounts={accounts} balances={balances} stockCostBasis={stockCostBasis} stockPortfolioValues={stockPortfolioValues} onSelect={onSelect} />)}
+            {g.items.map((a) => <AccountCard key={a.id} a={a} accounts={accounts} onSelect={onSelect} />)}
           </div>
         ) : (
-          <OverviewGroupTree groups={g.children} depth={depth + 1} accounts={accounts} balances={balances} stockCostBasis={stockCostBasis} stockPortfolioValues={stockPortfolioValues} onSelect={onSelect} />
+          <OverviewGroupTree groups={g.children} depth={depth + 1} accounts={accounts} onSelect={onSelect} />
         )}
       </div>
     );
