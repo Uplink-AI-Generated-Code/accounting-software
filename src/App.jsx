@@ -1583,7 +1583,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     if (olAcc && olAcc.type === "investment") {
       const unitsMag = Math.abs(parseFloat(ol.unitsStr));
       const units = isNaN(unitsMag) ? 0 : ol.unitsIsOut ? -unitsMag : unitsMag;
-      const base = unchanged ? { ...ol.snapshot } : { accountId: ol.accountId, date: d.date || todayISO() };
+      const base = unchanged ? { ...ol.snapshot } : { accountId: ol.accountId, date: d.date || todayISO(), description: d.description };
       base.amount = units;
       const cashMag = Math.abs(parseFloat(ol.cashStr));
       if (ol.cashStr !== "" && !isNaN(cashMag)) {
@@ -1602,12 +1602,12 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     if (unchanged) {
       return { ...ol.snapshot, amount: amt };
     }
-    return { accountId: ol.accountId, amount: amt, date: d.date || todayISO() };
+    return { accountId: ol.accountId, amount: amt, date: d.date || todayISO(), description: d.description };
   }
 
   function draftToTxn(d, forcedId) {
     const delta = draftDelta(d);
-    const line1 = { accountId: account.id, amount: delta, date: d.date || todayISO() };
+    const line1 = { accountId: account.id, amount: delta, date: d.date || todayISO(), description: (d.description || "").trim() };
 
     // The exchange tag is kept regardless of whether this leg is linked —
     // it's useful as a record of the rate at entry time even once a real
@@ -1624,11 +1624,11 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       return olAcc && olAcc.type === "investment" ? ol.unitsStr !== "" : ol.amountStr !== "";
     });
     if (activeOtherLines.length === 0) {
-      return { id: forcedId || d.txnId, description: d.description, lines: [line1] };
+      return { id: forcedId || d.txnId, lines: [line1] };
     }
 
     const lines = [line1, ...activeOtherLines.map((ol) => resolveOtherLine(d, ol))];
-    return { id: forcedId || d.txnId, description: d.description, lines };
+    return { id: forcedId || d.txnId, lines };
   }
 
   const editingKey = draft ? (draft.mode === "edit" ? draft.txnId : "DRAFT_NEW") : null;
@@ -1741,7 +1741,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       txnId: t.id,
       originalTxn: t,
       date: line.date,
-      description: t.description || "",
+      description: line.description || "",
       inAmountStr: line.amount > 0 ? String(line.amount) : "",
       outAmountStr: line.amount < 0 ? String(-line.amount) : "",
       exchangeChecked: line.exchangeAmount !== undefined,
@@ -1846,9 +1846,9 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     const mine = t.lines.find((l) => l.accountId === account.id);
     const rest = t.lines.filter((l) => l.accountId !== account.id);
     onSaveTxn(
-      { id: t.id, description: t.description, lines: [mine] },
+      { id: t.id, lines: [mine] },
       undefined,
-      rest.map((l) => ({ description: t.description, lines: [l] }))
+      rest.map((l) => ({ lines: [l] }))
     );
     setDraft(null);
     setDraftError("");
@@ -1868,10 +1868,10 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     const data = draftToTxn(draft, draft.mode === "edit" ? draft.txnId : undefined);
     const matchedId = draft.otherLines.find((ol) => ol.matchedTxnId)?.matchedTxnId;
     const splitOffExtras = draft.splitOffLines.length
-      ? draft.splitOffLines.map((sn) => ({ description: draft.originalTxn ? draft.originalTxn.description : draft.description, lines: [sn] }))
+      ? draft.splitOffLines.map((sn) => ({ lines: [sn] }))
       : undefined;
     onSaveTxn(
-      { id: draft.mode === "edit" ? draft.txnId : undefined, description: data.description.trim(), lines: data.lines },
+      { id: draft.mode === "edit" ? draft.txnId : undefined, lines: data.lines },
       matchedId,
       splitOffExtras
     );
@@ -2098,7 +2098,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                           style={{ border: `1px solid ${C.line}`, background: C.card }}
                         >
                           <span style={{ fontSize: 12.5 }}>
-                            <strong>{c.acc.name}</strong> · {fmtDate(c.line.date)}{c.txn.description ? ` · ${c.txn.description}` : ""}
+                            <strong>{c.acc.name}</strong> · {fmtDate(c.line.date)}{c.line.description ? ` · ${c.line.description}` : ""}
                           </span>
                           <span className="ll-mono" style={{ fontSize: 12.5, color: c.line.amount < 0 ? C.debit : C.credit }}>{fmt(c.line.amount, c.acc.currency)}</span>
                         </button>
@@ -2140,7 +2140,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
             >
               <div style={{ color: C.inkSoft, fontSize: 12.5 }}>{fmtDate(r.line.date)}</div>
               <div className="flex items-center gap-2">
-                <span style={{ color: unbalanced ? C.debit : C.ink }}>{r.txn.description || <span style={{ color: C.inkFaint }}>—</span>}</span>
+                <span style={{ color: unbalanced ? C.debit : C.ink }}>{r.line.description || <span style={{ color: C.inkFaint }}>—</span>}</span>
                 {hint.type !== "balanced" && hint.type !== "empty" && (
                   <span title={hint.message}><AlertTriangle size={12} color={unbalanced ? C.debit : C.gold} /></span>
                 )}
@@ -2235,7 +2235,8 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
   function draftToTxn(d, forcedId) {
     const unitsDelta = unitsDeltaOf(d);
     const cashNatural = cashDeltaOf(d);
-    const line1 = { accountId: account.id, amount: unitsDelta, date: d.date || todayISO() };
+    const desc = (d.description || "").trim();
+    const line1 = { accountId: account.id, amount: unitsDelta, date: d.date || todayISO(), description: desc };
     if (d.valueStr !== "") {
       line1.cashValue = -cashNatural;
       line1.cashCurrency = account.currency;
@@ -2254,11 +2255,11 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
         // leg, including its own date, exactly as it was.
         line2 = { ...d.otherLineSnapshot };
       } else {
-        line2 = { accountId: d.otherAccountId, amount: cashNatural, date: d.date || todayISO() };
+        line2 = { accountId: d.otherAccountId, amount: cashNatural, date: d.date || todayISO(), description: desc };
       }
       if (line2) lines.push(line2);
     }
-    return { id: forcedId || d.txnId, description: d.description, lines };
+    return { id: forcedId || d.txnId, lines };
   }
 
   const editingKey = draft ? (draft.mode === "edit" ? draft.txnId : "DRAFT_NEW") : null;
@@ -2341,7 +2342,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
       otherLineSnapshot: other || null,
       splitOffLines: [],
       date: line.date,
-      description: t.description || "",
+      description: line.description || "",
       otherAccountId: other ? other.accountId : "",
       matchedTxnId: null,
       unitsInStr: line.amount > 0 ? String(line.amount) : "",
@@ -2414,9 +2415,9 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
     const mine = t.lines.find((l) => l.accountId === account.id);
     const other = t.lines.find((l) => l.accountId !== account.id);
     onSaveTxn(
-      { id: t.id, description: t.description, lines: [mine] },
+      { id: t.id, lines: [mine] },
       undefined,
-      [{ description: t.description, lines: [other] }]
+      [{ lines: [other] }]
     );
     setDraft(null);
     setDraftError("");
@@ -2434,10 +2435,10 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
     if (unitsDeltaOf(draft) === 0) { setDraftError("Enter units in or out."); return false; }
     const data = draftToTxn(draft, draft.mode === "edit" ? draft.txnId : undefined);
     const splitOffExtras = draft.splitOffLines.length
-      ? draft.splitOffLines.map((sn) => ({ description: draft.originalTxn ? draft.originalTxn.description : draft.description, lines: [sn] }))
+      ? draft.splitOffLines.map((sn) => ({ lines: [sn] }))
       : undefined;
     onSaveTxn(
-      { id: draft.mode === "edit" ? draft.txnId : undefined, description: data.description.trim(), lines: data.lines },
+      { id: draft.mode === "edit" ? draft.txnId : undefined, lines: data.lines },
       draft.matchedTxnId || undefined,
       splitOffExtras
     );
@@ -2600,7 +2601,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
                             style={{ border: `1px solid ${C.line}`, background: C.card }}
                           >
                             <span style={{ fontSize: 12.5 }}>
-                              <strong>{c.acc.name}</strong> · {fmtDate(c.line.date)}{c.txn.description ? ` · ${c.txn.description}` : ""}
+                              <strong>{c.acc.name}</strong> · {fmtDate(c.line.date)}{c.line.description ? ` · ${c.line.description}` : ""}
                             </span>
                             <span className="ll-mono" style={{ fontSize: 12.5, color: c.line.amount < 0 ? C.debit : C.credit }}>{fmt(c.line.amount, c.acc.currency)}</span>
                           </button>
@@ -2638,7 +2639,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
               <div className="grid items-center" style={{ gridTemplateColumns: gridCols, fontSize: 13.5 }}>
                 <div style={{ color: C.inkSoft, fontSize: 12.5 }}>{fmtDate(r.line.date)}</div>
                 <div className="flex items-center gap-2">
-                  {r.txn.description || <span style={{ color: C.inkFaint }}>—</span>}
+                  {r.line.description || <span style={{ color: C.inkFaint }}>—</span>}
                   {unmatched && <span title="Value side not yet matched to another account"><AlertTriangle size={12} color={C.gold} /></span>}
                 </div>
                 <div className="ll-mono text-right" style={{ color: unitsOut ? C.debit : C.inkFaint }}>{unitsOut ? fmtUnits(unitsOut) : "—"}</div>
