@@ -20,6 +20,7 @@ const C = {
   debitBg: "#F3E1D8",
   credit: "#2E5F52",
   creditBg: "#DEE9E1",
+  plum: "#6E5A96",
 };
 
 const TYPES = [
@@ -273,7 +274,7 @@ function SidebarGroupTree({ groups, depth, selectedId, onSelect, balances, accou
   ));
 }
 
-function AccountCard({ a, accounts, balances, onSelect }) {
+function AccountCard({ a, accounts, balances, stockCostBasis, stockPortfolioValues, onSelect }) {
   return (
     <button onClick={() => onSelect(a.id)} className="text-left p-4 rounded" style={{ background: C.card, border: `1px solid ${C.line}` }}>
       <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>
@@ -284,7 +285,11 @@ function AccountCard({ a, accounts, balances, onSelect }) {
       {a.type === "isa-parent" ? (
         <div className="ll-mono" style={{ fontSize: 14, marginTop: 8, color: C.inkFaint }}>{accounts.filter((x) => x.isaParentId === a.id).length} subaccounts</div>
       ) : a.type === "investment" ? (
-        <div className="ll-mono" style={{ fontSize: 16, marginTop: 8, color: C.ink }}>{fmtUnits(balances[a.id] || 0)} <span style={{ fontSize: 13, color: C.inkFaint }}>units</span></div>
+        <>
+          <div className="ll-mono" style={{ fontSize: 16, marginTop: 8, color: C.ink }}>{fmtUnits(balances[a.id] || 0)} <span style={{ fontSize: 13, color: C.inkFaint }}>units</span></div>
+          <div className="ll-mono" style={{ fontSize: 13, marginTop: 2, color: C.ink }}>{fmt((stockPortfolioValues && stockPortfolioValues[a.id]) || 0, a.currency)} <span style={{ color: C.inkFaint }}>worth</span></div>
+          <div className="ll-mono" style={{ fontSize: 12, marginTop: 1, color: C.inkFaint }}>{fmt((stockCostBasis && stockCostBasis[a.id]) || 0, a.currency)} cost basis</div>
+        </>
       ) : (
         <div className="ll-mono" style={{ fontSize: 18, marginTop: 8, color: (balances[a.id] || 0) < 0 ? C.debit : C.ink }}>{fmt(balances[a.id] || 0, a.currency)}</div>
       )}
@@ -294,7 +299,7 @@ function AccountCard({ a, accounts, balances, onSelect }) {
 
 // Renders nested groups on the Overview page — a subtotal line at every
 // non-Type level, and a card grid once a branch reaches its leaf.
-function OverviewGroupTree({ groups, depth, accounts, balances, onSelect }) {
+function OverviewGroupTree({ groups, depth, accounts, balances, stockCostBasis, stockPortfolioValues, onSelect }) {
   return groups.map((g) => {
     const sub = g.dim !== "type" ? subtotalsForItems(g.items, balances) : null;
     return (
@@ -307,10 +312,10 @@ function OverviewGroupTree({ groups, depth, accounts, balances, onSelect }) {
         </div>
         {g.leaf ? (
           <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
-            {g.items.map((a) => <AccountCard key={a.id} a={a} accounts={accounts} balances={balances} onSelect={onSelect} />)}
+            {g.items.map((a) => <AccountCard key={a.id} a={a} accounts={accounts} balances={balances} stockCostBasis={stockCostBasis} stockPortfolioValues={stockPortfolioValues} onSelect={onSelect} />)}
           </div>
         ) : (
-          <OverviewGroupTree groups={g.children} depth={depth + 1} accounts={accounts} balances={balances} onSelect={onSelect} />
+          <OverviewGroupTree groups={g.children} depth={depth + 1} accounts={accounts} balances={balances} stockCostBasis={stockCostBasis} stockPortfolioValues={stockPortfolioValues} onSelect={onSelect} />
         )}
       </div>
     );
@@ -572,6 +577,107 @@ function buildDailySeries(opening, sortedLines, startISO, endISO) {
     safety++;
   }
   return points;
+}
+
+// Applies one line's effect to a running {units, cost} position using the
+// average-cost method — shared by the chart series builder below, the
+// current-total helper, and the ledger's own running-total column, so
+// there's exactly one definition of "cost basis" across the whole app.
+function applyCostBasisLine(state, l) {
+  if (l.amount > 0) {
+    state.units += l.amount;
+    state.cost += l.cashValue || 0;
+  } else if (l.amount < 0) {
+    const sold = Math.min(-l.amount, state.units);
+    const avgCost = state.units > 0 ? state.cost / state.units : 0;
+    state.cost -= avgCost * sold;
+    state.units -= sold;
+    if (state.units < 1e-9) { state.units = 0; state.cost = 0; }
+  }
+}
+
+// Cost basis of a stock position using the average-cost method: a buy
+// adds its own cost; a sell removes a *proportional* share of the
+// average cost so far (units sold × current average cost per unit), not
+// the sale proceeds — so it always settles back to exactly £0 once every
+// unit has been sold, rather than drifting negative on a profitable exit
+// the way a plain running cash-flow total would.
+function buildCostBasisSeries(sortedLines, startISO, endISO) {
+  const state = { units: 0, cost: 0 };
+  let idx = 0;
+  while (idx < sortedLines.length && sortedLines[idx].date < startISO) {
+    applyCostBasisLine(state, sortedLines[idx]);
+    idx++;
+  }
+  const points = [];
+  let cursor = new Date(startISO + "T00:00:00");
+  const end = new Date(endISO + "T00:00:00");
+  let safety = 0;
+  while (cursor <= end && safety < 3660) {
+    const iso = cursor.toISOString().slice(0, 10);
+    while (idx < sortedLines.length && sortedLines[idx].date === iso) {
+      applyCostBasisLine(state, sortedLines[idx]);
+      idx++;
+    }
+    points.push({ date: iso, value: state.cost });
+    cursor.setDate(cursor.getDate() + 1);
+    safety++;
+  }
+  return points;
+}
+
+// The current cost basis — no daily walk needed, just the end result of
+// applying every line once in order. Used anywhere that only needs
+// "what's it worth right now" (sidebar, Overview, the ledger's own
+// header) rather than a full time series.
+function currentCostBasis(sortedLines) {
+  const state = { units: 0, cost: 0 };
+  sortedLines.forEach((l) => applyCostBasisLine(state, l));
+  return state.cost;
+}
+
+// A "mark to last trade" portfolio value: with no live price feed, the
+// most recent trade's own price (its cash value ÷ its units) is the best
+// available stand-in for a current price, applied to the *whole*
+// remaining holding — not just the units in that trade. A trade with no
+// recorded value doesn't move the price; it just carries the last known
+// one forward.
+function applyPortfolioValueLine(state, l) {
+  state.units += l.amount || 0;
+  if (state.units < 1e-9) state.units = 0;
+  if (l.amount && l.cashValue !== undefined) {
+    const price = Math.abs(l.cashValue) / Math.abs(l.amount);
+    if (Number.isFinite(price)) state.lastPrice = price;
+  }
+  state.value = state.units * (state.lastPrice || 0);
+}
+function buildPortfolioValueSeries(sortedLines, startISO, endISO) {
+  const state = { units: 0, lastPrice: 0, value: 0 };
+  let idx = 0;
+  while (idx < sortedLines.length && sortedLines[idx].date < startISO) {
+    applyPortfolioValueLine(state, sortedLines[idx]);
+    idx++;
+  }
+  const points = [];
+  let cursor = new Date(startISO + "T00:00:00");
+  const end = new Date(endISO + "T00:00:00");
+  let safety = 0;
+  while (cursor <= end && safety < 3660) {
+    const iso = cursor.toISOString().slice(0, 10);
+    while (idx < sortedLines.length && sortedLines[idx].date === iso) {
+      applyPortfolioValueLine(state, sortedLines[idx]);
+      idx++;
+    }
+    points.push({ date: iso, value: state.value });
+    cursor.setDate(cursor.getDate() + 1);
+    safety++;
+  }
+  return points;
+}
+function currentPortfolioValue(sortedLines) {
+  const state = { units: 0, lastPrice: 0, value: 0 };
+  sortedLines.forEach((l) => applyPortfolioValueLine(state, l));
+  return state.value;
 }
 
 // Trims trailing zeros but keeps up to 6 decimal places, for fractional share counts.
@@ -865,6 +971,36 @@ export default function App() {
     return map;
   }, [accounts, transactions]);
 
+  // Current cost basis per stock account — what's actually tied up in it
+  // right now, average-cost method — and a "mark to last trade" portfolio
+  // value, using the most recent trade's own price applied to the whole
+  // holding. Neither is a live market value (no price feed here); cost
+  // basis is an honest "how much of your own money is in this," and
+  // portfolio value is the closest stand-in for "what it's worth" that
+  // can be derived purely from your own trading history.
+  const stockCostBasis = useMemo(() => {
+    const map = {};
+    accounts.filter((a) => a.type === "investment").forEach((a) => {
+      const lines = transactions
+        .map((t) => t.lines.find((l) => l.accountId === a.id))
+        .filter(Boolean)
+        .sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : 0));
+      map[a.id] = currentCostBasis(lines);
+    });
+    return map;
+  }, [accounts, transactions]);
+  const stockPortfolioValues = useMemo(() => {
+    const map = {};
+    accounts.filter((a) => a.type === "investment").forEach((a) => {
+      const lines = transactions
+        .map((t) => t.lines.find((l) => l.accountId === a.id))
+        .filter(Boolean)
+        .sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : 0));
+      map[a.id] = currentPortfolioValue(lines);
+    });
+    return map;
+  }, [accounts, transactions]);
+
   // Each investment account holds exactly one security, so its balance —
   // computed the same way as any other account's — already *is* the unit
   // count. Only the display differs: units and a symbol, not a currency.
@@ -876,7 +1012,7 @@ export default function App() {
       return `${n} subaccount${n === 1 ? "" : "s"}`;
     }
     const bal = balances[a.id] || 0;
-    return a.type === "investment" ? `${fmtUnits(bal)} ${a.symbol}` : fmt(bal, a.currency);
+    return a.type === "investment" ? `${fmtUnits(bal)} ${a.symbol} · ${fmt(stockPortfolioValues[a.id] || 0, a.currency)}` : fmt(bal, a.currency);
   }
 
   function saveAccount(data) {
@@ -1029,6 +1165,7 @@ export default function App() {
                 account={selected}
                 accounts={accounts}
                 balances={balances}
+                stockPortfolioValues={stockPortfolioValues}
                 onEditAccount={() => setAccountForm(selected)}
                 onSelect={setSelectedId}
                 onNewSubaccount={(kind) => setAccountForm({ isaParentPreset: selected.id, typePreset: kind })}
@@ -1059,7 +1196,7 @@ export default function App() {
               />
             )
           ) : (
-            <Overview accounts={accounts} balances={balances} settings={settings} onSaveSettings={saveSettings} onSaveGrouping={saveGroupingPreset} onRemoveGrouping={removeGroupingPreset} onSelect={setSelectedId} onNew={() => setAccountForm({})} />
+            <Overview accounts={accounts} balances={balances} stockCostBasis={stockCostBasis} stockPortfolioValues={stockPortfolioValues} settings={settings} onSaveSettings={saveSettings} onSaveGrouping={saveGroupingPreset} onRemoveGrouping={removeGroupingPreset} onSelect={setSelectedId} onNew={() => setAccountForm({})} />
           )}
         </main>
       </div>
@@ -1099,7 +1236,7 @@ export default function App() {
 /* ---------------------------------------------------------
    Overview
 --------------------------------------------------------- */
-function Overview({ accounts, balances, settings, onSaveSettings, onSaveGrouping, onRemoveGrouping, onSelect, onNew }) {
+function Overview({ accounts, balances, stockCostBasis, stockPortfolioValues, settings, onSaveSettings, onSaveGrouping, onRemoveGrouping, onSelect, onNew }) {
   if (accounts.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center" style={{ marginTop: 100, color: C.inkFaint }}>
@@ -1136,7 +1273,7 @@ function Overview({ accounts, balances, settings, onSaveSettings, onSaveGrouping
         Combined balance by currency: {Object.entries(totalsByCurrency).map(([c, v]) => fmt(v, c)).join("  ·  ")}
       </p>
 
-      <OverviewGroupTree groups={buildNestedGroups(accounts, groupLevels, accounts)} depth={0} accounts={accounts} balances={balances} onSelect={onSelect} />
+      <OverviewGroupTree groups={buildNestedGroups(accounts, groupLevels, accounts)} depth={0} accounts={accounts} balances={balances} stockCostBasis={stockCostBasis} stockPortfolioValues={stockPortfolioValues} onSelect={onSelect} />
     </div>
   );
 }
@@ -1145,7 +1282,7 @@ function Overview({ accounts, balances, settings, onSaveSettings, onSaveGrouping
    ISA parent (Stocks & Shares ISA wrapper) — holds no ledger of its own,
    just groups its cash and stock subaccounts.
 --------------------------------------------------------- */
-function IsaParentView({ account, accounts, balances, onEditAccount, onSelect, onNewSubaccount }) {
+function IsaParentView({ account, accounts, balances, stockPortfolioValues, onEditAccount, onSelect, onNewSubaccount }) {
   const subs = accounts.filter((a) => a.isaParentId === account.id);
   const cashSubs = subs.filter((a) => a.type === "asset");
   const stockSubs = subs.filter((a) => a.type === "investment");
@@ -1192,7 +1329,7 @@ function IsaParentView({ account, accounts, balances, onEditAccount, onSelect, o
             {stockSubs.map((a) => (
               <button key={a.id} onClick={() => onSelect(a.id)} className="flex items-center justify-between px-3 py-2.5 rounded text-left" style={{ background: C.card, border: `1px solid ${C.line}` }}>
                 <span style={{ fontSize: 13.5 }}>{a.name} <span style={{ color: C.gold, fontSize: 12 }}>{a.symbol}</span></span>
-                <span className="ll-mono" style={{ fontSize: 13.5 }}>{fmtUnits(balances[a.id] || 0)} units</span>
+                <span className="ll-mono" style={{ fontSize: 13.5 }}>{fmtUnits(balances[a.id] || 0)} units · {fmt((stockPortfolioValues && stockPortfolioValues[a.id]) || 0, a.currency)}</span>
               </button>
             ))}
           </div>
@@ -1439,6 +1576,44 @@ function useChartSeries(opening, lines, interval, compareYoY) {
   );
 }
 
+function useCostBasisSeries(lines, interval, compareYoY) {
+  const earliest = lines.length ? lines[0].date : todayISO();
+  const { start, end } = intervalRange(interval, earliest);
+  const currentSeries = useMemo(() => buildCostBasisSeries(lines, start, end), [lines, start, end]);
+  const prevRange = compareYoY && interval !== "all" ? { start: addYears(start, -1), end: addYears(end, -1) } : null;
+  const previousSeries = useMemo(() => (prevRange ? buildCostBasisSeries(lines, prevRange.start, prevRange.end) : null), [lines, prevRange]);
+  return useMemo(
+    () =>
+      currentSeries.map((p, i) => ({
+        offset: i,
+        date: p.date,
+        current: p.value,
+        previous: previousSeries && previousSeries[i] ? previousSeries[i].value : undefined,
+        previousDate: previousSeries && previousSeries[i] ? previousSeries[i].date : undefined,
+      })),
+    [currentSeries, previousSeries]
+  );
+}
+
+function usePortfolioValueSeries(lines, interval, compareYoY) {
+  const earliest = lines.length ? lines[0].date : todayISO();
+  const { start, end } = intervalRange(interval, earliest);
+  const currentSeries = useMemo(() => buildPortfolioValueSeries(lines, start, end), [lines, start, end]);
+  const prevRange = compareYoY && interval !== "all" ? { start: addYears(start, -1), end: addYears(end, -1) } : null;
+  const previousSeries = useMemo(() => (prevRange ? buildPortfolioValueSeries(lines, prevRange.start, prevRange.end) : null), [lines, prevRange]);
+  return useMemo(
+    () =>
+      currentSeries.map((p, i) => ({
+        offset: i,
+        date: p.date,
+        current: p.value,
+        previous: previousSeries && previousSeries[i] ? previousSeries[i].value : undefined,
+        previousDate: previousSeries && previousSeries[i] ? previousSeries[i].date : undefined,
+      })),
+    [currentSeries, previousSeries]
+  );
+}
+
 function BalanceChart({ account, transactions }) {
   const [interval, setInterval_] = useState("3m");
   const [compareYoY, setCompareYoY] = useState(false);
@@ -1473,33 +1648,90 @@ function BalanceChart({ account, transactions }) {
   );
 }
 
+function StockChartTooltip({ active, payload, account, compareYoY }) {
+  if (!active || !payload || !payload.length) return null;
+  const byKey = {};
+  payload.forEach((p) => { byKey[p.dataKey] = p; });
+  const date = payload[0].payload.date;
+  const row = (color, label, val, fmtFn) =>
+    val !== undefined && val !== null ? (
+      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+        <span style={{ width: 8, height: 8, borderRadius: 4, background: color, display: "inline-block" }} />
+        {label}: <span className="ll-mono">{fmtFn(val)}</span>
+      </div>
+    ) : null;
+  return (
+    <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 6, padding: "8px 10px", fontSize: 12.5, lineHeight: 1.7 }}>
+      <div style={{ fontWeight: 600, marginBottom: 3 }}>{fmtDateShort(date)}</div>
+      {row(C.gold, "Units", byKey.units && byKey.units.value, (v) => `${fmtUnits(v)} ${account.symbol}`)}
+      {row(C.credit, "Cost basis", byKey.cost && byKey.cost.value, (v) => fmt(v, account.currency))}
+      {row(C.plum, "Worth", byKey.value && byKey.value.value, (v) => fmt(v, account.currency))}
+      {compareYoY && (
+        <div style={{ marginTop: 4, paddingTop: 4, borderTop: `1px solid ${C.lineSoft}`, color: C.inkFaint }}>
+          {row(C.goldDim, "Units, last year", byKey.unitsPrev && byKey.unitsPrev.value, (v) => `${fmtUnits(v)} ${account.symbol}`)}
+          {row(C.credit, "Cost, last year", byKey.costPrev && byKey.costPrev.value, (v) => fmt(v, account.currency))}
+          {row(C.plum, "Worth, last year", byKey.valuePrev && byKey.valuePrev.value, (v) => fmt(v, account.currency))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function UnitsChart({ account, transactions }) {
   const [interval, setInterval_] = useState("3m");
   const [compareYoY, setCompareYoY] = useState(false);
 
-  const lines = useMemo(
+  const rawLines = useMemo(
     () => transactions.map((t) => t.lines.find((l) => l.accountId === account.id)).filter(Boolean).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
     [transactions, account]
   );
-  const merged = useChartSeries(account.openingBalance || 0, lines, interval, compareYoY);
 
-  if (lines.length === 0) {
+  // All three share the same underlying lines, so they land on identical
+  // date/offset grids and can be zipped together into one dataset below.
+  const unitsMerged = useChartSeries(account.openingBalance || 0, rawLines, interval, compareYoY);
+  const costMerged = useCostBasisSeries(rawLines, interval, compareYoY);
+  const valueMerged = usePortfolioValueSeries(rawLines, interval, compareYoY);
+
+  const merged = useMemo(
+    () =>
+      unitsMerged.map((p, i) => ({
+        offset: p.offset,
+        date: p.date,
+        units: p.current,
+        unitsPrev: p.previous,
+        cost: costMerged[i] ? costMerged[i].current : undefined,
+        costPrev: costMerged[i] ? costMerged[i].previous : undefined,
+        value: valueMerged[i] ? valueMerged[i].current : undefined,
+        valuePrev: valueMerged[i] ? valueMerged[i].previous : undefined,
+      })),
+    [unitsMerged, costMerged, valueMerged]
+  );
+
+  if (rawLines.length === 0) {
     return <div style={{ padding: "40px 0", textAlign: "center", color: C.inkFaint, fontSize: 13 }}>Not enough trades yet to chart.</div>;
   }
 
   return (
     <div>
       <div className="mb-4"><IntervalControls interval={interval} setInterval={setInterval_} compareYoY={compareYoY} setCompareYoY={setCompareYoY} disableCompare={interval === "all"} /></div>
-      <div style={{ height: 320 }}>
+      <p style={{ fontSize: 11.5, color: C.inkFaint, marginTop: -8, marginBottom: 12 }}>
+        Cost basis and portfolio value share the right-hand axis; neither is a live market value, since nothing here tracks current share prices — cost basis is what you've actually put in (average cost), portfolio value marks your holding at your own most recent trade price.
+      </p>
+      <div style={{ height: 340 }}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={merged} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
             <CartesianGrid stroke={C.lineSoft} vertical={false} />
             <XAxis dataKey="offset" tickFormatter={(o) => (merged[o] ? fmtDateShort(merged[o].date) : "")} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={{ stroke: C.line }} tickLine={false} minTickGap={40} />
-            <YAxis tickFormatter={(v) => fmtUnits(v)} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={60} />
-            <Tooltip content={<ChartTooltip formatValue={(v) => `${fmtUnits(v)} ${account.symbol}`} compareYoY={compareYoY} />} />
-            {compareYoY && <Legend wrapperStyle={{ fontSize: 12 }} />}
-            {compareYoY && <Line type="stepAfter" dataKey="previous" name="Same period last year" stroke={C.goldDim} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
-            <Line type="stepAfter" dataKey="current" name={`${account.symbol} units`} stroke={C.gold} strokeWidth={2} dot={false} isAnimationActive={false} />
+            <YAxis yAxisId="units" tickFormatter={(v) => fmtUnits(v)} tick={{ fontSize: 11, fill: C.gold }} axisLine={false} tickLine={false} width={55} />
+            <YAxis yAxisId="money" orientation="right" tickFormatter={(v) => fmt(v, account.currency)} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={80} />
+            <Tooltip content={<StockChartTooltip account={account} compareYoY={compareYoY} />} />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            {compareYoY && <Line yAxisId="units" type="stepAfter" dataKey="unitsPrev" name="Units (last year)" stroke={C.gold} strokeWidth={1.5} strokeDasharray="4 3" dot={false} isAnimationActive={false} />}
+            {compareYoY && <Line yAxisId="money" type="stepAfter" dataKey="costPrev" name="Cost basis (last year)" stroke={C.credit} strokeWidth={1.5} strokeDasharray="4 3" dot={false} isAnimationActive={false} />}
+            {compareYoY && <Line yAxisId="money" type="stepAfter" dataKey="valuePrev" name="Portfolio value (last year)" stroke={C.plum} strokeWidth={1.5} strokeDasharray="4 3" dot={false} isAnimationActive={false} />}
+            <Line yAxisId="units" type="stepAfter" dataKey="units" name={`${account.symbol} units`} stroke={C.gold} strokeWidth={2} dot={false} isAnimationActive={false} />
+            <Line yAxisId="money" type="stepAfter" dataKey="cost" name="Cost basis" stroke={C.credit} strokeWidth={2} dot={false} isAnimationActive={false} />
+            <Line yAxisId="money" type="stepAfter" dataKey="value" name="Portfolio value" stroke={C.plum} strokeWidth={2} dot={false} isAnimationActive={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -2307,29 +2539,25 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
       return String(a.txn.id).localeCompare(String(b.txn.id));
     });
     let running = account.openingBalance || 0;
+    const costState = { units: 0, cost: 0 };
+    const valueState = { units: 0, lastPrice: 0, value: 0 };
     return sorted.map(({ txn: t, line }) => {
       running += line.amount || 0;
+      applyCostBasisLine(costState, line);
+      applyPortfolioValueLine(valueState, line);
       const others = t.lines.filter((l) => l.accountId !== account.id).map((l) => accounts.find((a) => a.id === l.accountId)).filter(Boolean);
-      return { txn: t, line, running, others };
+      return { txn: t, line, running, runningCost: costState.cost, runningValue: valueState.value, others };
     });
   }, [effectiveTxns, account, accounts]);
 
   const { rowRefs, pendingSettleId } = useLedgerRowAnimation(rows, editingKey);
 
-  // Average buy price for the current holding — total spent on buys
-  // divided by units bought. Doesn't adjust for sales, so it's a simple
-  // "what you paid on average," not a precise post-sale cost basis.
-  const avgCost = useMemo(() => {
-    let spent = 0, unitsBought = 0;
-    transactions.forEach((t) => {
-      const line = t.lines.find((l) => l.accountId === account.id);
-      if (line && line.amount > 0 && line.cashValue !== undefined) {
-        spent += Math.abs(line.cashValue);
-        unitsBought += line.amount;
-      }
-    });
-    return unitsBought > 0 ? spent / unitsBought : null;
-  }, [transactions, account]);
+  // Current cost basis, portfolio value, and the average price cost basis
+  // implies — all read straight off the ledger's own running totals, so
+  // the header, each row, and the chart are always telling the same story.
+  const costBasis = rows.length ? rows[rows.length - 1].runningCost : 0;
+  const portfolioValue = rows.length ? rows[rows.length - 1].runningValue : 0;
+  const avgCost = balance > 0 ? costBasis / balance : null;
 
   function buildDraftFromTxn(t) {
     const line = t.lines.find((l) => l.accountId === account.id);
@@ -2473,8 +2701,10 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
           <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{account.name} <span style={{ color: C.gold }}>{account.symbol}</span></h2>
           <div className="ll-mono" style={{ fontSize: 22, marginTop: 6 }}>
             {fmtUnits(balance)} <span style={{ fontSize: 14, color: C.inkFaint }}>units</span>
+            <span style={{ fontSize: 15, color: C.ink, marginLeft: 10 }}>{fmt(portfolioValue, account.currency)}</span>
             {avgCost !== null && <span style={{ fontSize: 13, color: C.inkFaint, marginLeft: 10 }}>avg {fmt(avgCost, account.currency)}/unit</span>}
           </div>
+          <div style={{ fontSize: 12.5, color: C.inkFaint, marginTop: 2 }}>Cost basis {fmt(costBasis, account.currency)}</div>
         </div>
         <div className="flex gap-2">
           <div className="flex rounded overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
@@ -2659,12 +2889,11 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
                   <Pencil size={13} color={C.inkFaint} />
                 </div>
               </div>
-              {natural !== null && (
-                <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 3, paddingLeft: 118 }}>
-                  Value {fmt(natural, r.line.cashCurrency)}
-                  {r.others.length > 0 ? ` · ${r.others.map((a) => a.name).join(", ")}` : " · unmatched"}
-                </div>
-              )}
+              <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 3, paddingLeft: 118 }}>
+                {natural !== null && <>Value {fmt(natural, r.line.cashCurrency)} · </>}
+                Cost {fmt(r.runningCost, account.currency)} · Worth {fmt(r.runningValue, account.currency)}
+                {r.others.length > 0 ? ` · ${r.others.map((a) => a.name).join(", ")}` : " · unmatched"}
+              </div>
             </div>
           );
         })}
