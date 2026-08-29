@@ -1715,23 +1715,37 @@ function UnitsChart({ account, transactions }) {
     <div>
       <div className="mb-4"><IntervalControls interval={interval} setInterval={setInterval_} compareYoY={compareYoY} setCompareYoY={setCompareYoY} disableCompare={interval === "all"} /></div>
       <p style={{ fontSize: 11.5, color: C.inkFaint, marginTop: -8, marginBottom: 12 }}>
-        Cost basis and portfolio value share the right-hand axis; neither is a live market value, since nothing here tracks current share prices — cost basis is what you've actually put in (average cost), portfolio value marks your holding at your own most recent trade price.
+        Cost basis (solid) and portfolio value (dotted) share the lower panel; neither is a live market value, since nothing here tracks current share prices — cost basis is what you've actually put in (average cost), portfolio value marks your holding at your own most recent trade price. They start out equal on a fresh position, so the line style is what tells them apart where the lines sit on top of each other.
       </p>
-      <div style={{ height: 340 }}>
+      {/* Two synced panels rather than one: units and money jump at the
+          same transaction dates, so sharing one plot meant every buy/sell
+          drew several vertical lines on the same pixel. Splitting by
+          dimension removes that collision; hovering either panel still
+          highlights the same date in both, via the shared syncId. */}
+      <div style={{ height: 120 }}>
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={merged} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
+          <LineChart syncId={`stock-${account.id}`} data={merged} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
+            <CartesianGrid stroke={C.lineSoft} vertical={false} />
+            <XAxis dataKey="offset" tick={false} axisLine={{ stroke: C.line }} tickLine={false} height={4} />
+            <YAxis tickFormatter={(v) => fmtUnits(v)} tick={{ fontSize: 11, fill: C.gold }} axisLine={false} tickLine={false} width={55} />
+            <Tooltip content={() => null} />
+            {compareYoY && <Line type="stepAfter" dataKey="unitsPrev" name="Units (last year)" stroke={C.gold} strokeWidth={1.5} strokeDasharray="4 3" dot={false} isAnimationActive={false} />}
+            <Line type="stepAfter" dataKey="units" name={`${account.symbol} units`} stroke={C.gold} strokeWidth={2} dot={false} activeDot={{ r: 4 }} isAnimationActive={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <div style={{ height: 260 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart syncId={`stock-${account.id}`} data={merged} margin={{ top: 4, right: 16, left: 8, bottom: 0 }}>
             <CartesianGrid stroke={C.lineSoft} vertical={false} />
             <XAxis dataKey="offset" tickFormatter={(o) => (merged[o] ? fmtDateShort(merged[o].date) : "")} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={{ stroke: C.line }} tickLine={false} minTickGap={40} />
-            <YAxis yAxisId="units" tickFormatter={(v) => fmtUnits(v)} tick={{ fontSize: 11, fill: C.gold }} axisLine={false} tickLine={false} width={55} />
-            <YAxis yAxisId="money" orientation="right" tickFormatter={(v) => fmt(v, account.currency)} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={80} />
+            <YAxis tickFormatter={(v) => fmt(v, account.currency)} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={80} />
             <Tooltip content={<StockChartTooltip account={account} compareYoY={compareYoY} />} />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            {compareYoY && <Line yAxisId="units" type="stepAfter" dataKey="unitsPrev" name="Units (last year)" stroke={C.gold} strokeWidth={1.5} strokeDasharray="4 3" dot={false} isAnimationActive={false} />}
-            {compareYoY && <Line yAxisId="money" type="stepAfter" dataKey="costPrev" name="Cost basis (last year)" stroke={C.credit} strokeWidth={1.5} strokeDasharray="4 3" dot={false} isAnimationActive={false} />}
-            {compareYoY && <Line yAxisId="money" type="stepAfter" dataKey="valuePrev" name="Portfolio value (last year)" stroke={C.plum} strokeWidth={1.5} strokeDasharray="4 3" dot={false} isAnimationActive={false} />}
-            <Line yAxisId="units" type="stepAfter" dataKey="units" name={`${account.symbol} units`} stroke={C.gold} strokeWidth={2} dot={false} isAnimationActive={false} />
-            <Line yAxisId="money" type="stepAfter" dataKey="cost" name="Cost basis" stroke={C.credit} strokeWidth={2} dot={false} isAnimationActive={false} />
-            <Line yAxisId="money" type="stepAfter" dataKey="value" name="Portfolio value" stroke={C.plum} strokeWidth={2} dot={false} isAnimationActive={false} />
+            {compareYoY && <Line type="stepAfter" dataKey="costPrev" name="Cost basis (last year)" stroke={C.credit} strokeWidth={1.5} strokeDasharray="4 3" dot={false} isAnimationActive={false} />}
+            {compareYoY && <Line type="stepAfter" dataKey="valuePrev" name="Portfolio value (last year)" stroke={C.plum} strokeWidth={1.5} strokeDasharray="4 3" dot={false} isAnimationActive={false} />}
+            <Line type="stepAfter" dataKey="cost" name="Cost basis" stroke={C.credit} strokeWidth={2} dot={false} activeDot={{ r: 4 }} isAnimationActive={false} />
+            <Line type="stepAfter" dataKey="value" name="Portfolio value" stroke={C.plum} strokeWidth={2} strokeDasharray="1 3" dot={false} activeDot={{ r: 4 }} isAnimationActive={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
