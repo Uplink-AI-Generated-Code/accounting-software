@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # Ledger App
 
 A single-page double-entry personal ledger: cash accounts, UK Stocks & Shares
@@ -5,16 +9,23 @@ ISA support with allowance tracking, and one-security-per-account stock
 accounts with cost basis / portfolio value tracking. No backend — state
 persists via `window.storage` (see `storageShim.js`).
 
-Main file: `ledger-app.jsx`. Read the whole file before making structural
-changes — it's one file by design, and several helpers are shared across
-components in ways that aren't obvious from any single section.
+Main file: `src/App.jsx` (~3100 lines). Read the whole file before making
+structural changes — it's one file by design, and several helpers are shared
+across components in ways that aren't obvious from any single section.
+`src/main.jsx` is just the React mount point; `src/storageShim.js` polyfills
+`window.storage` on top of `localStorage` when the app isn't running inside
+its original host environment (e.g. as a standalone Vite site).
 
 ## Commands
 
-- Install: `npm install`
-- Dev server: `npm run dev`
-- (Confirm these against `package.json` — this section may drift from
-  whatever build tooling is actually configured.)
+Vite + React, `yarn.lock` is the checked-in lockfile (no `package-lock.json`).
+
+- Install: `yarn install` (or `npm install`)
+- Dev server: `yarn dev` — starts Vite, prints a local URL
+- Build: `yarn build`
+- Preview a production build: `yarn preview`
+
+There is no test suite and no linter configured in this repo.
 
 ## Data model — read this before touching transactions
 
