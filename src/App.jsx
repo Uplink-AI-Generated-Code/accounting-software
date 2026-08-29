@@ -689,13 +689,47 @@ function fmtUnits(n) {
 // it's found: a plain amount in a matching-currency account, a currency
 // exchange tag, or (for stock accounts) the cash side of a trade. This is
 // what lets a cash entry and a stock trade — or two differently-tagged
-// entries in general — recognise each other as a possible match.
+// entries in general — recognise each other as a possible match. Checks
+// investment accounts first: an investment account's own "amount" is
+// units, not cash, so it must never fall through to the plain-currency
+// branch just because its nominal trading currency happens to match.
 function getComparableAmount(line, acc, targetCurrency) {
   if (!acc) return undefined;
+  if (acc.type === "investment") {
+    return line.cashCurrency === targetCurrency ? line.cashValue : undefined;
+  }
   if (acc.currency === targetCurrency) return line.amount;
   if (line.exchangeCurrency === targetCurrency) return line.exchangeAmount;
-  if (acc.type === "investment" && line.cashCurrency === targetCurrency) return line.cashValue;
   return undefined;
+}
+// Like getComparableAmount, but returns the *natural* value — what would
+// actually show as this line's own In/Out if you looked at it directly —
+// rather than the self-referential mirror tag. Used when a search target
+// is itself a plain, directly-typed amount (e.g. "In 14" meant to find an
+// existing record that also literally reads "In 14"), where negating
+// anything would be wrong for an ordinary account but a stock trade's
+// cashValue still needs un-mirroring to mean the same thing.
+function getDirectComparableAmount(line, acc, targetCurrency) {
+  if (!acc) return undefined;
+  if (acc.type === "investment") {
+    return line.cashCurrency === targetCurrency && line.cashValue !== undefined ? -line.cashValue : undefined;
+  }
+  if (acc.currency === targetCurrency) return line.amount;
+  return undefined;
+}
+// How a match candidate's own value should read in a suggestion list —
+// an investment line's "amount" is units, so it needs its cash side
+// (naturally signed) shown alongside, not just the raw unit count.
+function formatCandidateAmount(c) {
+  if (c.acc.type === "investment") {
+    const natural = c.line.cashValue !== undefined ? -c.line.cashValue : 0;
+    return `${fmtUnits(c.line.amount)} units · ${fmt(natural, c.acc.currency)}`;
+  }
+  return fmt(c.line.amount, c.acc.currency);
+}
+function candidateIsNegative(c) {
+  if (c.acc.type === "investment") return (c.line.cashValue !== undefined ? -c.line.cashValue : 0) < 0;
+  return c.line.amount < 0;
 }
 function hasStorage() {
   return typeof window !== "undefined" && !!window.storage && typeof window.storage.get === "function" && typeof window.storage.set === "function";
@@ -1915,10 +1949,13 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
 
   // Once a split has more than one leg, each not-yet-assigned leg gets its
   // own candidate search too — using exactly what's typed into that leg's
-  // own In/Out + amount (no inversion, since that field already means
-  // "this is the other account's own recorded amount"), not derived from
-  // the main line's overall delta the way the very first link is. Scoped
-  // to plain cash legs; an investment leg still needs picking manually.
+  // own In/Out + amount as a *direct* description of what the other
+  // record should show (not derived from the main line's overall delta
+  // the way the very first link is). getDirectComparableAmount un-mirrors
+  // a stock trade's cashValue so it means the same "as typed" thing a
+  // plain account's amount already does — that's what lets this same
+  // search surface a stock purchase or sale alongside plain expense or
+  // income legs, not just cash-to-cash splits.
   const otherLineCandidates = useMemo(() => {
     if (!draft || !draft.date) return {};
     const usedAccountIds = new Set([account.id, ...draft.otherLines.map((o) => o.accountId).filter(Boolean)]);
@@ -1933,7 +1970,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
         .filter((t) => t.id !== draft.txnId && t.lines.length === 1)
         .map((t) => ({ txn: t, line: t.lines[0], acc: accounts.find((a) => a.id === t.lines[0].accountId) }))
         .filter((c) => c.acc && !usedAccountIds.has(c.acc.id))
-        .map((c) => ({ ...c, comparable: getComparableAmount(c.line, c.acc, targetCurrency) }))
+        .map((c) => ({ ...c, comparable: getDirectComparableAmount(c.line, c.acc, targetCurrency) }))
         .filter((c) => c.comparable !== undefined && Math.abs(c.comparable - targetAmount) < 0.005)
         .filter((c) => Math.abs(daysDiff(draft.date, c.line.date)) <= 3)
         .sort((a, b) => Math.abs(daysDiff(draft.date, a.line.date)) - Math.abs(daysDiff(draft.date, b.line.date)));
@@ -2337,7 +2374,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                                 <span style={{ fontSize: 12.5 }}>
                                   <strong>{c.acc.name}</strong> · {fmtDate(c.line.date)}{c.line.description ? ` · ${c.line.description}` : ""}
                                 </span>
-                                <span className="ll-mono" style={{ fontSize: 12.5, color: c.line.amount < 0 ? C.debit : C.credit }}>{fmt(c.line.amount, c.acc.currency)}</span>
+                                <span className="ll-mono" style={{ fontSize: 12.5, color: candidateIsNegative(c) ? C.debit : C.credit }}>{formatCandidateAmount(c)}</span>
                               </button>
                             ))}
                           </div>
@@ -2403,7 +2440,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                           <span style={{ fontSize: 12.5 }}>
                             <strong>{c.acc.name}</strong> · {fmtDate(c.line.date)}{c.line.description ? ` · ${c.line.description}` : ""}
                           </span>
-                          <span className="ll-mono" style={{ fontSize: 12.5, color: c.line.amount < 0 ? C.debit : C.credit }}>{fmt(c.line.amount, c.acc.currency)}</span>
+                          <span className="ll-mono" style={{ fontSize: 12.5, color: candidateIsNegative(c) ? C.debit : C.credit }}>{formatCandidateAmount(c)}</span>
                         </button>
                       ))}
                     </div>
@@ -2904,7 +2941,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
                             <span style={{ fontSize: 12.5 }}>
                               <strong>{c.acc.name}</strong> · {fmtDate(c.line.date)}{c.line.description ? ` · ${c.line.description}` : ""}
                             </span>
-                            <span className="ll-mono" style={{ fontSize: 12.5, color: c.line.amount < 0 ? C.debit : C.credit }}>{fmt(c.line.amount, c.acc.currency)}</span>
+                            <span className="ll-mono" style={{ fontSize: 12.5, color: candidateIsNegative(c) ? C.debit : C.credit }}>{formatCandidateAmount(c)}</span>
                           </button>
                         ))}
                       </div>
