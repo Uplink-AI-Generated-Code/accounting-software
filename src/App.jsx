@@ -1471,7 +1471,9 @@ function blankDraft(presetOtherId) {
     splitOffLines: [],
     inAmountStr: "",
     outAmountStr: "",
-    exchangeAmountStr: "",
+    exchangeChecked: false,
+    exchangeOutStr: "",
+    exchangeInStr: "",
     exchangeCurrency: "",
   };
 }
@@ -1486,6 +1488,12 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
   function draftDelta(d) {
     const inN = parseFloat(d.inAmountStr);
     const outN = parseFloat(d.outAmountStr);
+    return (isNaN(inN) ? 0 : inN) - (isNaN(outN) ? 0 : outN);
+  }
+
+  function exchangeDelta(d) {
+    const inN = parseFloat(d.exchangeInStr);
+    const outN = parseFloat(d.exchangeOutStr);
     return (isNaN(inN) ? 0 : inN) - (isNaN(outN) ? 0 : outN);
   }
 
@@ -1536,12 +1544,9 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     // The exchange tag is kept regardless of whether this leg is linked —
     // it's useful as a record of the rate at entry time even once a real
     // counterpart line exists, not just while still searching for one.
-    if (d.exchangeCurrency && d.exchangeAmountStr !== "") {
-      const exVal = parseFloat(d.exchangeAmountStr);
-      if (!isNaN(exVal)) {
-        line1.exchangeAmount = delta < 0 ? -Math.abs(exVal) : Math.abs(exVal);
-        line1.exchangeCurrency = d.exchangeCurrency;
-      }
+    if (d.exchangeChecked && d.exchangeCurrency && (d.exchangeOutStr !== "" || d.exchangeInStr !== "")) {
+      line1.exchangeAmount = exchangeDelta(d);
+      line1.exchangeCurrency = d.exchangeCurrency;
     }
 
     const activeOtherLines = d.otherLines.filter((ol) => {
@@ -1587,13 +1592,9 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
 
     let targetAmount = -delta;
     let targetCurrency = account.currency;
-    if (draft.exchangeCurrency && draft.exchangeAmountStr !== "") {
-      const exVal = parseFloat(draft.exchangeAmountStr);
-      if (!isNaN(exVal)) {
-        const exSigned = delta < 0 ? -Math.abs(exVal) : Math.abs(exVal);
-        targetAmount = -exSigned;
-        targetCurrency = draft.exchangeCurrency;
-      }
+    if (draft.exchangeChecked && draft.exchangeCurrency && (draft.exchangeOutStr !== "" || draft.exchangeInStr !== "")) {
+      targetAmount = -exchangeDelta(draft);
+      targetCurrency = draft.exchangeCurrency;
     }
 
     return transactions
@@ -1671,7 +1672,9 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       description: t.description || "",
       inAmountStr: line.amount > 0 ? String(line.amount) : "",
       outAmountStr: line.amount < 0 ? String(-line.amount) : "",
-      exchangeAmountStr: line.exchangeAmount !== undefined ? String(Math.abs(line.exchangeAmount)) : "",
+      exchangeChecked: line.exchangeAmount !== undefined,
+      exchangeOutStr: line.exchangeAmount < 0 ? String(-line.exchangeAmount) : "",
+      exchangeInStr: line.exchangeAmount > 0 ? String(line.exchangeAmount) : "",
       exchangeCurrency: line.exchangeCurrency ? line.exchangeCurrency : "",
       otherLines: others.map((o) => otherLineFromLine(o, o)),
       splitOffLines: [],
@@ -1942,27 +1945,38 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                   </button>
                 </div>
 
-                <div className="flex items-center gap-2 mt-2" style={{ paddingLeft: 128 }}>
-                  <span style={{ fontSize: 12, color: C.inkFaint }}>Also known as</span>
-                  <input
-                    type="number" step="0.0001" placeholder="Amount"
-                    value={draft.exchangeAmountStr}
-                    onChange={(e) => setDraft({ ...draft, exchangeAmountStr: e.target.value })}
-                    className="ll-mono" style={{ ...miniInput, width: 100 }}
-                  />
-                  <select
-                    value={draft.exchangeCurrency}
-                    onChange={(e) => setDraft({ ...draft, exchangeCurrency: e.target.value })}
-                    style={{ ...miniInput, width: 90 }}
-                  >
-                    <option value="">currency…</option>
-                    {CURRENCIES.filter((c) => c !== account.currency).map((c) => (
-                      <option key={c} value={c}>{c}</option>
-                    ))}
-                  </select>
-                  <span style={{ fontSize: 11, color: C.inkFaint }}>
-                    {draft.otherLines.length === 0 ? "for matching in another currency" : "kept for reference"}
-                  </span>
+                <div className="mt-2" style={{ paddingLeft: 128 }}>
+                  <label className="flex items-center gap-2" style={{ fontSize: 12, color: C.inkSoft }}>
+                    <input type="checkbox" checked={!!draft.exchangeChecked} onChange={(e) => setDraft({ ...draft, exchangeChecked: e.target.checked })} />
+                    Exchange
+                    <span style={{ fontSize: 11, color: C.inkFaint }}>
+                      {draft.otherLines.length === 0 ? "— the equivalent in another currency, for matching" : "— kept for reference"}
+                    </span>
+                  </label>
+                  {draft.exchangeChecked && (
+                    <div className="grid items-center mt-1.5" style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 60px", gap: 8 }}>
+                      <div />
+                      <select value={draft.exchangeCurrency} onChange={(e) => setDraft({ ...draft, exchangeCurrency: e.target.value })} style={{ ...miniInput, width: 90 }}>
+                        <option value="">currency…</option>
+                        {CURRENCIES.filter((c) => c !== account.currency).map((c) => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                      <div />
+                      <input
+                        type="number" step="0.0001" placeholder="Out" value={draft.exchangeOutStr}
+                        onChange={(e) => setDraft({ ...draft, exchangeOutStr: e.target.value })}
+                        className="ll-mono text-right" style={{ ...miniInput, color: C.debit }}
+                      />
+                      <input
+                        type="number" step="0.0001" placeholder="In" value={draft.exchangeInStr}
+                        onChange={(e) => setDraft({ ...draft, exchangeInStr: e.target.value })}
+                        className="ll-mono text-right" style={{ ...miniInput, color: C.credit }}
+                      />
+                      <div />
+                      <div />
+                    </div>
+                  )}
                 </div>
 
                 {draft.otherLines.length === 0 && matchCandidates.length > 0 && (
@@ -2073,6 +2087,7 @@ function blankStockDraft(account) {
     matchedTxnId: null,
     unitsInStr: "",
     unitsOutStr: "",
+    cashChecked: false,
     cashInStr: "",
     cashOutStr: "",
   };
@@ -2108,7 +2123,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
     const unitsDelta = unitsDeltaOf(d);
     const cashNatural = cashDeltaOf(d);
     const line1 = { accountId: account.id, amount: unitsDelta, date: d.date || todayISO() };
-    if (d.cashInStr !== "" || d.cashOutStr !== "") {
+    if (d.cashChecked && (d.cashInStr !== "" || d.cashOutStr !== "")) {
       line1.cashValue = -cashNatural;
       line1.cashCurrency = account.currency;
     }
@@ -2141,7 +2156,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
   const matchCandidates = useMemo(() => {
     if (!draft || draft.otherAccountId || draft.matchedTxnId) return [];
     if (unitsDeltaOf(draft) === 0 || !draft.date) return [];
-    if (draft.cashInStr === "" && draft.cashOutStr === "") return [];
+    if (!draft.cashChecked || (draft.cashInStr === "" && draft.cashOutStr === "")) return [];
     const targetAmount = cashDeltaOf(draft); // = -cashValue, i.e. the real counterpart's own amount
     const targetCurrency = account.currency;
 
@@ -2219,6 +2234,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
       matchedTxnId: null,
       unitsInStr: line.amount > 0 ? String(line.amount) : "",
       unitsOutStr: line.amount < 0 ? String(-line.amount) : "",
+      cashChecked: line.cashValue !== undefined,
       cashInStr: naturalCash > 0 ? String(naturalCash) : "",
       cashOutStr: naturalCash < 0 ? String(-naturalCash) : "",
     });
@@ -2382,20 +2398,34 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
                   </div>
                 </div>
 
+                <div className="mt-2" style={{ paddingLeft: 118 }}>
+                  <label className="flex items-center gap-2" style={{ fontSize: 12, color: C.inkSoft }}>
+                    <input
+                      type="checkbox" checked={!!draft.cashChecked}
+                      onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), cashChecked: e.target.checked } : { ...draft, cashChecked: e.target.checked })}
+                    />
+                    Cash
+                  </label>
+                  {draft.cashChecked && (
+                    <div className="grid items-center mt-1.5" style={{ gridTemplateColumns: gridCols, gap: 8 }}>
+                      <div /><div />
+                      <input
+                        type="number" step="0.01" placeholder="Out" value={draft.cashOutStr}
+                        onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), cashOutStr: e.target.value } : { ...draft, cashOutStr: e.target.value })}
+                        className="ll-mono text-right" style={{ ...miniInput, color: C.debit }}
+                      />
+                      <input
+                        type="number" step="0.01" placeholder="In" value={draft.cashInStr}
+                        onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), cashInStr: e.target.value } : { ...draft, cashInStr: e.target.value })}
+                        className="ll-mono text-right" style={{ ...miniInput, color: C.credit }}
+                      />
+                      <div className="ll-mono" style={{ fontSize: 12.5, color: C.inkFaint }}>{account.currency}</div>
+                      <div />
+                    </div>
+                  )}
+                </div>
+
                 <div className="flex items-center gap-2 mt-2 flex-wrap" style={{ paddingLeft: 118 }}>
-                  <span style={{ fontSize: 12, color: C.inkFaint }}>Cash out</span>
-                  <input
-                    type="number" step="0.01" placeholder="0.00" value={draft.cashOutStr}
-                    onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), cashOutStr: e.target.value } : { ...draft, cashOutStr: e.target.value })}
-                    className="ll-mono" style={{ ...miniInput, width: 90, color: C.debit }}
-                  />
-                  <span style={{ fontSize: 12, color: C.inkFaint }}>Cash in</span>
-                  <input
-                    type="number" step="0.01" placeholder="0.00" value={draft.cashInStr}
-                    onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), cashInStr: e.target.value } : { ...draft, cashInStr: e.target.value })}
-                    className="ll-mono" style={{ ...miniInput, width: 90, color: C.credit }}
-                  />
-                  <span className="ll-mono" style={{ fontSize: 12.5, color: C.inkFaint, padding: "0 4px" }}>{account.currency}</span>
                   <select
                     value={draft.otherAccountId}
                     onChange={(e) => repointOtherAccount(e.target.value)}
