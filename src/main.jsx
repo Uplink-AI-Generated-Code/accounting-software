@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import "./storageShim.js";
+import "./apiStorage.js";
 import App from "./App.jsx";
 import "./index.css";
 

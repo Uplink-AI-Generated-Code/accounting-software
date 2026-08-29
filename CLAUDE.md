@@ -6,14 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A single-page double-entry personal ledger: cash accounts, UK Stocks & Shares
 ISA support with allowance tracking, and one-security-per-account stock
-accounts with cost basis / portfolio value tracking. No backend — state
-persists via `window.storage` (see `storageShim.js`).
+accounts with cost basis / portfolio value tracking. State is persisted by a
+Symfony backend (`backend/`) into SQLite via Doctrine — see "Backend" below.
 
 `src/App.jsx` is the top-level component (state, persistence, routing, the
 modal/nav-guard wiring) — it renders the pieces below but holds no ledger
-math itself. `src/main.jsx` is just the React mount point; `src/storageShim.js`
-polyfills `window.storage` on top of `localStorage` when the app isn't running
-inside its original host environment (e.g. as a standalone Vite site).
+math itself. `src/main.jsx` is just the React mount point; `src/apiStorage.js`
+installs `window.storage` (the app's only persistence interface — get/set/
+delete/list) backed by the Symfony API for the ledger's own data, and by
+`localStorage` for the one purely-local UI convenience key
+(`ledger-selected-account`).
 
 The app was originally one ~3100-line `ledger-app.jsx` file and was split by
 domain, not by component-per-file dogma — some UI pieces still share a file
@@ -46,14 +48,76 @@ one function.
 
 ## Commands
 
-Vite + React, `yarn.lock` is the checked-in lockfile (no `package-lock.json`).
+Frontend: Vite + React, `yarn.lock` is the checked-in lockfile (no
+`package-lock.json`).
 
 - Install: `yarn install` (or `npm install`)
-- Dev server: `yarn dev` — starts Vite, prints a local URL
+- Dev server: `yarn dev` — starts Vite on :5173, proxying `/api/*` to the
+  Symfony backend on :8000 (see `vite.config.js`) — **the backend must
+  already be running** for the app to load any data.
 - Build: `yarn build`
 - Preview a production build: `yarn preview`
 
-There is no test suite and no linter configured in this repo.
+Backend: Symfony 8 (API-only skeleton, no Twig), Doctrine ORM + Migrations,
+SQLite. All commands run from `backend/`.
+
+- Install: `composer install`
+- Dev server: `symfony server:start --port=8000` (or `symfony server:start -d
+  --port=8000` to background it)
+- Apply migrations: `php bin/console doctrine:migrations:migrate`
+- After changing an entity: `php bin/console doctrine:migrations:diff` to
+  generate the migration, then `migrate` as above — never hand-edit the
+  SQLite schema directly.
+- One-time import of existing browser data: export it from devtools
+  (`copy(localStorage.getItem('ledger-storage:personal:ledger-data'))`),
+  save it as a JSON file, then `php bin/console app:import-local-storage
+  path/to/file.json` — see `src/Command/ImportLocalStorageCommand.php`.
+  **This replaces the whole database**, it's not a merge.
+- The SQLite file lives at `backend/var/data_dev.db` (gitignored, along with
+  the rest of `var/`).
+
+There is no test suite and no linter configured in either half of the repo.
+
+## Backend
+
+- **Single user, no auth.** This is a personal local app; there's no `User`
+  entity and no login. If that ever changes, every controller and the
+  `LedgerStateService` write path need an ownership check added, not just a
+  login screen bolted on.
+- **Two endpoints only**: `GET /api/state` and `PUT /api/state`
+  (`src/Controller/StateController.php`), returning/accepting exactly the
+  `{ accounts, transactions, settings }` shape the frontend already works
+  with via `persist()` in `App.jsx`. This is deliberate — the frontend
+  always saves its whole state at once, so a REST resource-per-entity API
+  would just be more surface for no benefit. Don't add per-resource CRUD
+  endpoints without a real reason (e.g. a second client that needs partial
+  updates).
+- **`PUT` is a full wipe-and-rebuild**, not a diff/merge — see
+  `LedgerStateService::writeState()`. It runs inside one DB transaction, so
+  a bad request can't leave the ledger half-written. This matches the
+  frontend's own model (it already computes the full next state before
+  calling `persist`), and sidesteps having to reimplement the same
+  reference-integrity ordering (accounts → transactions → lines) a merge
+  would also need.
+- **`Account`/`Transaction` ids are frontend-provided strings** (the
+  frontend already generates them with `uid()`), not Doctrine-generated —
+  this is what lets a round-trip save keep every id stable. `Line` has no
+  id in the frontend's model at all, so it's the one entity with a normal
+  auto-increment PK.
+- **The `Transaction` entity's table is explicitly named `transactions`**,
+  not the default `transaction` — `transaction` is a reserved word in
+  SQLite. DBAL's own DDL generation auto-quotes reserved table names, which
+  masked this until ORM-generated (unquoted) INSERT/DELETE statements hit
+  it. If you add another entity whose class name collides with a SQL
+  keyword, expect the same failure mode and fix it the same way.
+- **Nullable columns are omitted from the JSON**, not sent as `null` — see
+  `accountToArray()`/`lineToArray()`'s `array_filter`. This matches the
+  frontend's own convention of fields like `line.order` or `line.cashValue`
+  being entirely absent rather than present-but-null.
+- `ImportLocalStorageCommand` reuses `LedgerStateService::writeState()` —
+  the exact same code path the live `PUT` endpoint uses — so an import
+  behaves identically to the frontend saving that data itself. Don't give
+  the command its own separate insert logic.
 
 ## Data model — read this before touching transactions
 

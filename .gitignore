@@ -19,3 +19,7 @@ thumb
 sketch
 
 # End of https://www.toptal.com/developers/gitignore/api/react
+
+# Personal ledger data exported from a browser's localStorage for the
+# one-time `app:import-local-storage` migration — never commit real data.
+_data/*

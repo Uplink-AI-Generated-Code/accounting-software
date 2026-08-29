@@ -1,6 +1,6 @@
 # Ledger
 
-A personal double-entry ledger for cash accounts, UK Stocks & Shares ISAs, and stock trading — built as a single-page React app with no backend. Everything lives in your browser's storage.
+A personal double-entry ledger for cash accounts, UK Stocks & Shares ISAs, and stock trading — a single-page React app backed by a small Symfony API and a local SQLite database.
 
 ## Why this exists
 
@@ -40,12 +40,25 @@ Most personal finance apps either oversimplify (a single running balance, no rea
 
 ## Getting started
 
+Backend first (Symfony, SQLite via Doctrine):
+
+```bash
+cd backend
+composer install
+php bin/console doctrine:migrations:migrate
+symfony server:start --port=8000
+```
+
+Then, in another terminal, the frontend:
+
 ```bash
 yarn install
 yarn dev
 ```
 
-Then open the printed local URL. No environment variables, database, or account required — data is kept in your browser via `window.storage` (see `storageShim.js`), so it's local to whichever browser and machine you're using.
+Open the printed local URL — the Vite dev server proxies `/api/*` to the Symfony backend on :8000, so both need to be running. No account or login is required; this is a single-user app and the data lives in `backend/var/data_dev.db`, local to whichever machine runs the backend.
+
+If you're moving data from an earlier, browser-only version of this app, see `backend/src/Command/ImportLocalStorageCommand.php` for the one-time `app:import-local-storage` migration.
 
 ## Data model, briefly
 
@@ -59,8 +72,12 @@ Investment accounts hold exactly one security. Nothing about price-per-share is 
 
 - **Not a market data tool.** There's no price feed. "Portfolio value" is your own last trade price applied to your current holding, not what the market says it's worth today.
 - **Not tax or financial advice.** The ISA allowance logic reflects the rules as understood at the time of writing; if it disagrees with HMRC or your provider, trust them.
-- **Not multi-user or synced.** Storage is local to the browser. There's no login, no server, and no sharing between devices.
+- **Not multi-user or synced.** One SQLite database, no login, no sharing between devices. If you run the backend on one machine, that's where your data lives.
 
 ## Tech
 
-React, Tailwind, [Recharts](https://recharts.org/) for the combined stock chart, [Lucide](https://lucide.dev/) for icons. Single main component file (`ledger-app.jsx`); see `CLAUDE.md` if you're developing this further with Claude Code — it documents the sign conventions and shared logic that aren't obvious from the code alone.
+**Frontend:** React, Tailwind, [Recharts](https://recharts.org/) for the combined stock chart, [Lucide](https://lucide.dev/) for icons — split into `src/lib/` (formatting, matching, ISA rules, stock math — no JSX) and `src/components/` (the views).
+
+**Backend:** Symfony (API-only, no Twig), Doctrine ORM + Migrations, SQLite. Two endpoints — `GET`/`PUT /api/state` — that read and replace the whole ledger at once, mirroring how the frontend already saves.
+
+See `CLAUDE.md` if you're developing this further with Claude Code — it documents the sign conventions and shared logic that aren't obvious from the code alone.
