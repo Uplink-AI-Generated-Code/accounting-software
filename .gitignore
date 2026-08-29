@@ -23,3 +23,7 @@ sketch
 # Personal ledger data exported from a browser's localStorage for the
 # one-time `app:import-local-storage` migration — never commit real data.
 _data/*
+
+# Claude Code's own local scratch config (e.g. dev-server launch config for
+# its in-app browser preview) — not part of this project's dev workflow.
+.claude/

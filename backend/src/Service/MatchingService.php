@@ -12,6 +12,14 @@ use Doctrine\ORM\EntityManagerInterface;
  * natural sign convention). This is the one piece of business logic that
  * used to require the whole ledger loaded client-side (searching every
  * unmatched entry for a plausible counterpart); now it's a query.
+ *
+ * A candidate is, by definition, a standalone line (`transaction IS
+ * NULL`) — a line already inside a linked Transaction is never offered,
+ * since it's already matched. There's no `excludeTransactionId` parameter
+ * here: the current draft's own account is always in `excludeAccountIds`
+ * already, which is what would have kept a standalone line from matching
+ * itself anyway — a transaction id to additionally exclude has no
+ * candidates to speak of under this model.
  */
 class MatchingService
 {
@@ -24,36 +32,22 @@ class MatchingService
     /**
      * @param string[] $excludeAccountIds
      *
-     * @return array<int, array{transactionId: string, line: array<string, mixed>, account: array<string, mixed>}>
+     * @return array<int, array{lineId: int, line: array<string, mixed>, account: array<string, mixed>}>
      */
     public function findCandidates(
         string $targetCurrency,
         float $targetAmount,
         string $date,
-        ?string $excludeTransactionId,
         array $excludeAccountIds,
         string $mode,
     ): array {
         $direct = 'direct' === $mode;
 
-        // Only single-line (unmatched) transactions are ever offered as a
-        // candidate — a linked or split entry is already matched.
-        $singleLineTxnIds = $this->em->getConnection()->fetchFirstColumn(
-            'SELECT transaction_id FROM line GROUP BY transaction_id HAVING COUNT(*) = 1'
-        );
-        if (!$singleLineTxnIds) {
-            return [];
-        }
-
         $qb = $this->em->createQueryBuilder();
         $qb->select('l')
             ->from(Line::class, 'l')
-            ->where($qb->expr()->in('IDENTITY(l.transaction)', ':txnIds'))
-            ->setParameter('txnIds', $singleLineTxnIds);
+            ->where('l.transaction IS NULL');
 
-        if ($excludeTransactionId) {
-            $qb->andWhere('IDENTITY(l.transaction) != :excludeTxn')->setParameter('excludeTxn', $excludeTransactionId);
-        }
         if ($excludeAccountIds) {
             $qb->andWhere($qb->expr()->notIn('IDENTITY(l.account)', ':excludeAccounts'))->setParameter('excludeAccounts', $excludeAccountIds);
         }
@@ -78,7 +72,7 @@ class MatchingService
         usort($candidates, static fn ($a, $b) => $a['days'] <=> $b['days']);
 
         return array_map(fn ($c) => [
-            'transactionId' => $c['line']->getTransaction()->getId(),
+            'lineId' => $c['line']->getId(),
             'line' => $this->ledgerState->lineToArray($c['line']),
             'account' => $this->ledgerState->accountToArray($c['account']),
         ], $candidates);

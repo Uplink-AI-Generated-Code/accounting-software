@@ -238,37 +238,17 @@ export default function App() {
     setDeleteConfirm(null);
   }
 
-  // Every transaction write — a plain save, a merge (mergeDeleteId), a
-  // split-off (insertExtras) — becomes one batch of upsert/delete
-  // operations, applied atomically by the backend. Returns the refreshed
-  // account list's promise so the calling ledger screen can chain its own
-  // re-fetch of just-changed rows after this resolves.
-  function saveTransaction(data, mergeDeleteId, insertExtras) {
-    const operations = [{ op: "upsert", transaction: { id: data.id || uid(), lines: data.lines } }];
-    if (mergeDeleteId) operations.push({ op: "delete", id: mergeDeleteId });
-    if (insertExtras && insertExtras.length) {
-      insertExtras.forEach((e) => operations.push({ op: "upsert", transaction: { id: uid(), lines: e.lines } }));
-    }
+  // The one write path for everything a ledger screen does — a plain
+  // save, a merge, a split-off, an unlink, a same-date reorder, a delete
+  // — all arrive here as an already-built operations list (see
+  // lib/ledgerOperations.js, used by AccountLedger/StockLedger, which own
+  // the standalone-vs-linked transition logic since that's where the
+  // record identity actually lives). Returns the refreshed account list's
+  // promise so the calling ledger screen can chain its own re-fetch of
+  // just-changed rows after this resolves.
+  function saveLedgerOperations(operations) {
     return api
-      .applyTransactionOperations(operations)
-      .then(() => { setStorageOK(true); return refreshAccounts(); })
-      .catch(() => setStorageOK(false));
-  }
-
-  // Applies line changes to several transactions at once (e.g. re-stamping
-  // a whole same-date group's order after a reorder) — one batch call, so
-  // none of the updates can be lost or applied out of order.
-  function updateTransactions(updates) {
-    const operations = updates.map((u) => ({ op: "upsert", transaction: { id: u.id, lines: u.lines } }));
-    return api
-      .applyTransactionOperations(operations)
-      .then(() => { setStorageOK(true); return refreshAccounts(); })
-      .catch(() => setStorageOK(false));
-  }
-
-  function deleteTransaction(id) {
-    return api
-      .applyTransactionOperations([{ op: "delete", id }])
+      .applyLedgerOperations(operations)
       .then(() => { setStorageOK(true); return refreshAccounts(); })
       .catch(() => setStorageOK(false));
   }
@@ -365,9 +345,7 @@ export default function App() {
                 accounts={accounts}
                 balance={selected.balance || 0}
                 onEditAccount={() => setAccountForm(selected)}
-                onSaveTxn={saveTransaction}
-                onDeleteTxn={deleteTransaction}
-                onUpdateTxns={updateTransactions}
+                onLedgerOperations={saveLedgerOperations}
                 guardRef={ledgerGuardRef}
               />
             ) : (
@@ -376,9 +354,7 @@ export default function App() {
                 accounts={accounts}
                 balance={selected.balance || 0}
                 onEditAccount={() => setAccountForm(selected)}
-                onSaveTxn={saveTransaction}
-                onDeleteTxn={deleteTransaction}
-                onUpdateTxns={updateTransactions}
+                onLedgerOperations={saveLedgerOperations}
                 guardRef={ledgerGuardRef}
               />
             )

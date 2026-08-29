@@ -11,14 +11,13 @@ use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
 /**
- * Writes the whole ledger out as one JSON file, in the exact
- * { accounts, transactions, settings } shape GET /api/state returns and
- * ImportLocalStorageCommand/writeState() expect back in — so this file is
- * both a plain backup and something you can hand straight to
- * app:import-local-storage to restore it (into this database or another
- * one). Uses LedgerStateService::readState(), the same read path the live
- * endpoint uses, so the export can never drift from what the app itself
- * sees.
+ * Writes the whole ledger out as one JSON file — { accounts, records,
+ * settings }, the same shape LedgerStateService::writeState() (and so
+ * app:import-local-storage) expects back in — so this file is both a
+ * plain backup and something you can hand straight to that command to
+ * restore it (into this database or another one). Uses
+ * LedgerStateService::readState(), the same read path the live app uses,
+ * so the export can never drift from what the app itself sees.
  */
 #[AsCommand(
     name: 'app:export-state',
@@ -40,9 +39,8 @@ class ExportStateCommand extends Command
 
                     php bin/console app:export-state backup.json
 
-                The output is in the same shape GET /api/state returns and
-                app:import-local-storage expects, so it doubles as a backup you can
-                restore with that command later.
+                The output is in the shape app:import-local-storage expects, so it
+                doubles as a backup you can restore with that command later.
                 HELP);
     }
 
@@ -66,10 +64,14 @@ class ExportStateCommand extends Command
             return Command::FAILURE;
         }
 
+        $linkedCount = \count(array_filter($state['records'], static fn ($r) => null !== ($r['transactionId'] ?? null)));
+        $standaloneCount = \count($state['records']) - $linkedCount;
+
         $io->success(\sprintf(
-            'Exported %d account(s) and %d transaction(s) to %s',
+            'Exported %d account(s), %d linked transaction(s), and %d standalone line(s) to %s',
             \count($state['accounts']),
-            \count($state['transactions']),
+            $linkedCount,
+            $standaloneCount,
             $path,
         ));
 

@@ -68,11 +68,31 @@ class IsaAllowanceServiceTest extends KernelTestCase
         }
     }
 
+    // A standalone line — no Transaction at all, the actual shape an
+    // unmatched deposit/withdrawal has under the current model (unlike
+    // makeTransaction(), which wraps even a single line in a real
+    // Transaction — still useful for exercising the "somehow a 1-line
+    // Transaction exists anyway" case, since isExternalLine() treats the
+    // two identically).
+    private function makeStandaloneLine(Account $account, float $amount, string $date): void
+    {
+        $l = new Line();
+        $l->setAccount($account);
+        $l->setAmount($amount);
+        $l->setDate($date);
+        $l->setDescription('');
+        $this->em->persist($l);
+    }
+
     public function testNonFlexibleDepositCountsAndWithdrawalNeverReducesUsage(): void
     {
+        // Standalone lines — no Transaction wrapper — specifically to
+        // exercise IsaAllowanceService's own standalone-line branch
+        // (transactionsTouching() has to go find these separately from
+        // real Transactions).
         $isa = $this->makeAccount('isa1', ['isaKind' => 'cash-isa', 'flexible' => false]);
-        $this->makeTransaction('t1', [['account' => $isa, 'amount' => 5000, 'date' => '2026-05-01']]);
-        $this->makeTransaction('t2', [['account' => $isa, 'amount' => -1000, 'date' => '2026-06-01']]);
+        $this->makeStandaloneLine($isa, 5000, '2026-05-01');
+        $this->makeStandaloneLine($isa, -1000, '2026-06-01');
         $this->em->flush();
 
         $usage = $this->isa->computeUsage(2026);

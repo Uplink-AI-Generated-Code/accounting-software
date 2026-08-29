@@ -123,9 +123,9 @@ it covers and why); no test suite and no linter on the frontend.
     use (see "Stock valuation" below). Called on load and after every
     mutation (`App.jsx`'s `refreshAccounts()`).
   - `GET /api/accounts/{id}/ledger` (`AccountController::ledger`) — every
-    transaction touching one account, complete with *all* of that
-    transaction's lines (not just this account's own), in the same
-    `{id, lines: [...]}` shape the old full-ledger load used — see
+    **record** touching one account (see "Data model" below for what a
+    record is), complete with *all* of that record's lines (not just this
+    account's own), as `{records: [...]}` — see
     `LedgerStateService::accountLedger()`. Fetched by
     `useAccountLedger.js` on mount/account-change and re-fetched after
     that ledger's own mutations; nothing else holds this data, so
@@ -139,28 +139,37 @@ it covers and why); no test suite and no linter on the frontend.
     there's no ledger screen left to patch (`LedgerStateService::deleteAccount()`).
   - `GET`/`PUT /api/settings` (`SettingsController`) — plain singleton
     read/replace.
-  - `POST /api/transactions/batch` (`TransactionController`) — the one
-    endpoint that still takes a *list*: `{operations: [{op: "upsert",
-    transaction: {...}} | {op: "delete", id}]}`, applied atomically in one
-    DB transaction (`LedgerStateService::applyTransactionOperations()`).
-    Merging two entries, splitting a removed line off into its own
-    standalone record, and reordering several same-date rows all become
-    one call here; a plain single save or delete just sends a
-    one-element list — don't give that its own endpoint, it'd be a second
-    code path doing the same thing. This is the *only* place several rows
-    still need to change together: with a real database every other write
-    is independently atomic per-row, which is what let the old "compute
-    the whole next state, save it all at once" pattern go away.
+  - `POST /api/ledger/batch` (`LedgerController`) — the one endpoint that
+    still takes a *list*: `{operations: [...]}`, a 4-primitive vocabulary
+    (`upsertLine`, `deleteLine`, `upsertTransaction`, `deleteTransaction`)
+    applied atomically in one DB transaction
+    (`LedgerStateService::applyLedgerOperations()`). `upsertLine` always
+    creates/updates a standalone line (`transaction: null`);
+    `upsertTransaction` replaces a Transaction's whole line set in one go.
+    `src/lib/ledgerOperations.js` (`buildSaveOperations`,
+    `buildUnlinkOperations`, `buildDeleteOperations`,
+    `buildReorderOperations`) is the *only* place that decides which
+    primitives a given UI transition needs — a plain edit, a merge
+    (two standalones → one `upsertTransaction`), an unlink
+    (`deleteTransaction` + N `upsertLine`), a split-off, a 2→1 demotion,
+    or a same-date reorder all funnel through it. Don't hand-assemble an
+    `operations` array anywhere else. This is the *only* place several
+    rows still need to change together: with a real database every other
+    write is independently atomic per-row, which is what let the old
+    "compute the whole next state, save it all at once" pattern go away.
   - `GET /api/match-candidates` (`MatchController` /
     `MatchingService::findCandidates()`) — replaces the old client-side
     "scan every transaction for a plausible counterpart" search. Query
     params: `currency`, `amount`, `date`, `mode` (`mirrored` or `direct` —
     same distinction `getComparableAmount`/`getDirectComparableAmount`
     used to draw, see "Matching and linking" below), optionally
-    `excludeTransactionId` and `excludeAccountIds`. Called debounced
-    (`useMatchCandidates.js`, and the per-split-leg search inside
-    `otherLines.jsx`) as the user types an amount into an unmatched leg,
-    not on every keystroke synchronously.
+    `excludeAccountIds`. Each candidate is `{lineId, line, account}` — a
+    standalone line's own id doubles as its candidate identity; there's no
+    `excludeTransactionId` param because the current draft's own account
+    is already in `excludeAccountIds`, which already prevents a standalone
+    line matching itself. Called debounced (`useMatchCandidates.js`, and
+    the per-split-leg search inside `otherLines.jsx`) as the user types an
+    amount into an unmatched leg, not on every keystroke synchronously.
   - `GET /api/isa-allowance?taxYearStart=YYYY` (`IsaAllowanceController` /
     `IsaAllowanceService::computeUsage()`) — see "ISA allowance engine"
     below.
@@ -175,9 +184,13 @@ it covers and why); no test suite and no linter on the frontend.
   to add optimism, not to move business logic back to the frontend.
 - **`Account`/`Transaction` ids are frontend-provided strings** (the
   frontend already generates them with `uid()`), not Doctrine-generated —
-  this is what lets a round-trip save keep every id stable. `Line` has no
-  id in the frontend's model at all, so it's the one entity with a normal
-  auto-increment PK.
+  this is what lets a round-trip save keep every id stable. `Line` is the
+  one entity with a normal auto-increment PK, and — unlike Account/
+  Transaction — the frontend *does* see that id (`lineToArray()` includes
+  it): a standalone line has no Transaction id to key off, so its own
+  backend-assigned `id` is what the frontend uses as its row identity
+  (`rowKey()` in `AccountLedger.jsx`/`StockLedger.jsx`) and what
+  `upsertLine`/`deleteLine` operations address it by.
 - **The `Transaction` entity's table is explicitly named `transactions`**,
   not the default `transaction` — `transaction` is a reserved word in
   SQLite. DBAL's own DDL generation auto-quotes reserved table names, which
@@ -202,7 +215,14 @@ it covers and why); no test suite and no linter on the frontend.
   on `LedgerStateService`, used only by `ExportStateCommand` and
   `ImportLocalStorageCommand` — a backup or a first-time import is
   genuinely a "everything at once" operation. Live app traffic never calls
-  either; that's what the endpoints above are for.
+  either; that's what the endpoints above are for. `readState()` returns
+  `{accounts, records, settings}`; `records` items are `{transactionId,
+  lines}` — `transactionId: null` for a standalone line. `ImportLocalStorageCommand` also accepts the older
+  `{transactions: [...]}` export shape and upgrades it on the fly
+  (`upgradeLegacyShape()`: any transaction left with fewer than 2 lines
+  becomes a standalone record) — kept specifically so a differently-shaped
+  external database can still be imported later; don't remove that
+  upgrade path without checking it's no longer needed.
 - **Test suite** (`backend/tests/`, run via `php bin/phpunit`): covers
   `IsaAllowanceService` specifically — the flexible-ISA lot-tracking
   simulation is the one piece of logic in this app subtle enough to have
@@ -213,15 +233,38 @@ it covers and why); no test suite and no linter on the frontend.
 
 ## Data model — read this before touching transactions
 
-- A **transaction** is `{ id, lines: [] }`. There is no transaction-level
-  `date` or `description` — both live on each **line**. Two lines of the
-  same transaction can have different dates and different descriptions.
-  This was a deliberate fix for a real bug (linked rows sharing one
-  description); never reintroduce transaction-level date/description.
-- A **line** is `{ accountId, amount, date, description, order?, ... }`.
-  `amount` is signed: positive = increase, negative = decrease, regardless
-  of account type. There is no separate debit/credit; the UI just labels
-  positive/negative as "In"/"Out".
+- A **record** is `{ transactionId, lines: [] }` — the unit a ledger row
+  actually represents, and the shape `GET /api/accounts/{id}/ledger`
+  returns. `transactionId` is `null` for a **standalone line** (one line,
+  no `Transaction` row in the backend at all) or a real id for a
+  **linked transaction** (2+ lines, backed by a `Transaction` row). A
+  `Transaction` strictly means 2+ linked lines — the moment an edit would
+  leave it with fewer than 2, it's deleted and the remaining line becomes
+  standalone instead of an emptied/1-line Transaction. There is no
+  transaction-level `date` or `description` — both live on each **line**.
+  Two lines of the same transaction can have different dates and
+  different descriptions. This was a deliberate fix for a real bug
+  (linked rows sharing one description); never reintroduce
+  transaction-level date/description.
+- A **line** is `{ accountId, amount, date, description, order?, ... }`,
+  plus a backend-assigned `id` once persisted (see the id-exposure note
+  under "Backend" above). `amount` is signed: positive = increase,
+  negative = decrease, regardless of account type. There is no separate
+  debit/credit; the UI just labels positive/negative as "In"/"Out".
+- `src/lib/ledgerOperations.js` is where every UI transition (plain edit,
+  merge, unlink, split-off, 2→1 demotion, same-date reorder) gets
+  translated into `POST /api/ledger/batch` operations — see the endpoint
+  description under "Backend" above. `rowKey(record)` in
+  `AccountLedger.jsx`/`StockLedger.jsx` (`record.transactionId ||
+  \`line-${record.lines[0].id}\``) is the client-side row identity used
+  for React keys, row-ref tracking, and matching the row currently being
+  edited — **a standalone line's substituted draft in `effectiveRecords`
+  must keep `lines[0].id` set to the real line id**, or `rowKey()` on the
+  live-edited row silently stops matching `editingKey` and the row can no
+  longer be opened for editing (this exact bug shipped once — the
+  `draftLines()` helper intentionally omits `id` when building the lines
+  a save would send, so the `effectiveRecords` substitution has to add it
+  back in for display purposes).
 - Account types: `asset`, `liability`, `equity`, `income`, `expense`,
   `investment`, `isa-parent`. An `isa-parent` holds no balance itself —
   it's a wrapper grouping subaccounts via `isaParentId`.
@@ -275,7 +318,7 @@ line's value against a target, and where each is used.
   reintroduce a per-component copy of this logic; extend the shared
   hook/component instead.
 - A selected match candidate's line data is stored directly on the
-  `otherLine` as `matchedLine` (set in `selectMatch`/
+  `otherLine` as `matchedLineId`/`matchedLine` (set in `selectMatch`/
   `selectMatchForOtherLine`) rather than looked up from a `transactions`
   array — there isn't one client-side anymore. `resolveOtherLine()` uses
   `ol.matchedLine` when saving a matched leg.

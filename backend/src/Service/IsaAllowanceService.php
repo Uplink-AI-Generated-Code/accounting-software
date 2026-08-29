@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use App\Entity\Account;
+use App\Entity\Line;
 use App\Entity\Transaction;
 use Doctrine\ORM\EntityManagerInterface;
 
@@ -254,6 +255,13 @@ class IsaAllowanceService
     }
 
     /**
+     * Every record (linked transaction or standalone line) touching any
+     * of these accounts, in the same `{transactionId, lines}` shape
+     * readState()/accountLedger() use. A standalone line has no siblings
+     * to check in isExternalLine(), so it's trivially always external —
+     * but it still has to actually appear here, or a withdrawal-turned-
+     * standalone-deposit would silently vanish from the simulation.
+     *
      * @param string[] $accountIds
      *
      * @return array<int, array<string, mixed>>
@@ -261,16 +269,31 @@ class IsaAllowanceService
     private function transactionsTouching(array $accountIds): array
     {
         $placeholders = implode(',', array_fill(0, \count($accountIds), '?'));
-        $rows = $this->em->getConnection()->fetchFirstColumn(
-            "SELECT DISTINCT transaction_id FROM line WHERE account_id IN ({$placeholders})",
+
+        $records = [];
+
+        $transactionIds = $this->em->getConnection()->fetchFirstColumn(
+            "SELECT DISTINCT transaction_id FROM line WHERE account_id IN ({$placeholders}) AND transaction_id IS NOT NULL",
             $accountIds
         );
-        if (!$rows) {
-            return [];
+        if ($transactionIds) {
+            $transactions = $this->em->getRepository(Transaction::class)->findBy(['id' => $transactionIds]);
+            foreach ($transactions as $transaction) {
+                $records[] = $this->ledgerState->transactionRecordToArray($transaction);
+            }
         }
 
-        $transactions = $this->em->getRepository(Transaction::class)->findBy(['id' => $rows]);
+        $qb = $this->em->createQueryBuilder();
+        $standaloneLines = $qb->select('l')
+            ->from(Line::class, 'l')
+            ->where($qb->expr()->in('IDENTITY(l.account)', ':accountIds'))
+            ->andWhere('l.transaction IS NULL')
+            ->setParameter('accountIds', $accountIds)
+            ->getQuery()->getResult();
+        foreach ($standaloneLines as $line) {
+            $records[] = $this->ledgerState->standaloneRecordToArray($line);
+        }
 
-        return array_map($this->ledgerState->transactionToArray(...), $transactions);
+        return $records;
     }
 }

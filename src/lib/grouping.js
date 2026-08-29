@@ -85,7 +85,14 @@ export function groupLevelsLabel(levels) {
 // than just swapping two values — which stays correct even when three or
 // more rows share a date. Returns null if there's no same-date neighbour
 // in that direction to move past.
-export function reorderSameDate(rows, idx, dir, accountId) {
+//
+// Each row must carry `record` (the full `{transactionId, lines}` this
+// row belongs to) and `line` (this account's own line within it, the
+// exact same object reference as one entry of `record.lines` — used
+// below to patch only that one line's `order`, keeping the rest of a
+// linked record's lines untouched). Returns record-shaped patches ready
+// for lib/ledgerOperations.js's buildReorderOperations().
+export function reorderSameDate(rows, idx, dir) {
   const date = rows[idx].line.date;
   let start = idx, end = idx;
   while (start > 0 && rows[start - 1].line.date === date) start--;
@@ -100,6 +107,10 @@ export function reorderSameDate(rows, idx, dir, accountId) {
   [newOrderArr[localPos], newOrderArr[targetLocalPos]] = [newOrderArr[targetLocalPos], newOrderArr[localPos]];
   return newOrderArr.map((absIdx, seq) => {
     const r = rows[absIdx];
-    return { id: r.txn.id, lines: r.txn.lines.map((l) => (l.accountId === accountId ? { ...l, order: seq } : l)) };
+    return {
+      transactionId: r.record.transactionId,
+      lineId: r.record.transactionId ? null : r.line.id,
+      lines: r.record.lines.map((l) => (l === r.line ? { ...l, order: seq } : l)),
+    };
   });
 }

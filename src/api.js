@@ -11,10 +11,14 @@
 // engine (getIsaAllowance) both used to require the whole ledger loaded
 // client-side to search/simulate over — they're real backend queries now.
 //
-// applyTransactionOperations() is the one write that still takes a list —
-// merging two entries, splitting a removed line off into its own record,
-// and reordering several same-date rows all need several rows to change
-// together atomically. Plain account/settings writes are single-resource.
+// A "record" is `{ transactionId: string|null, lines: [...] }` — a
+// standalone, unpaired entry (transactionId null) or a linked transaction
+// (2+ lines). See lib/ledgerOperations.js for how a ledger edit becomes a
+// list of operations for applyLedgerOperations() — the one write that
+// still takes a list, since merging two entries, splitting a removed line
+// off into its own record, and reordering several same-date rows all need
+// several rows to change together atomically. Plain account/settings
+// writes are single-resource.
 
 async function request(path, options) {
   const res = await fetch(path, options);
@@ -60,25 +64,24 @@ export function putSettings(settings) {
   return request("/api/settings", { method: "PUT", ...jsonBody(settings) });
 }
 
-// operations: Array<{ op: "upsert", transaction: { id, lines } } | { op: "delete", id }>
-export function applyTransactionOperations(operations) {
-  return request("/api/transactions/batch", { method: "POST", ...jsonBody({ operations }) });
+// operations: see lib/ledgerOperations.js — an ordered list of
+// upsertLine/deleteLine/upsertTransaction/deleteTransaction primitives,
+// applied atomically.
+export function applyLedgerOperations(operations) {
+  return request("/api/ledger/batch", { method: "POST", ...jsonBody({ operations }) });
 }
 
 // mode: "mirrored" (default) or "direct" — see lib/matching.js's old
 // getComparableAmount vs getDirectComparableAmount for what these meant
 // client-side; the same distinction now lives in the backend's
 // MatchingService. excludeAccountIds keeps a match from offering an
-// account already in play in the current draft.
-export async function getMatchCandidates({ currency, amount, date, excludeTransactionId, excludeAccountIds, mode = "mirrored" }) {
+// account already in play in the current draft. A candidate is always a
+// standalone line (a linked one is already matched), so results carry
+// `lineId`, not a transaction id.
+export function getMatchCandidates({ currency, amount, date, excludeAccountIds, mode = "mirrored" }) {
   const params = new URLSearchParams({ currency, amount: String(amount), date, mode });
-  if (excludeTransactionId) params.set("excludeTransactionId", excludeTransactionId);
   if (excludeAccountIds && excludeAccountIds.length) params.set("excludeAccountIds", excludeAccountIds.join(","));
-  const results = await request(`/api/match-candidates?${params.toString()}`);
-  // Reshaped to match how the UI already refers to a candidate
-  // (c.txn.id / c.line / c.acc), so formatCandidateAmount/candidateIsNegative
-  // and the selection handlers don't need to change.
-  return results.map((r) => ({ txn: { id: r.transactionId }, line: r.line, acc: r.account }));
+  return request(`/api/match-candidates?${params.toString()}`);
 }
 
 // byKind/total only — the annual caps (isaRulesFor) and grouping accounts

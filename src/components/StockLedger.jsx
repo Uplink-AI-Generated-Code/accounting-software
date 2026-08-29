@@ -5,6 +5,7 @@ import { fmt, fmtUnits, todayISO, fmtDate } from "../lib/format";
 import { reorderSameDate } from "../lib/grouping";
 import { applyCostBasisLine, applyPortfolioValueLine } from "../lib/stockMath";
 import { formatCandidateAmount, candidateIsNegative } from "../lib/matching";
+import { buildSaveOperations, buildUnlinkOperations, buildDeleteOperations, buildReorderOperations } from "../lib/ledgerOperations";
 import { useOtherLines, OtherLinesEditor } from "./otherLines";
 import { useAccountLedger } from "./useAccountLedger";
 import { useMatchCandidates } from "./useMatchCandidates";
@@ -20,10 +21,17 @@ import { iconBtn, miniInput } from "./ui";
    exactly one symbol and one trading currency (set at account creation),
    trades don't need to ask for either.
 --------------------------------------------------------- */
-function blankStockDraft(account) {
+
+// A record's stable row identity — see AccountLedger.jsx's rowKey().
+function rowKey(record) {
+  return record.transactionId || `line-${record.lines[0].id}`;
+}
+
+function blankStockDraft() {
   return {
     mode: "new",
-    txnId: null,
+    transactionId: null,
+    lineId: null,
     date: todayISO(),
     description: "",
     otherLines: [],
@@ -34,12 +42,12 @@ function blankStockDraft(account) {
   };
 }
 
-export function StockLedger({ account, accounts, balance, onEditAccount, onSaveTxn, onDeleteTxn, onUpdateTxns, guardRef }) {
+export function StockLedger({ account, accounts, balance, onEditAccount, onLedgerOperations, guardRef }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
   const [view, setView] = useState("ledger");
 
-  const { transactions, loaded, reload } = useAccountLedger(account.id);
+  const { records, loaded, reload } = useAccountLedger(account.id);
 
   function unitsDeltaOf(d) {
     const i = parseFloat(d.unitsInStr);
@@ -69,7 +77,7 @@ export function StockLedger({ account, accounts, balance, onEditAccount, onSaveT
     }
   );
 
-  function draftToTxn(d, forcedId) {
+  function draftLines(d) {
     const unitsDelta = unitsDeltaOf(d);
     const cashNatural = cashDeltaOf(d);
     const desc = (d.description || "").trim();
@@ -81,18 +89,14 @@ export function StockLedger({ account, accounts, balance, onEditAccount, onSaveT
 
     const activeOtherLines = d.otherLines.filter((ol) => {
       if (!ol.accountId) return false;
-      if (ol.matchedTxnId) return true;
+      if (ol.matchedLineId) return true;
       const olAcc = accounts.find((a) => a.id === ol.accountId);
       return olAcc && olAcc.type === "investment" ? ol.unitsStr !== "" : ol.amountStr !== "";
     });
-    if (activeOtherLines.length === 0) {
-      return { id: forcedId || d.txnId, lines: [line1] };
-    }
-    const lines = [line1, ...activeOtherLines.map((ol) => resolveOtherLine(d, ol))];
-    return { id: forcedId || d.txnId, lines };
+    return [line1, ...activeOtherLines.map((ol) => resolveOtherLine(d, ol))];
   }
 
-  const editingKey = draft ? (draft.mode === "edit" ? draft.txnId : "DRAFT_NEW") : null;
+  const editingKey = draft ? (draft.mode === "edit" ? (draft.transactionId || `line-${draft.lineId}`) : "DRAFT_NEW") : null;
 
   // Match candidates for the trade's own tag — only offered before any
   // other leg has been added, since matching decides what the first one
@@ -103,43 +107,53 @@ export function StockLedger({ account, accounts, balance, onEditAccount, onSaveT
     if (unitsDeltaOf(draft) === 0 || !draft.date) return null;
     if (draft.valueStr === "") return null;
     const targetAmount = cashDeltaOf(draft); // = -cashValue, i.e. the real counterpart's own amount
-    return { currency: account.currency, amount: targetAmount, date: draft.date, excludeTransactionId: draft.txnId, excludeAccountIds: [account.id] };
+    return { currency: account.currency, amount: targetAmount, date: draft.date, excludeAccountIds: [account.id] };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft, account]);
   const matchCandidates = useMatchCandidates(matchParams);
 
-  const effectiveTxns = useMemo(() => {
-    let list = transactions;
-    if (draft && draft.mode === "edit") list = list.map((t) => (t.id === draft.txnId ? draftToTxn(draft) : t));
-    if (draft && draft.mode === "new") list = [...list, draftToTxn(draft, "DRAFT_NEW")];
+  const effectiveRecords = useMemo(() => {
+    let list = records;
+    if (draft && draft.mode === "edit") {
+      const key = draft.transactionId || `line-${draft.lineId}`;
+      list = list.map((r) => {
+        if (rowKey(r) !== key) return r;
+        const lines = draftLines(draft);
+        if (!draft.transactionId) lines[0] = { ...lines[0], id: draft.lineId };
+        return { transactionId: draft.transactionId, lines };
+      });
+    }
+    if (draft && draft.mode === "new") {
+      list = [...list, { transactionId: "DRAFT_NEW", lines: draftLines(draft) }];
+    }
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transactions, draft, account, accounts]);
+  }, [records, draft, account, accounts]);
 
   // One security per account, so a single running total — sorted and
   // balanced by this account's own line's own date, since the cash leg of
   // a trade can carry a different date.
   const rows = useMemo(() => {
-    const relevant = effectiveTxns
-      .filter((t) => t.lines.some((l) => l.accountId === account.id))
-      .map((t) => ({ txn: t, line: t.lines.find((l) => l.accountId === account.id) }));
+    const relevant = effectiveRecords
+      .filter((r) => r.lines.some((l) => l.accountId === account.id))
+      .map((r) => ({ record: r, line: r.lines.find((l) => l.accountId === account.id) }));
     const sorted = relevant.sort((a, b) => {
       if (a.line.date !== b.line.date) return a.line.date < b.line.date ? -1 : 1;
       const ao = a.line.order ?? 0, bo = b.line.order ?? 0;
       if (ao !== bo) return ao - bo;
-      return String(a.txn.id).localeCompare(String(b.txn.id));
+      return rowKey(a.record).localeCompare(rowKey(b.record));
     });
     let running = account.openingBalance || 0;
     const costState = { units: 0, cost: 0 };
     const valueState = { units: 0, lastPrice: 0, value: 0 };
-    return sorted.map(({ txn: t, line }) => {
+    return sorted.map(({ record, line }) => {
       running += line.amount || 0;
       applyCostBasisLine(costState, line);
       applyPortfolioValueLine(valueState, line);
-      const others = t.lines.filter((l) => l.accountId !== account.id).map((l) => accounts.find((a) => a.id === l.accountId)).filter(Boolean);
-      return { txn: t, line, running, runningCost: costState.cost, runningValue: valueState.value, others };
+      const others = record.lines.filter((l) => l.accountId !== account.id).map((l) => accounts.find((a) => a.id === l.accountId)).filter(Boolean);
+      return { record, line, running, runningCost: costState.cost, runningValue: valueState.value, others, key: rowKey(record) };
     });
-  }, [effectiveTxns, account, accounts]);
+  }, [effectiveRecords, account, accounts]);
 
   const { rowRefs, pendingSettleId } = useLedgerRowAnimation(rows, editingKey);
 
@@ -150,14 +164,15 @@ export function StockLedger({ account, accounts, balance, onEditAccount, onSaveT
   const portfolioValue = rows.length ? rows[rows.length - 1].runningValue : 0;
   const avgCost = balance > 0 ? costBasis / balance : null;
 
-  function buildDraftFromTxn(t) {
-    const line = t.lines.find((l) => l.accountId === account.id);
-    const others = t.lines.filter((l) => l.accountId !== account.id);
+  function buildDraftFromRecord(record) {
+    const line = record.lines.find((l) => l.accountId === account.id);
+    const others = record.lines.filter((l) => l.accountId !== account.id);
     const naturalCash = line.cashValue !== undefined ? -line.cashValue : 0;
     return {
       mode: "edit",
-      txnId: t.id,
-      originalTxn: t,
+      transactionId: record.transactionId,
+      lineId: record.transactionId ? null : line.id,
+      originalRecord: record,
       splitOffLines: [],
       date: line.date,
       description: line.description || "",
@@ -168,8 +183,8 @@ export function StockLedger({ account, accounts, balance, onEditAccount, onSaveT
     };
   }
 
-  function startEdit(t) {
-    setDraft(buildDraftFromTxn(t));
+  function startEdit(record) {
+    setDraft(buildDraftFromRecord(record));
     setDraftError("");
   }
 
@@ -185,9 +200,9 @@ export function StockLedger({ account, accounts, balance, onEditAccount, onSaveT
         draft.otherLines.length > 0 || draft.valueStr !== ""
       );
     }
-    if (!draft.originalTxn) return false;
-    const fresh = buildDraftFromTxn(draft.originalTxn);
-    const norm = (d) => JSON.stringify({ ...d, originalTxn: undefined, otherLines: d.otherLines.map(({ key, ...rest }) => rest) });
+    if (!draft.originalRecord) return false;
+    const fresh = buildDraftFromRecord(draft.originalRecord);
+    const norm = (d) => JSON.stringify({ ...d, originalRecord: undefined, otherLines: d.otherLines.map(({ key, ...rest }) => rest) });
     return norm(draft) !== norm(fresh);
   }
 
@@ -195,7 +210,7 @@ export function StockLedger({ account, accounts, balance, onEditAccount, onSaveT
     setDraft((d) => {
       if (!d) return d;
       const ol = otherLineFromLine(candidate.line, null);
-      ol.matchedTxnId = candidate.txn.id;
+      ol.matchedLineId = candidate.lineId;
       ol.matchedLine = candidate.line;
       return { ...d, otherLines: [...d.otherLines, ol] };
     });
@@ -205,15 +220,8 @@ export function StockLedger({ account, accounts, balance, onEditAccount, onSaveT
   // records — the exact reverse of a match. Nobody's data (including its
   // own date) is touched; each just goes back to standing alone.
   function unlinkNow() {
-    if (!draft || !draft.originalTxn || draft.originalTxn.lines.length < 2) return;
-    const t = draft.originalTxn;
-    const mine = t.lines.find((l) => l.accountId === account.id);
-    const rest = t.lines.filter((l) => l.accountId !== account.id);
-    onSaveTxn(
-      { id: t.id, lines: [mine] },
-      undefined,
-      rest.map((l) => ({ lines: [l] }))
-    ).then(reload);
+    if (!draft || !draft.originalRecord || draft.originalRecord.lines.length < 2) return;
+    onLedgerOperations(buildUnlinkOperations(draft.transactionId, draft.originalRecord.lines)).then(reload);
     setDraft(null);
     setDraftError("");
   }
@@ -221,30 +229,37 @@ export function StockLedger({ account, accounts, balance, onEditAccount, onSaveT
   // Rows sharing a date otherwise fall back to an arbitrary tiebreak — this
   // lets that order be set deliberately instead.
   function moveRow(idx, dir) {
-    const updates = reorderSameDate(rows, idx, dir, account.id);
-    if (updates) onUpdateTxns(updates).then(reload);
+    const patches = reorderSameDate(rows, idx, dir);
+    if (patches) onLedgerOperations(buildReorderOperations(patches)).then(reload);
   }
 
   function commit() {
     if (!draft) return false;
     if (unitsDeltaOf(draft) === 0) { setDraftError("Enter units in or out."); return false; }
-    const data = draftToTxn(draft, draft.mode === "edit" ? draft.txnId : undefined);
-    const matchedId = draft.otherLines.find((ol) => ol.matchedTxnId)?.matchedTxnId;
-    const splitOffExtras = draft.splitOffLines.length
-      ? draft.splitOffLines.map((sn) => ({ lines: [sn] }))
-      : undefined;
-    onSaveTxn(
-      { id: draft.mode === "edit" ? draft.txnId : undefined, lines: data.lines },
-      matchedId,
-      splitOffExtras
-    ).then(reload);
+    const newLines = draftLines(draft);
+    const absorbedLineIds = draft.otherLines.filter((ol) => ol.matchedLineId).map((ol) => ol.matchedLineId);
+    const operations = buildSaveOperations({
+      oldTransactionId: draft.transactionId,
+      oldLineId: draft.lineId,
+      newLines,
+      absorbedLineIds,
+      extraStandaloneLines: draft.splitOffLines,
+    });
+    onLedgerOperations(operations).then(reload);
     setDraft(null);
     setDraftError("");
     return true;
   }
 
   function cancel() {
-    if (draft && draft.mode === "edit") pendingSettleId.current = draft.txnId;
+    if (draft && draft.mode === "edit") pendingSettleId.current = editingKey;
+    setDraft(null);
+    setDraftError("");
+  }
+
+  function deleteEntry() {
+    if (!draft || !draft.originalRecord) return;
+    onLedgerOperations(buildDeleteOperations(draft.originalRecord)).then(reload);
     setDraft(null);
     setDraftError("");
   }
@@ -285,7 +300,7 @@ export function StockLedger({ account, accounts, balance, onEditAccount, onSaveT
           </div>
           <button onClick={onEditAccount} className="px-3 py-1.5 rounded" style={{ border: `1px solid ${C.line}`, fontSize: 13 }}>Edit account</button>
           <button
-            onClick={() => { setDraft(blankStockDraft(account)); setDraftError(""); }}
+            onClick={() => { setDraft(blankStockDraft()); setDraftError(""); }}
             disabled={!!draft || !loaded}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded"
             style={{ background: draft || !loaded ? C.inkFaint : C.ink, color: C.paper, fontSize: 13, cursor: draft || !loaded ? "default" : "pointer" }}
@@ -296,7 +311,7 @@ export function StockLedger({ account, accounts, balance, onEditAccount, onSaveT
       </div>
 
       {view === "chart" ? (
-        <UnitsChart account={account} transactions={transactions} />
+        <UnitsChart account={account} transactions={records} />
       ) : (
       <div style={{ border: `1px solid ${C.line}`, borderRadius: 6, overflow: "hidden", background: C.card }}>
         <div className="grid" style={{ gridTemplateColumns: gridCols, fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.6, color: C.inkFaint, padding: "10px 16px", borderBottom: `1px solid ${C.line}` }}>
@@ -307,18 +322,19 @@ export function StockLedger({ account, accounts, balance, onEditAccount, onSaveT
         {loaded && rows.length === 0 && !draft && <div style={{ padding: "24px 16px", fontSize: 13, color: C.inkFaint }}>No trades yet in this account.</div>}
 
         {rows.map((r, idx) => {
-          const isEditing = r.txn.id === editingKey;
+          const key = r.key;
+          const isEditing = key === editingKey;
           const unitsOut = r.line.amount < 0 ? -r.line.amount : 0;
           const unitsIn = r.line.amount > 0 ? r.line.amount : 0;
           const natural = r.line.cashValue !== undefined ? -r.line.cashValue : null;
-          const unmatched = r.txn.lines.length === 1;
+          const unmatched = r.record.transactionId === null;
           const hasAbove = idx > 0 && rows[idx - 1].line.date === r.line.date;
           const hasBelow = idx < rows.length - 1 && rows[idx + 1].line.date === r.line.date;
 
           if (isEditing) {
             const unitsSide = draft.unitsOutStr !== "" && draft.unitsInStr === "" ? "out" : "in";
             return (
-              <div key={r.txn.id} ref={(el) => (rowRefs.current[r.txn.id] = el)} style={{ borderBottom: `1px solid ${C.lineSoft}`, background: C.paperDim, padding: "10px 16px" }}>
+              <div key={key} ref={(el) => (rowRefs.current[key] = el)} style={{ borderBottom: `1px solid ${C.lineSoft}`, background: C.paperDim, padding: "10px 16px" }}>
                 <div className="grid items-center" style={{ gridTemplateColumns: gridCols, gap: 8 }}>
                   <input type="date" autoFocus value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} style={miniInput} />
                   <input type="text" placeholder="Description" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} style={miniInput} />
@@ -380,14 +396,14 @@ export function StockLedger({ account, accounts, balance, onEditAccount, onSaveT
                     <div className="flex flex-col gap-1">
                       {matchCandidates.map((c) => (
                         <button
-                          key={c.txn.id}
+                          key={c.lineId}
                           type="button"
                           onClick={() => selectMatch(c)}
                           className="flex items-center justify-between px-2 py-1.5 rounded text-left"
                           style={{ border: `1px solid ${C.line}`, background: C.card }}
                         >
                           <span style={{ fontSize: 12.5 }}>
-                            <strong>{c.acc.name}</strong> · {fmtDate(c.line.date)}{c.line.description ? ` · ${c.line.description}` : ""}
+                            <strong>{c.account.name}</strong> · {fmtDate(c.line.date)}{c.line.description ? ` · ${c.line.description}` : ""}
                           </span>
                           <span className="ll-mono" style={{ fontSize: 12.5, color: candidateIsNegative(c) ? C.debit : C.credit }}>{formatCandidateAmount(c)}</span>
                         </button>
@@ -402,10 +418,10 @@ export function StockLedger({ account, accounts, balance, onEditAccount, onSaveT
                   </span>
                   {draft.mode === "edit" && (
                     <div className="flex items-center gap-3">
-                      {draft.originalTxn && draft.originalTxn.lines.length >= 2 && (
+                      {draft.originalRecord && draft.originalRecord.lines.length >= 2 && (
                         <button onClick={unlinkNow} title="Split back into separate, unlinked entries" className="flex items-center gap-1" style={{ fontSize: 12, color: C.gold }}><Unlink2 size={12} /> Unlink</button>
                       )}
-                      <button onClick={() => { onDeleteTxn(draft.txnId).then(reload); setDraft(null); setDraftError(""); }} className="flex items-center gap-1" style={{ fontSize: 12, color: C.debit }}><Trash2 size={12} /> Delete</button>
+                      <button onClick={deleteEntry} className="flex items-center gap-1" style={{ fontSize: 12, color: C.debit }}><Trash2 size={12} /> Delete</button>
                     </div>
                   )}
                 </div>
@@ -415,9 +431,9 @@ export function StockLedger({ account, accounts, balance, onEditAccount, onSaveT
 
           return (
             <div
-              key={r.txn.id}
-              ref={(el) => (rowRefs.current[r.txn.id] = el)}
-              onClick={() => (draft ? null : startEdit(r.txn))}
+              key={key}
+              ref={(el) => (rowRefs.current[key] = el)}
+              onClick={() => (draft ? null : startEdit(r.record))}
               className="ll-row cursor-pointer"
               style={{ padding: "10px 16px", borderBottom: `1px solid ${C.lineSoft}` }}
             >

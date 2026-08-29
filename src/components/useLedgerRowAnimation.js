@@ -5,6 +5,9 @@ import { useEffect, useLayoutEffect, useRef } from "react";
    the stock ledger. Handles the FLIP slide for ordinary rows and the
    scroll-synced "ledger slides underneath" treatment for whichever
    row is being edited (or just finished being edited/cancelled).
+   Each row must carry its own stable `key` (a record's transaction id,
+   or "line-<id>" for a standalone one — see AccountLedger.jsx's
+   rowKey()).
 --------------------------------------------------------- */
 export function useLedgerRowAnimation(rows, editingKey) {
   const rowRefs = useRef({});
@@ -49,16 +52,16 @@ export function useLedgerRowAnimation(rows, editingKey) {
   useLayoutEffect(() => {
     const newTops = {};
     rows.forEach((r) => {
-      const el = rowRefs.current[r.txn.id];
-      if (el) newTops[r.txn.id] = absTop(el);
+      const el = rowRefs.current[r.key];
+      if (el) newTops[r.key] = absTop(el);
     });
     rows.forEach((r) => {
-      const el = rowRefs.current[r.txn.id];
-      const prev = prevTop.current[r.txn.id];
-      const next = newTops[r.txn.id];
+      const el = rowRefs.current[r.key];
+      const prev = prevTop.current[r.key];
+      const next = newTops[r.key];
       if (!el || prev === undefined || next === undefined || prev === next) return;
 
-      if (r.txn.id === editingKey || r.txn.id === pendingSettleId.current) {
+      if (r.key === editingKey || r.key === pendingSettleId.current) {
         settleRowWithScroll(el, prev - next);
       } else {
         const delta = prev - next;
@@ -73,7 +76,7 @@ export function useLedgerRowAnimation(rows, editingKey) {
     prevTop.current = newTops;
     pendingSettleId.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows.map((r) => r.txn.id + "|" + r.line.date).join(",")]);
+  }, [rows.map((r) => r.key + "|" + r.line.date).join(",")]);
 
   useEffect(() => {
     return () => {

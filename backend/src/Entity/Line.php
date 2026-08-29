@@ -16,6 +16,17 @@ use Doctrine\ORM\Mapping as ORM;
  * are all nullable and omitted from the JSON entirely when null/absent —
  * see CLAUDE.md's data model section for what each mirrored-sign field
  * means.
+ *
+ * `transaction` is nullable: an unpaired/unmatched entry is a standalone
+ * Line with no Transaction at all, not a fake one-line Transaction. A
+ * `Transaction` exists strictly to link 2+ lines together — see
+ * CLAUDE.md's "Data model" section. `id` is exposed to the frontend (via
+ * LedgerStateService::lineToArray()) specifically so a standalone line has
+ * something stable to be addressed by, the way a linked entry uses its
+ * Transaction's id — unlike Account/Transaction ids (frontend-generated
+ * strings), Line ids are backend-assigned integers, since a line is never
+ * created client-side without a round trip anyway (writes aren't
+ * optimistic here — see "Backend" in CLAUDE.md).
  */
 #[ORM\Entity(repositoryClass: LineRepository::class)]
 class Line
@@ -26,8 +37,8 @@ class Line
     private ?int $id = null;
 
     #[ORM\ManyToOne(targetEntity: Transaction::class, inversedBy: 'lines')]
-    #[ORM\JoinColumn(nullable: false, onDelete: 'CASCADE')]
-    private Transaction $transaction;
+    #[ORM\JoinColumn(nullable: true, onDelete: 'CASCADE')]
+    private ?Transaction $transaction = null;
 
     #[ORM\ManyToOne(targetEntity: Account::class)]
     #[ORM\JoinColumn(nullable: false, onDelete: 'CASCADE')]
@@ -62,12 +73,12 @@ class Line
         return $this->id;
     }
 
-    public function getTransaction(): Transaction
+    public function getTransaction(): ?Transaction
     {
         return $this->transaction;
     }
 
-    public function setTransaction(Transaction $transaction): static
+    public function setTransaction(?Transaction $transaction): static
     {
         $this->transaction = $transaction;
 

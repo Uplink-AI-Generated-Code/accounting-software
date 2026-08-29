@@ -8,14 +8,16 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;
 
 /**
- * One endpoint for every transaction write — a plain single save, a merge
- * (upsert the surviving record + delete the absorbed one), a split-off
- * (upsert + insert new standalone records), and a same-date reorder
- * (several upserts) all become one batch call, applied atomically. See
- * LedgerStateService::applyTransactionOperations().
+ * One endpoint for every ledger write that isn't a plain account/settings
+ * change — a standalone line's own save/delete, a transaction's, and
+ * every compound action built from them (merge, split-off, unlink,
+ * same-date reorder) — applied atomically as an ordered list of
+ * operations. See LedgerStateService::applyLedgerOperations() for the
+ * four primitives and worked examples of how each frontend action maps
+ * to a short sequence of them.
  */
-#[Route('/api/transactions')]
-class TransactionController
+#[Route('/api/ledger')]
+class LedgerController
 {
     public function __construct(private readonly LedgerStateService $state)
     {
@@ -30,7 +32,7 @@ class TransactionController
             return new JsonResponse(['error' => 'Expected {"operations": [...]}'], 400);
         }
 
-        $this->state->applyTransactionOperations($operations);
+        $this->state->applyLedgerOperations($operations);
 
         return new JsonResponse(['ok' => true]);
     }

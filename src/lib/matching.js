@@ -9,18 +9,19 @@ import { fmt, fmtUnits } from "./format";
 // involves the handful of accounts already in that draft, not a search
 // across the whole ledger).
 
-// How a match candidate's own value should read in a suggestion list —
-// an investment line's "amount" is units, so it needs its cash side
+// How a match candidate's own value should read in a suggestion list — a
+// candidate is { lineId, line, account } (see api.getMatchCandidates). An
+// investment line's "amount" is units, so it needs its cash side
 // (naturally signed) shown alongside, not just the raw unit count.
 export function formatCandidateAmount(c) {
-  if (c.acc.type === "investment") {
+  if (c.account.type === "investment") {
     const natural = c.line.cashValue !== undefined ? -c.line.cashValue : 0;
-    return `${fmtUnits(c.line.amount)} units · ${fmt(natural, c.acc.currency)}`;
+    return `${fmtUnits(c.line.amount)} units · ${fmt(natural, c.account.currency)}`;
   }
-  return fmt(c.line.amount, c.acc.currency);
+  return fmt(c.line.amount, c.account.currency);
 }
 export function candidateIsNegative(c) {
-  if (c.acc.type === "investment") return (c.line.cashValue !== undefined ? -c.line.cashValue : 0) < 0;
+  if (c.account.type === "investment") return (c.line.cashValue !== undefined ? -c.line.cashValue : 0) < 0;
   return c.line.amount < 0;
 }
 

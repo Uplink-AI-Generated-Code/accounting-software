@@ -27,7 +27,6 @@ class MatchController
         $amount = $request->query->get('amount');
         $date = $request->query->get('date');
         $mode = $request->query->get('mode', 'mirrored');
-        $excludeTransactionId = $request->query->get('excludeTransactionId') ?: null;
         $excludeAccountIds = array_values(array_filter(explode(',', (string) $request->query->get('excludeAccountIds', ''))));
 
         if (!$currency || null === $amount || !$date) {
@@ -37,6 +36,6 @@ class MatchController
             return new JsonResponse(['error' => 'mode must be "mirrored" or "direct"'], 400);
         }
 
-        return new JsonResponse($this->matching->findCandidates($currency, (float) $amount, $date, $excludeTransactionId, $excludeAccountIds, $mode));
+        return new JsonResponse($this->matching->findCandidates($currency, (float) $amount, $date, $excludeAccountIds, $mode));
     }
 }

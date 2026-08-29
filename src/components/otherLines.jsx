@@ -15,7 +15,7 @@ export function blankOtherLine(accountId) {
   return {
     key: uid(),
     accountId: accountId || "",
-    matchedTxnId: null,
+    matchedLineId: null,
     matchedLine: null,
     snapshot: null,
     // cash-account fields
@@ -55,8 +55,13 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
     return base;
   }
 
+  // Resolves a leg to its savable line data. A matched leg's data is
+  // never reconstructed from the parsed In/Out strings — line ids don't
+  // survive a shape transition (see lib/ledgerOperations.js), so the
+  // matched candidate's exact fields (matchedLine, stored at selection
+  // time) get reused verbatim to avoid any rounding/reformatting drift.
   function resolveOtherLine(d, ol) {
-    if (ol.matchedTxnId && ol.matchedLine) return { ...ol.matchedLine };
+    if (ol.matchedLineId && ol.matchedLine) return { ...ol.matchedLine };
     const olAcc = accounts.find((a) => a.id === ol.accountId);
     const unchanged = ol.snapshot && ol.snapshot.accountId === ol.accountId;
 
@@ -105,7 +110,7 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
       if (!d) return d;
       const ol = d.otherLines.find((x) => x.key === key);
       const rest = d.otherLines.filter((x) => x.key !== key);
-      if (ol && ol.snapshot && ol.snapshot.accountId === ol.accountId && !ol.matchedTxnId) {
+      if (ol && ol.snapshot && ol.snapshot.accountId === ol.accountId && !ol.matchedLineId) {
         return { ...d, otherLines: rest, splitOffLines: [...d.splitOffLines, ol.snapshot] };
       }
       return { ...d, otherLines: rest };
@@ -118,7 +123,7 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
       let splitOffLines = d.splitOffLines;
       const otherLines = d.otherLines.map((ol) => {
         if (ol.key !== key) return ol;
-        let next = { ...ol, ...patch, matchedTxnId: null };
+        let next = { ...ol, ...patch, matchedLineId: null };
         if ("accountId" in patch) {
           const stillSame = ol.snapshot && ol.snapshot.accountId === patch.accountId;
           if (ol.snapshot && !stillSame) {
@@ -151,7 +156,7 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
     }
     const usedAccountIds = [account.id, ...draft.otherLines.map((o) => o.accountId).filter(Boolean)];
     const pending = draft.otherLines.filter((ol) => {
-      if (ol.accountId || ol.matchedTxnId) return false;
+      if (ol.accountId || ol.matchedLineId) return false;
       const mag = parseFloat(ol.amountStr);
       return !isNaN(mag) && mag !== 0;
     });
@@ -168,7 +173,6 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
             currency: account.currency,
             amount: targetAmount,
             date: draft.date,
-            excludeTransactionId: draft.txnId,
             excludeAccountIds: usedAccountIds,
             mode: "direct",
           }).then((candidates) => [ol.key, candidates]);
@@ -194,7 +198,7 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
         if (ol.key !== key) return ol;
         const resolved = otherLineFromLine(candidate.line, null);
         resolved.key = ol.key;
-        resolved.matchedTxnId = candidate.txn.id;
+        resolved.matchedLineId = candidate.lineId;
         resolved.matchedLine = candidate.line;
         return resolved;
       });
@@ -276,22 +280,22 @@ export function OtherLinesEditor({ draft, account, accounts, otherLineCandidates
                     </>
                   )}
 
-                  {ol.matchedTxnId && <span title="Matched — will merge into one entry on save"><Check size={14} color={C.credit} /></span>}
+                  {ol.matchedLineId && <span title="Matched — will merge into one entry on save"><Check size={14} color={C.credit} /></span>}
                   <button type="button" onClick={() => removeOtherLine(ol.key)} title="Remove this link"><X size={15} color={C.inkFaint} /></button>
                 </div>
-                {!ol.accountId && !ol.matchedTxnId && olCandidates && olCandidates.length > 0 && (
+                {!ol.accountId && !ol.matchedLineId && olCandidates && olCandidates.length > 0 && (
                   <div className="flex flex-col gap-1" style={{ paddingLeft: 4 }}>
                     <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.5 }}>Possible matches</div>
                     {olCandidates.map((c) => (
                       <button
-                        key={c.txn.id}
+                        key={c.lineId}
                         type="button"
                         onClick={() => selectMatchForOtherLine(ol.key, c)}
                         className="flex items-center justify-between px-2 py-1.5 rounded text-left"
                         style={{ border: `1px solid ${C.line}`, background: C.card }}
                       >
                         <span style={{ fontSize: 12.5 }}>
-                          <strong>{c.acc.name}</strong> · {fmtDate(c.line.date)}{c.line.description ? ` · ${c.line.description}` : ""}
+                          <strong>{c.account.name}</strong> · {fmtDate(c.line.date)}{c.line.description ? ` · ${c.line.description}` : ""}
                         </span>
                         <span className="ll-mono" style={{ fontSize: 12.5, color: candidateIsNegative(c) ? C.debit : C.credit }}>{formatCandidateAmount(c)}</span>
                       </button>

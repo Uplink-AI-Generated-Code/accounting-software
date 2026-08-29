@@ -15,9 +15,21 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  * localStorage state (under the "ledger-data" key — see storageShim.js
  * and App.jsx's persist()) is copied out via devtools into a JSON file,
  * and this command loads it straight into the database using the same
- * LedgerStateService::writeState() the live PUT /api/state endpoint uses
- * — so importing behaves exactly like the frontend saving that data for
- * the first time, wipe-and-rebuild included.
+ * LedgerStateService::writeState() the export command's counterpart
+ * reads with — so importing behaves exactly like a fresh install seeded
+ * with that data, wipe-and-rebuild included.
+ *
+ * Accepts either shape: the current one (`records: [{transactionId,
+ * lines}]`, `transactionId: null` for a standalone line — see
+ * LedgerStateService's class docblock) or an older export's
+ * `transactions: [{id, lines}]`, where every entry — including a lone,
+ * unmatched one — was a "transaction". upgradeLegacyShape() converts the
+ * latter: a `lines` array with 2+ entries keeps its `id` as
+ * `transactionId`; a single-entry one becomes a standalone line
+ * (`transactionId: null`), the old id discarded since a fresh row gets
+ * its own backend-assigned id anyway. This is what lets an export from
+ * before this app supported standalone lines — or a similarly-shaped
+ * database from an entirely different project — import cleanly.
  */
 #[AsCommand(
     name: 'app:import-local-storage',
@@ -42,6 +54,10 @@ class ImportLocalStorageCommand extends Command
 
                 Paste the result into a JSON file and pass its path to this command
                 (defaults to "localStorage.export.json" in the current directory).
+
+                Also accepts an older export's "transactions" shape (every entry,
+                including unmatched ones, wrapped as a one-line transaction) — it's
+                upgraded automatically to a standalone line on import.
 
                 This REPLACES whatever is currently in the database — it's meant for
                 a one-time initial import, not a merge.
@@ -68,18 +84,32 @@ class ImportLocalStorageCommand extends Command
         }
 
         $accounts = $data['accounts'] ?? null;
-        $transactions = $data['transactions'] ?? null;
-        if (!\is_array($accounts) || !\is_array($transactions)) {
-            $io->error('Expected an object with "accounts" and "transactions" arrays — is this the right export?');
+        if (!\is_array($accounts)) {
+            $io->error('Expected an object with an "accounts" array — is this the right export?');
 
             return Command::FAILURE;
         }
+
+        if (isset($data['records']) && \is_array($data['records'])) {
+            $records = $data['records'];
+        } elseif (isset($data['transactions']) && \is_array($data['transactions'])) {
+            $records = $this->upgradeLegacyShape($data['transactions']);
+        } else {
+            $io->error('Expected a "records" array (or an older export\'s "transactions" array) — is this the right export?');
+
+            return Command::FAILURE;
+        }
+
         $settings = $data['settings'] ?? [];
 
+        $linkedCount = \count(array_filter($records, static fn ($r) => null !== ($r['transactionId'] ?? null)));
+        $standaloneCount = \count($records) - $linkedCount;
+
         $io->note(\sprintf(
-            'Importing %d account(s) and %d transaction(s) from %s. This replaces the current database contents.',
+            'Importing %d account(s), %d linked transaction(s), and %d standalone line(s) from %s. This replaces the current database contents.',
             \count($accounts),
-            \count($transactions),
+            $linkedCount,
+            $standaloneCount,
             $path,
         ));
 
@@ -89,10 +119,27 @@ class ImportLocalStorageCommand extends Command
             return Command::SUCCESS;
         }
 
-        $this->state->writeState($accounts, $transactions, $settings);
+        $this->state->writeState($accounts, $records, $settings);
 
         $io->success('Import complete.');
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * @param array<int, array{id: string, lines: array<int, array<string, mixed>>}> $transactions
+     *
+     * @return array<int, array{transactionId: ?string, lines: array<int, array<string, mixed>>}>
+     */
+    private function upgradeLegacyShape(array $transactions): array
+    {
+        return array_map(static function (array $t) {
+            $lines = $t['lines'] ?? [];
+
+            return [
+                'transactionId' => \count($lines) >= 2 ? ($t['id'] ?? null) : null,
+                'lines' => $lines,
+            ];
+        }, $transactions);
     }
 }

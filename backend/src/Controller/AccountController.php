@@ -37,7 +37,7 @@ class AccountController
     #[Route('/{id}/ledger', methods: ['GET'])]
     public function ledger(string $id): JsonResponse
     {
-        return new JsonResponse(['transactions' => $this->state->accountLedger($id)]);
+        return new JsonResponse(['records' => $this->state->accountLedger($id)]);
     }
 
     #[Route('/{id}', methods: ['PUT'])]

@@ -10,26 +10,37 @@ use App\Repository\SettingsRepository;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
- * Owns every read/write path for the ledger's data. Three kinds of caller:
+ * Owns every read/write path for the ledger's data.
  *
- *  - StateController's GET /api/state: readState(), a plain full read.
+ * A **record** is the unit the frontend edits: either a linked
+ * `Transaction` (2+ lines) — `{transactionId: string, lines: [...]}` — or a
+ * standalone, unpaired `Line` with no Transaction at all —
+ * `{transactionId: null, lines: [oneLine]}`. `Transaction` exists strictly
+ * to link 2+ lines together; it is never created for a lone entry. See
+ * CLAUDE.md's "Data model" section.
+ *
+ * Three kinds of caller:
+ *
  *  - The discrete per-entity endpoints (AccountController,
  *    SettingsController, TransactionController): upsertAccount(),
- *    deleteAccount(), replaceSettings(), applyTransactionOperations() —
- *    each one a single, independently-atomic mutation. This is the live
- *    app's normal write path.
- *  - ImportLocalStorageCommand: writeState(), a wipe-and-rebuild of
- *    everything from one exported blob. This is intentionally *not* built
- *    out of the discrete methods above — a first-time import is genuinely
- *    a "replace everything" operation, so rebuilding from scratch avoids
- *    having to diff against whatever (if anything) is already there.
+ *    deleteAccount(), replaceSettings(), applyLedgerOperations() — each
+ *    one a single, independently-atomic mutation. This is the live app's
+ *    normal write path.
+ *  - AccountController::list()/::ledger(): accountsWithStats(),
+ *    accountLedger() — the two reads the frontend actually uses.
+ *  - ImportLocalStorageCommand / ExportStateCommand: writeState() /
+ *    readState(), a wipe-and-rebuild / full read of everything. This is
+ *    intentionally *not* built out of the discrete methods above — a
+ *    first-time import or a full backup is genuinely an "everything at
+ *    once" operation.
  *
  * Compound frontend actions — merging two entries, splitting a removed
- * line off into its own record, reordering several same-date rows —
- * become a single applyTransactionOperations() call carrying an ordered
- * list of upsert/delete operations, applied in one DB transaction. That's
- * the one place multiple entities still need to change atomically
- * together; accounts and settings never had that requirement.
+ * line off into its own record, reordering several same-date rows,
+ * demoting a transaction back to a standalone line — become a single
+ * applyLedgerOperations() call carrying an ordered list of
+ * upsert/delete-line/upsert/delete-transaction operations, applied in one
+ * DB transaction. That's the one place multiple rows still need to change
+ * atomically together; accounts and settings never had that requirement.
  */
 class LedgerStateService
 {
@@ -39,14 +50,14 @@ class LedgerStateService
     ) {
     }
 
-    /** @return array{accounts: array<int, array<string, mixed>>, transactions: array<int, array<string, mixed>>, settings: array<string, mixed>} */
+    /** @return array{accounts: array<int, array<string, mixed>>, records: array<int, array<string, mixed>>, settings: array<string, mixed>} */
     public function readState(): array
     {
         $settings = $this->settingsRepository->getOrCreate();
 
         return [
             'accounts' => $this->accountsArray(),
-            'transactions' => $this->transactionsArray(),
+            'records' => $this->recordsArray(),
             'settings' => $this->settingsToArray($settings),
         ];
     }
@@ -79,11 +90,12 @@ class LedgerStateService
     }
 
     /**
-     * Every transaction touching one account, complete with all of its
-     * lines (not just this account's own) — the same shape as an entry in
-     * readState()'s transactions array, just scoped to this account. This
-     * is what a ledger screen loads on open and discards on navigating
-     * away, instead of the whole ledger ever living in the frontend.
+     * Every record touching one account: a standalone line the account
+     * itself owns, or a full linked transaction (complete with *all* of
+     * its lines, not just this account's own) for anything the account is
+     * linked into. This is what a ledger screen loads on open and
+     * discards on navigating away, instead of the whole ledger ever
+     * living in the frontend.
      *
      * @return array<int, array<string, mixed>>
      */
@@ -95,14 +107,26 @@ class LedgerStateService
         }
 
         $lines = $this->em->getRepository(Line::class)->findBy(['account' => $account]);
-        $transactionIds = array_values(array_unique(array_map(static fn (Line $l) => $l->getTransaction()->getId(), $lines)));
-        if (!$transactionIds) {
-            return [];
+
+        $records = [];
+        $transactionIds = [];
+        foreach ($lines as $line) {
+            $transaction = $line->getTransaction();
+            if ($transaction) {
+                $transactionIds[$transaction->getId()] = true;
+            } else {
+                $records[] = $this->standaloneRecordToArray($line);
+            }
         }
 
-        $transactions = $this->em->getRepository(Transaction::class)->findBy(['id' => $transactionIds]);
+        if ($transactionIds) {
+            $transactions = $this->em->getRepository(Transaction::class)->findBy(['id' => array_keys($transactionIds)]);
+            foreach ($transactions as $transaction) {
+                $records[] = $this->transactionRecordToArray($transaction);
+            }
+        }
 
-        return array_map($this->transactionToArray(...), $transactions);
+        return $records;
     }
 
     private function balanceFor(Account $a): float
@@ -126,9 +150,11 @@ class LedgerStateService
     /**
      * Every line for one investment account, in the exact order the
      * frontend's own ledger rows use — date, then order (ties default to
-     * 0), then transaction id as a final tiebreak — since cost basis and
-     * portfolio value are both running computations where same-day
-     * ordering can change the result (see lib/stockMath.js).
+     * 0), then a final tiebreak — since cost basis and portfolio value
+     * are both running computations where same-day ordering can change
+     * the result (see lib/stockMath.js). The tiebreak is the owning
+     * transaction's id for a linked line, or the line's own id for a
+     * standalone one — either way, stable and deterministic.
      *
      * @return Line[]
      */
@@ -144,8 +170,10 @@ class LedgerStateService
             if ($ox !== $oy) {
                 return $ox <=> $oy;
             }
+            $xTie = $x->getTransaction()?->getId() ?? (string) $x->getId();
+            $yTie = $y->getTransaction()?->getId() ?? (string) $y->getId();
 
-            return $x->getTransaction()->getId() <=> $y->getTransaction()->getId();
+            return $xTie <=> $yTie;
         });
 
         return $lines;
@@ -210,16 +238,20 @@ class LedgerStateService
 
     /**
      * Wipes and rebuilds the whole ledger from a plain array in the same
-     * shape readState() returns. Only used for the one-time local-storage
-     * import — see the class docblock.
+     * shape readState() returns. Only used for a one-time import — see
+     * the class docblock. `$recordsData` items are `{transactionId,
+     * lines}`; `transactionId: null` (or a single-element `lines` in an
+     * older, pre-standalone-line export — see
+     * ImportLocalStorageCommand::upgradeLegacyShape()) creates a
+     * standalone line instead of a Transaction.
      *
      * @param array<int, array<string, mixed>> $accountsData
-     * @param array<int, array<string, mixed>> $transactionsData
+     * @param array<int, array<string, mixed>> $recordsData
      * @param array<string, mixed>             $settingsData
      */
-    public function writeState(array $accountsData, array $transactionsData, array $settingsData): void
+    public function writeState(array $accountsData, array $recordsData, array $settingsData): void
     {
-        $this->em->wrapInTransaction(function () use ($accountsData, $transactionsData, $settingsData) {
+        $this->em->wrapInTransaction(function () use ($accountsData, $recordsData, $settingsData) {
             $connection = $this->em->getConnection();
             $connection->executeStatement('DELETE FROM line');
             $connection->executeStatement('DELETE FROM transactions');
@@ -233,13 +265,19 @@ class LedgerStateService
                 $accountsById[$account->getId()] = $account;
             }
 
-            foreach ($transactionsData as $data) {
-                $transaction = new Transaction();
-                $transaction->setId((string) $data['id']);
-                $this->em->persist($transaction);
+            foreach ($recordsData as $data) {
+                $transactionId = $data['transactionId'] ?? null;
+                $lines = $data['lines'] ?? [];
 
-                foreach ($data['lines'] ?? [] as $lineData) {
-                    $accountId = (string) $lineData['accountId'];
+                $transaction = null;
+                if (null !== $transactionId) {
+                    $transaction = new Transaction();
+                    $transaction->setId((string) $transactionId);
+                    $this->em->persist($transaction);
+                }
+
+                foreach ($lines as $lineData) {
+                    $accountId = (string) ($lineData['accountId'] ?? '');
                     if (!isset($accountsById[$accountId])) {
                         // A line pointing at an account that isn't in this
                         // import is malformed input — skip rather than
@@ -273,14 +311,14 @@ class LedgerStateService
      * Deletes one account. Never deletes the other side of anything
      * linked to it — a transaction that also has lines in other accounts
      * just loses this account's own line; only a transaction that becomes
-     * completely empty as a result is removed. Same semantics the
-     * frontend used to compute itself before persisting (see CLAUDE.md).
+     * completely empty as a result is removed (a standalone line just
+     * gets deleted outright — there's no wrapper to worry about). Same
+     * semantics the frontend used to compute itself before persisting
+     * (see CLAUDE.md).
      *
      * Deleting an account always navigates the frontend away from it, so
      * there's no ledger view left on screen that needs the result —
-     * callers just re-fetch the lightweight account list afterward. This
-     * doesn't return the affected transactions the way it used to when
-     * the frontend kept the whole ledger in memory.
+     * callers just re-fetch the lightweight account list afterward.
      */
     public function deleteAccount(string $id): void
     {
@@ -292,7 +330,10 @@ class LedgerStateService
             $lines = $this->em->getRepository(Line::class)->findBy(['account' => $account]);
             $touchedTransactionIds = [];
             foreach ($lines as $line) {
-                $touchedTransactionIds[$line->getTransaction()->getId()] = true;
+                $transaction = $line->getTransaction();
+                if ($transaction) {
+                    $touchedTransactionIds[$transaction->getId()] = true;
+                }
                 $this->em->remove($line);
             }
             $this->em->remove($account);
@@ -322,64 +363,120 @@ class LedgerStateService
     }
 
     /**
-     * Applies an ordered list of transaction upserts/deletes atomically —
-     * the shared path for a plain single save, a merge (upsert + delete
-     * the absorbed record), a split-off (upsert + insert new standalone
-     * records), and a same-date reorder (several upserts at once).
+     * Applies an ordered list of operations atomically — the shared path
+     * for every ledger write. Four primitives, each doing exactly one
+     * thing:
      *
-     * Each "upsert" replaces that transaction's lines wholesale (delete
-     * then reinsert) rather than diffing — the frontend already always
-     * sends the complete new lines array for a transaction it's editing,
-     * never a partial patch.
+     *  - `upsertLine` {lineId?, line}: create (lineId omitted/null) or
+     *    update-in-place (lineId given) one standalone line. Always
+     *    leaves the line with no transaction, even if it had one before
+     *    (it shouldn't — see below).
+     *  - `deleteLine` {lineId}: delete one standalone line outright.
+     *  - `upsertTransaction` {transactionId, lines}: replace a
+     *    transaction's lines wholesale (delete then reinsert, same as
+     *    before) — `transactionId` is always frontend-provided (see
+     *    CLAUDE.md), never null, for both create and update.
+     *  - `deleteTransaction` {transactionId}: delete a transaction and
+     *    all of its lines.
      *
-     * Doesn't return the fresh transactions list — nothing keeps a
-     * ledger-wide array to patch anymore. The caller (whichever ledger
-     * screen triggered this) re-fetches its own scoped
-     * GET /api/accounts/{id}/ledger afterward, and the app separately
-     * re-fetches the lightweight account list for updated balances.
+     * A plain single save is one op. A merge (linking two standalone
+     * lines, or adding a standalone line to an existing transaction)
+     * deletes the absorbed standalone line(s) and upserts the transaction
+     * with the full new line set — the absorbed line's *id* doesn't
+     * survive the merge, a fresh row is created inside the transaction,
+     * matching this endpoint's existing "wholesale replace, don't diff"
+     * philosophy. A split-off/unlink is the reverse: delete (or shrink)
+     * the transaction, upsert new standalone lines for whatever came out
+     * of it. A same-date reorder is several upserts (line or transaction,
+     * whichever each affected row actually is) in one call. See
+     * CLAUDE.md's "Data model" section for the full worked examples.
      *
-     * @param array<int, array{op: string, id?: string, transaction?: array<string, mixed>}> $operations
+     * @param array<int, array{op: string, lineId?: int, transactionId?: string, line?: array<string, mixed>, lines?: array<int, array<string, mixed>>}> $operations
      */
-    public function applyTransactionOperations(array $operations): void
+    public function applyLedgerOperations(array $operations): void
     {
         $this->em->wrapInTransaction(function () use ($operations) {
             foreach ($operations as $op) {
-                $type = $op['op'] ?? null;
-
-                if ('delete' === $type && isset($op['id'])) {
-                    $this->deleteTransactionLines((string) $op['id']);
-                    $transaction = $this->em->getRepository(Transaction::class)->find((string) $op['id']);
-                    if ($transaction) {
-                        $this->em->remove($transaction);
-                        $this->em->flush();
-                    }
-                    continue;
-                }
-
-                if ('upsert' === $type && isset($op['transaction']['id'])) {
-                    $data = $op['transaction'];
-                    $txnId = (string) $data['id'];
-
-                    $this->deleteTransactionLines($txnId);
-                    $transaction = $this->em->getRepository(Transaction::class)->find($txnId) ?? new Transaction();
-                    $transaction->setId($txnId);
-                    $this->em->persist($transaction);
-
-                    foreach ($data['lines'] ?? [] as $lineData) {
-                        $account = $this->em->getRepository(Account::class)->find((string) $lineData['accountId']);
-                        if (!$account) {
-                            // Same reasoning as writeState(): a line
-                            // pointing nowhere is malformed input, skip it
-                            // rather than fail the whole batch.
-                            continue;
-                        }
-                        $line = $this->hydrateLine(new Line(), $lineData, $transaction, $account);
-                        $this->em->persist($line);
-                    }
-                    $this->em->flush();
-                }
+                match ($op['op'] ?? null) {
+                    'deleteLine' => $this->opDeleteLine($op),
+                    'deleteTransaction' => $this->opDeleteTransaction($op),
+                    'upsertLine' => $this->opUpsertLine($op),
+                    'upsertTransaction' => $this->opUpsertTransaction($op),
+                    default => null,
+                };
             }
         });
+    }
+
+    /** @param array<string, mixed> $op */
+    private function opDeleteLine(array $op): void
+    {
+        if (!isset($op['lineId'])) {
+            return;
+        }
+        $line = $this->em->getRepository(Line::class)->find((int) $op['lineId']);
+        if ($line) {
+            $this->em->remove($line);
+            $this->em->flush();
+        }
+    }
+
+    /** @param array<string, mixed> $op */
+    private function opDeleteTransaction(array $op): void
+    {
+        if (!isset($op['transactionId'])) {
+            return;
+        }
+        $transactionId = (string) $op['transactionId'];
+        $this->deleteTransactionLines($transactionId);
+        $transaction = $this->em->getRepository(Transaction::class)->find($transactionId);
+        if ($transaction) {
+            $this->em->remove($transaction);
+            $this->em->flush();
+        }
+    }
+
+    /** @param array<string, mixed> $op */
+    private function opUpsertLine(array $op): void
+    {
+        $lineData = $op['line'] ?? null;
+        if (!\is_array($lineData) || !isset($lineData['accountId'])) {
+            return;
+        }
+        $account = $this->em->getRepository(Account::class)->find((string) $lineData['accountId']);
+        if (!$account) {
+            return;
+        }
+        $lineId = isset($op['lineId']) ? (int) $op['lineId'] : null;
+        $line = $lineId ? $this->em->getRepository(Line::class)->find($lineId) : null;
+        $line = $this->hydrateLine($line ?? new Line(), $lineData, null, $account);
+        $this->em->persist($line);
+        $this->em->flush();
+    }
+
+    /** @param array<string, mixed> $op */
+    private function opUpsertTransaction(array $op): void
+    {
+        if (!isset($op['transactionId'])) {
+            return;
+        }
+        $txnId = (string) $op['transactionId'];
+        $this->deleteTransactionLines($txnId);
+        $transaction = $this->em->getRepository(Transaction::class)->find($txnId) ?? new Transaction();
+        $transaction->setId($txnId);
+        $this->em->persist($transaction);
+
+        foreach ($op['lines'] ?? [] as $lineData) {
+            $account = $this->em->getRepository(Account::class)->find((string) ($lineData['accountId'] ?? ''));
+            if (!$account) {
+                // A line pointing nowhere is malformed input, skip it
+                // rather than fail the whole batch.
+                continue;
+            }
+            $line = $this->hydrateLine(new Line(), $lineData, $transaction, $account);
+            $this->em->persist($line);
+        }
+        $this->em->flush();
     }
 
     /**
@@ -424,18 +521,26 @@ class LedgerStateService
         return $account;
     }
 
-    /** @param array<string, mixed> $data */
-    private function hydrateLine(Line $line, array $data, Transaction $transaction, Account $account): Line
+    /**
+     * `$transaction` null means this line is (or is becoming) standalone.
+     * addLine(), not setTransaction() directly, when there *is* a
+     * transaction — it also keeps the Transaction's own in-memory $lines
+     * collection in sync. Without that, a later read of this same
+     * Transaction's lines *within the same request* (e.g.
+     * IsaAllowanceService reading a just-written transaction back) sees
+     * Doctrine's stale, still-empty collection from when the entity was
+     * constructed, even though the DB row is correct — the identity map
+     * serves back the same PHP object rather than re-querying.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function hydrateLine(Line $line, array $data, ?Transaction $transaction, Account $account): Line
     {
-        // addLine(), not setTransaction() directly — it also keeps the
-        // Transaction's own in-memory $lines collection in sync. Without
-        // that, a later read of this same Transaction's lines *within the
-        // same request* (e.g. IsaAllowanceService reading a just-written
-        // transaction back) sees Doctrine's stale, still-empty collection
-        // from when the entity was constructed, even though the DB row
-        // is correct — the identity map serves back the same PHP object
-        // rather than re-querying.
-        $transaction->addLine($line);
+        if ($transaction) {
+            $transaction->addLine($line);
+        } else {
+            $line->setTransaction(null);
+        }
         $line->setAccount($account);
         $line->setAmount((float) $data['amount']);
         $line->setDate((string) $data['date']);
@@ -465,10 +570,21 @@ class LedgerStateService
         return array_map($this->accountToArray(...), $this->em->getRepository(Account::class)->findAll());
     }
 
-    /** @return array<int, array<string, mixed>> */
-    private function transactionsArray(): array
+    /**
+     * Every record — every linked Transaction plus every standalone Line
+     * — in the shape the frontend/import/export expect.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function recordsArray(): array
     {
-        return array_map($this->transactionToArray(...), $this->em->getRepository(Transaction::class)->findAll());
+        $records = array_map($this->transactionRecordToArray(...), $this->em->getRepository(Transaction::class)->findAll());
+        $standalone = $this->em->getRepository(Line::class)->findBy(['transaction' => null]);
+        foreach ($standalone as $line) {
+            $records[] = $this->standaloneRecordToArray($line);
+        }
+
+        return $records;
     }
 
     /** @return array<string, mixed> */
@@ -488,12 +604,21 @@ class LedgerStateService
         ], static fn ($v) => null !== $v);
     }
 
-    /** @return array<string, mixed> */
-    public function transactionToArray(Transaction $t): array
+    /** @return array{transactionId: string, lines: array<int, array<string, mixed>>} */
+    public function transactionRecordToArray(Transaction $t): array
     {
         return [
-            'id' => $t->getId(),
+            'transactionId' => $t->getId(),
             'lines' => array_map($this->lineToArray(...), $t->getLines()->toArray()),
+        ];
+    }
+
+    /** @return array{transactionId: null, lines: array<int, array<string, mixed>>} */
+    public function standaloneRecordToArray(Line $l): array
+    {
+        return [
+            'transactionId' => null,
+            'lines' => [$this->lineToArray($l)],
         ];
     }
 
@@ -501,6 +626,7 @@ class LedgerStateService
     public function lineToArray(Line $l): array
     {
         return array_filter([
+            'id' => $l->getId(),
             'accountId' => $l->getAccount()->getId(),
             'amount' => $l->getAmount(),
             'date' => $l->getDate(),
