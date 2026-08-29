@@ -695,10 +695,57 @@ export default function App() {
   const hashInitialized = useRef(false);
   const storedSelectedIdRef = useRef(null);
 
+  // Whichever ledger is currently on screen registers itself here (see
+  // AccountLedger/StockLedger) so navigation elsewhere in the app can
+  // check "is there an unsaved edit in progress right now" without
+  // lifting the draft itself up to this level.
+  const ledgerGuardRef = useRef(null);
+  const [pendingNav, setPendingNav] = useState(null); // { action } | null
+
+  // Every navigation in the app funnels through here, so a mid-edit row
+  // can't silently follow you to a different account: a clean draft is
+  // just discarded, a dirty one prompts for what to do with it first.
+  function attemptNavigation(action) {
+    const guard = ledgerGuardRef.current;
+    if (guard && guard.isDirty()) {
+      setPendingNav({ action });
+      return;
+    }
+    if (guard) guard.discard();
+    action();
+  }
+
+  function resolvePendingNav(choice) {
+    if (!pendingNav) return;
+    const { action } = pendingNav;
+    if (choice === "cancel") {
+      setPendingNav(null);
+      return;
+    }
+    if (choice === "discard") {
+      const guard = ledgerGuardRef.current;
+      if (guard) guard.discard();
+      setPendingNav(null);
+      action();
+      return;
+    }
+    if (choice === "save") {
+      const guard = ledgerGuardRef.current;
+      const ok = guard ? guard.commit() : true;
+      if (ok) {
+        setPendingNav(null);
+        action();
+      }
+      // If the save failed validation, the ledger's own inline error is
+      // already showing — leave the prompt up rather than navigate away
+      // from an entry that didn't actually save.
+    }
+  }
+
   // Selecting an account updates the URL and remembered storage together,
-  // so a refresh lands back on the same account either way — whichever of
-  // the two actually survives however the host reloads this page.
-  function setSelectedId(id) {
+  // so a refresh (or a bookmark, or the back/forward buttons) lands back
+  // on the same account instead of always resetting to the overview.
+  function selectAccount(id) {
     setSelectedIdRaw(id);
     setShowAllowance(false);
     setHashForAccount(id);
@@ -710,6 +757,12 @@ export default function App() {
         /* non-fatal — selection just won't be remembered */
       }
     }
+  }
+  function setSelectedId(id) {
+    attemptNavigation(() => selectAccount(id));
+  }
+  function goToAllowance() {
+    attemptNavigation(() => { setSelectedIdRaw(null); setShowAllowance(true); });
   }
 
   useEffect(() => {
@@ -935,7 +988,7 @@ export default function App() {
             Overview
           </button>
           <button
-            onClick={() => { setSelectedIdRaw(null); setShowAllowance(true); }}
+            onClick={goToAllowance}
             className="w-full text-left px-2 py-1.5 rounded mb-3"
             style={{ background: showAllowance ? C.paperDim : "transparent", fontSize: 13, fontWeight: 600, color: C.inkSoft }}
           >
@@ -990,6 +1043,7 @@ export default function App() {
                 onSaveTxn={saveTransaction}
                 onDeleteTxn={deleteTransaction}
                 onUpdateTxns={updateTransactions}
+                guardRef={ledgerGuardRef}
               />
             ) : (
               <AccountLedger
@@ -1001,6 +1055,7 @@ export default function App() {
                 onSaveTxn={saveTransaction}
                 onDeleteTxn={deleteTransaction}
                 onUpdateTxns={updateTransactions}
+                guardRef={ledgerGuardRef}
               />
             )
           ) : (
@@ -1021,6 +1076,19 @@ export default function App() {
           <div className="flex justify-end gap-2">
             <button onClick={() => setDeleteConfirm(null)} className="px-3 py-1.5 rounded text-sm" style={{ border: `1px solid ${C.line}` }}>Cancel</button>
             <button onClick={() => performDeleteAccount(deleteConfirm.id)} className="px-3 py-1.5 rounded text-sm" style={{ background: C.debit, color: C.paper }}>Delete account</button>
+          </div>
+        </ModalShell>
+      )}
+
+      {pendingNav && (
+        <ModalShell onCancel={() => resolvePendingNav("cancel")} title="Unsaved entry">
+          <p style={{ fontSize: 13.5, color: C.inkSoft, lineHeight: 1.5, marginBottom: 18 }}>
+            You're still editing a row here. What would you like to do with it before moving on?
+          </p>
+          <div className="flex justify-end gap-2">
+            <button onClick={() => resolvePendingNav("cancel")} className="px-3 py-1.5 rounded text-sm" style={{ border: `1px solid ${C.line}` }}>Stay here</button>
+            <button onClick={() => resolvePendingNav("discard")} className="px-3 py-1.5 rounded text-sm" style={{ border: `1px solid ${C.line}`, color: C.debit }}>Discard</button>
+            <button onClick={() => resolvePendingNav("save")} className="px-3 py-1.5 rounded text-sm" style={{ background: C.ink, color: C.paper }}>Save</button>
           </div>
         </ModalShell>
       )}
@@ -1478,7 +1546,7 @@ function blankDraft(presetOtherId) {
   };
 }
 
-function AccountLedger({ account, accounts, transactions, balance, onEditAccount, onSaveTxn, onDeleteTxn, onUpdateTxns }) {
+function AccountLedger({ account, accounts, transactions, balance, onEditAccount, onSaveTxn, onDeleteTxn, onUpdateTxns, guardRef }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
   const [view, setView] = useState("ledger");
@@ -1661,10 +1729,14 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     return base;
   }
 
-  function startEdit(t) {
+  // Pure builder so the same construction can be used both to actually
+  // start an edit and, from isDraftDirty, to compute what a "clean"
+  // (freshly-opened, unedited) draft for this transaction would look
+  // like — comparing the two is how a dirty edit is detected.
+  function buildDraftFromTxn(t) {
     const line = t.lines.find((l) => l.accountId === account.id);
     const others = t.lines.filter((l) => l.accountId !== account.id);
-    setDraft({
+    return {
       mode: "edit",
       txnId: t.id,
       originalTxn: t,
@@ -1678,8 +1750,31 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
       exchangeCurrency: line.exchangeCurrency ? line.exchangeCurrency : "",
       otherLines: others.map((o) => otherLineFromLine(o, o)),
       splitOffLines: [],
-    });
+    };
+  }
+
+  function startEdit(t) {
+    setDraft(buildDraftFromTxn(t));
     setDraftError("");
+  }
+
+  // True if the row being edited has actually changed since it was
+  // opened (or, for a new entry, has anything entered at all) — used to
+  // decide whether navigating away should just quietly drop it or ask
+  // first. `key` is stripped from otherLines before comparing since it's
+  // a fresh random id every time, not a real content difference.
+  function isDraftDirty() {
+    if (!draft) return false;
+    if (draft.mode === "new") {
+      return !!(
+        draft.description.trim() || draft.inAmountStr !== "" || draft.outAmountStr !== "" ||
+        draft.otherLines.length > 0 || (draft.exchangeChecked && (draft.exchangeOutStr !== "" || draft.exchangeInStr !== ""))
+      );
+    }
+    if (!draft.originalTxn) return false;
+    const fresh = buildDraftFromTxn(draft.originalTxn);
+    const norm = (d) => JSON.stringify({ ...d, originalTxn: undefined, otherLines: d.otherLines.map(({ key, ...rest }) => rest) });
+    return norm(draft) !== norm(fresh);
   }
 
   function selectMatch(candidate) {
@@ -1767,9 +1862,9 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
   }
 
   function commit() {
-    if (!draft) return;
+    if (!draft) return false;
     const delta = draftDelta(draft);
-    if (delta === 0) { setDraftError("Enter an amount in In or Out."); return; }
+    if (delta === 0) { setDraftError("Enter an amount in In or Out."); return false; }
     const data = draftToTxn(draft, draft.mode === "edit" ? draft.txnId : undefined);
     const matchedId = draft.otherLines.find((ol) => ol.matchedTxnId)?.matchedTxnId;
     const splitOffExtras = draft.splitOffLines.length
@@ -1782,6 +1877,7 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     );
     setDraft(null);
     setDraftError("");
+    return true;
   }
 
   function cancel() {
@@ -1792,6 +1888,16 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     setDraft(null);
     setDraftError("");
   }
+
+  // Lets navigation elsewhere in the app check for, save, or discard an
+  // in-progress edit here without lifting `draft` itself up to App.
+  useEffect(() => {
+    if (!guardRef) return;
+    guardRef.current = { isDirty: isDraftDirty, commit, discard: cancel };
+    return () => {
+      guardRef.current = null;
+    };
+  });
 
   return (
     <div>
@@ -2093,7 +2199,7 @@ function blankStockDraft(account) {
   };
 }
 
-function StockLedger({ account, accounts, transactions, balance, onEditAccount, onSaveTxn, onDeleteTxn, onUpdateTxns }) {
+function StockLedger({ account, accounts, transactions, balance, onEditAccount, onSaveTxn, onDeleteTxn, onUpdateTxns, guardRef }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
   const [view, setView] = useState("ledger");
@@ -2217,12 +2323,11 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
     return unitsBought > 0 ? spent / unitsBought : null;
   }, [transactions, account]);
 
-  function startEdit(t) {
-    if (t.lines.length > 2) return;
+  function buildDraftFromTxn(t) {
     const line = t.lines.find((l) => l.accountId === account.id);
     const other = t.lines.find((l) => l.accountId !== account.id);
     const naturalCash = line.cashValue !== undefined ? -line.cashValue : 0;
-    setDraft({
+    return {
       mode: "edit",
       txnId: t.id,
       originalTxn: t,
@@ -2237,8 +2342,29 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
       cashChecked: line.cashValue !== undefined,
       cashInStr: naturalCash > 0 ? String(naturalCash) : "",
       cashOutStr: naturalCash < 0 ? String(-naturalCash) : "",
-    });
+    };
+  }
+
+  function startEdit(t) {
+    if (t.lines.length > 2) return;
+    setDraft(buildDraftFromTxn(t));
     setDraftError("");
+  }
+
+  // True if the trade being edited has actually changed since it was
+  // opened (or, for a new trade, has anything entered at all).
+  function isDraftDirty() {
+    if (!draft) return false;
+    if (draft.mode === "new") {
+      return !!(
+        draft.description.trim() || draft.unitsInStr !== "" || draft.unitsOutStr !== "" ||
+        draft.otherAccountId || (draft.cashChecked && (draft.cashInStr !== "" || draft.cashOutStr !== ""))
+      );
+    }
+    if (!draft.originalTxn) return false;
+    const fresh = buildDraftFromTxn(draft.originalTxn);
+    const norm = (d) => JSON.stringify({ ...d, originalTxn: undefined });
+    return norm(draft) !== norm(fresh);
   }
 
   function selectMatch(candidate) {
@@ -2299,8 +2425,8 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
   }
 
   function commit() {
-    if (!draft) return;
-    if (unitsDeltaOf(draft) === 0) { setDraftError("Enter units in or out."); return; }
+    if (!draft) return false;
+    if (unitsDeltaOf(draft) === 0) { setDraftError("Enter units in or out."); return false; }
     const data = draftToTxn(draft, draft.mode === "edit" ? draft.txnId : undefined);
     const splitOffExtras = draft.splitOffLines.length
       ? draft.splitOffLines.map((sn) => ({ description: draft.originalTxn ? draft.originalTxn.description : draft.description, lines: [sn] }))
@@ -2312,6 +2438,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
     );
     setDraft(null);
     setDraftError("");
+    return true;
   }
 
   function cancel() {
@@ -2319,6 +2446,16 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
     setDraft(null);
     setDraftError("");
   }
+
+  // Lets navigation elsewhere in the app check for, save, or discard an
+  // in-progress edit here without lifting `draft` itself up to App.
+  useEffect(() => {
+    if (!guardRef) return;
+    guardRef.current = { isDirty: isDraftDirty, commit, discard: cancel };
+    return () => {
+      guardRef.current = null;
+    };
+  });
 
   const gridCols = "110px 1fr 90px 90px 110px 60px";
 
