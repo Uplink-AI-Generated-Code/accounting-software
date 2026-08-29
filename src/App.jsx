@@ -2193,9 +2193,7 @@ function blankStockDraft(account) {
     matchedTxnId: null,
     unitsInStr: "",
     unitsOutStr: "",
-    cashChecked: false,
-    cashInStr: "",
-    cashOutStr: "",
+    valueStr: "",
   };
 }
 
@@ -2209,10 +2207,19 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
     const o = parseFloat(d.unitsOutStr);
     return (isNaN(i) ? 0 : i) - (isNaN(o) ? 0 : o);
   }
+  // The cash side is never chosen independently — buying (units in)
+  // always pays value out, selling (units out) always receives value in.
+  // The sign comes from whichever units field is in use, so there's only
+  // one number to type instead of two that have to agree with each other.
   function cashDeltaOf(d) {
-    const i = parseFloat(d.cashInStr);
-    const o = parseFloat(d.cashOutStr);
-    return (isNaN(i) ? 0 : i) - (isNaN(o) ? 0 : o);
+    const mag = parseFloat(d.valueStr);
+    if (isNaN(mag)) return 0;
+    const delta = unitsDeltaOf(d);
+    if (delta > 0) return -mag;
+    if (delta < 0) return mag;
+    if (d.unitsInStr !== "") return -mag;
+    if (d.unitsOutStr !== "") return mag;
+    return 0;
   }
 
   // Clears anything tied to a previously-selected match — used whenever a
@@ -2229,7 +2236,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
     const unitsDelta = unitsDeltaOf(d);
     const cashNatural = cashDeltaOf(d);
     const line1 = { accountId: account.id, amount: unitsDelta, date: d.date || todayISO() };
-    if (d.cashChecked && (d.cashInStr !== "" || d.cashOutStr !== "")) {
+    if (d.valueStr !== "") {
       line1.cashValue = -cashNatural;
       line1.cashCurrency = account.currency;
     }
@@ -2262,7 +2269,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
   const matchCandidates = useMemo(() => {
     if (!draft || draft.otherAccountId || draft.matchedTxnId) return [];
     if (unitsDeltaOf(draft) === 0 || !draft.date) return [];
-    if (!draft.cashChecked || (draft.cashInStr === "" && draft.cashOutStr === "")) return [];
+    if (draft.valueStr === "") return [];
     const targetAmount = cashDeltaOf(draft); // = -cashValue, i.e. the real counterpart's own amount
     const targetCurrency = account.currency;
 
@@ -2339,9 +2346,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
       matchedTxnId: null,
       unitsInStr: line.amount > 0 ? String(line.amount) : "",
       unitsOutStr: line.amount < 0 ? String(-line.amount) : "",
-      cashChecked: line.cashValue !== undefined,
-      cashInStr: naturalCash > 0 ? String(naturalCash) : "",
-      cashOutStr: naturalCash < 0 ? String(-naturalCash) : "",
+      valueStr: line.cashValue !== undefined ? String(Math.abs(naturalCash)) : "",
     };
   }
 
@@ -2358,7 +2363,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
     if (draft.mode === "new") {
       return !!(
         draft.description.trim() || draft.unitsInStr !== "" || draft.unitsOutStr !== "" ||
-        draft.otherAccountId || (draft.cashChecked && (draft.cashInStr !== "" || draft.cashOutStr !== ""))
+        draft.otherAccountId || draft.valueStr !== ""
       );
     }
     if (!draft.originalTxn) return false;
@@ -2511,6 +2516,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
           const hasBelow = idx < rows.length - 1 && rows[idx + 1].line.date === r.line.date;
 
           if (isEditing) {
+            const unitsSide = draft.unitsOutStr !== "" && draft.unitsInStr === "" ? "out" : "in";
             return (
               <div key={r.txn.id} ref={(el) => (rowRefs.current[r.txn.id] = el)} style={{ borderBottom: `1px solid ${C.lineSoft}`, background: C.paperDim, padding: "10px 16px" }}>
                 <div className="grid items-center" style={{ gridTemplateColumns: gridCols, gap: 8 }}>
@@ -2536,30 +2542,18 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
                 </div>
 
                 <div className="mt-2" style={{ paddingLeft: 118 }}>
-                  <label className="flex items-center gap-2" style={{ fontSize: 12, color: C.inkSoft }}>
+                  <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 4 }}>
+                    Value <span style={{ color: C.inkFaint, fontWeight: 400 }}>— {unitsSide === "out" ? "received for the units sold" : "paid for the units acquired"}</span>
+                  </div>
+                  <div className="grid items-center" style={{ gridTemplateColumns: gridCols, gap: 8 }}>
                     <input
-                      type="checkbox" checked={!!draft.cashChecked}
-                      onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), cashChecked: e.target.checked } : { ...draft, cashChecked: e.target.checked })}
+                      type="number" step="0.01" placeholder={account.currency} value={draft.valueStr}
+                      onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), valueStr: e.target.value } : { ...draft, valueStr: e.target.value })}
+                      className="ll-mono text-right"
+                      style={{ ...miniInput, gridColumn: unitsSide === "out" ? 3 : 4, color: unitsSide === "in" ? C.debit : C.credit }}
                     />
-                    Cash
-                  </label>
-                  {draft.cashChecked && (
-                    <div className="grid items-center mt-1.5" style={{ gridTemplateColumns: gridCols, gap: 8 }}>
-                      <div /><div />
-                      <input
-                        type="number" step="0.01" placeholder="Out" value={draft.cashOutStr}
-                        onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), cashOutStr: e.target.value } : { ...draft, cashOutStr: e.target.value })}
-                        className="ll-mono text-right" style={{ ...miniInput, color: C.debit }}
-                      />
-                      <input
-                        type="number" step="0.01" placeholder="In" value={draft.cashInStr}
-                        onChange={(e) => setDraft(draft.matchedTxnId ? { ...clearMatch(draft), cashInStr: e.target.value } : { ...draft, cashInStr: e.target.value })}
-                        className="ll-mono text-right" style={{ ...miniInput, color: C.credit }}
-                      />
-                      <div className="ll-mono" style={{ fontSize: 12.5, color: C.inkFaint }}>{account.currency}</div>
-                      <div />
-                    </div>
-                  )}
+                    <div className="ll-mono" style={{ gridColumn: 5, fontSize: 12.5, color: C.inkFaint }}>{draft.valueStr !== "" ? account.currency : ""}</div>
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-2 mt-2 flex-wrap" style={{ paddingLeft: 118 }}>
@@ -2618,7 +2612,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
 
                 <div className="flex items-center justify-between mt-2">
                   <span style={{ fontSize: 12, color: draftError ? C.debit : C.inkFaint }}>
-                    {draftError || (draft.otherAccountId ? "Cash leg linked" : "Cash side unmatched — can be matched to a cash account later")}
+                    {draftError || (draft.otherAccountId ? "Value leg linked" : "Value side unmatched — can be matched to a cash account later")}
                   </span>
                   {draft.mode === "edit" && (
                     <div className="flex items-center gap-3">
@@ -2645,7 +2639,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
                 <div style={{ color: C.inkSoft, fontSize: 12.5 }}>{fmtDate(r.line.date)}</div>
                 <div className="flex items-center gap-2">
                   {r.txn.description || <span style={{ color: C.inkFaint }}>—</span>}
-                  {unmatched && <span title="Cash side not yet matched to another account"><AlertTriangle size={12} color={C.gold} /></span>}
+                  {unmatched && <span title="Value side not yet matched to another account"><AlertTriangle size={12} color={C.gold} /></span>}
                 </div>
                 <div className="ll-mono text-right" style={{ color: unitsOut ? C.debit : C.inkFaint }}>{unitsOut ? fmtUnits(unitsOut) : "—"}</div>
                 <div className="ll-mono text-right" style={{ color: unitsIn ? C.credit : C.inkFaint }}>{unitsIn ? fmtUnits(unitsIn) : "—"}</div>
@@ -2666,7 +2660,7 @@ function StockLedger({ account, accounts, transactions, balance, onEditAccount, 
               </div>
               {natural !== null && (
                 <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 3, paddingLeft: 118 }}>
-                  Cash {fmt(natural, r.line.cashCurrency)}
+                  Value {fmt(natural, r.line.cashCurrency)}
                   {r.others.length > 0 ? ` · ${r.others.map((a) => a.name).join(", ")}` : " · unmatched"}
                 </div>
               )}
