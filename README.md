@@ -41,8 +41,8 @@ Most personal finance apps either oversimplify (a single running balance, no rea
 ## Getting started
 
 ```bash
-npm install
-npm run dev
+yarn install
+yarn dev
 ```
 
 Then open the printed local URL. No environment variables, database, or account required — data is kept in your browser via `window.storage` (see `storageShim.js`), so it's local to whichever browser and machine you're using.

@@ -9,12 +9,40 @@ ISA support with allowance tracking, and one-security-per-account stock
 accounts with cost basis / portfolio value tracking. No backend — state
 persists via `window.storage` (see `storageShim.js`).
 
-Main file: `src/App.jsx` (~3100 lines). Read the whole file before making
-structural changes — it's one file by design, and several helpers are shared
-across components in ways that aren't obvious from any single section.
-`src/main.jsx` is just the React mount point; `src/storageShim.js` polyfills
-`window.storage` on top of `localStorage` when the app isn't running inside
-its original host environment (e.g. as a standalone Vite site).
+`src/App.jsx` is the top-level component (state, persistence, routing, the
+modal/nav-guard wiring) — it renders the pieces below but holds no ledger
+math itself. `src/main.jsx` is just the React mount point; `src/storageShim.js`
+polyfills `window.storage` on top of `localStorage` when the app isn't running
+inside its original host environment (e.g. as a standalone Vite site).
+
+The app was originally one ~3100-line `ledger-app.jsx` file and was split by
+domain, not by component-per-file dogma — some UI pieces still share a file
+because they're small or tightly coupled:
+
+- `src/lib/` — pure logic, no JSX: `theme.js` (colors/tokens, `TYPES`,
+  `ISA_KINDS`, `CURRENCIES`, `GROUP_DIMENSIONS`), `format.js` (date/currency
+  formatting, `uid`), `grouping.js` (sidebar/Overview nesting, `bucketBy`,
+  `reorderSameDate`), `isa.js` (tax-year rules, `computeIsaUsage`),
+  `stockMath.js` (cost basis / portfolio value), `matching.js`
+  (`getComparableAmount`, `getDirectComparableAmount`, `balanceHint`),
+  `chartSeries.js` (daily-series builder for charts), `hash.js` (the
+  `#/account/<id>` router + `hasStorage`).
+- `src/components/` — UI: `AccountLedger.jsx` and `StockLedger.jsx` are the
+  two ledger views; both depend on `otherLines.jsx`, which holds the
+  `useOtherLines` hook and `OtherLinesEditor` component **shared between
+  them** (see below — do not fork this per-ledger). `charts.jsx` holds all
+  the Recharts wrappers together since they share tooltip/series-hook
+  plumbing. `Overview.jsx`, `OverviewGroupTree.jsx`, `SidebarGroupTree.jsx`,
+  `AccountCard.jsx`, `GroupLevelPicker.jsx` are the grouping/browsing UI.
+  `IsaParentView.jsx`, `AllowanceView.jsx`, `AccountFormModal.jsx` are the
+  remaining top-level views/modals. `ui.jsx` holds tiny shared primitives
+  (`ModalShell`, `Field`, `miniInput`/`inputStyle`, `iconBtn`).
+  `useLedgerRowAnimation.js` is the FLIP/autoscroll hook shared by both
+  ledgers' row lists.
+
+When adding a helper, put it in the `lib/` module that already owns that
+domain rather than inlining it into a component or creating a new module for
+one function.
 
 ## Commands
 
@@ -118,10 +146,10 @@ There is no test suite and no linter configured in this repo.
 
 ## UI conventions
 
-- Colors, fonts, and spacing tokens live in the `C` object at the top of
-  the file — reuse the palette rather than introducing new hex values
-  inline; there's a `plum` token specifically added for a third chart
-  series when gold/credit/debit weren't enough.
+- Colors, fonts, and spacing tokens live in the `C` object in
+  `src/lib/theme.js` — reuse the palette rather than introducing new hex
+  values inline; there's a `plum` token specifically added for a third
+  chart series when gold/credit/debit weren't enough.
 - Editing a ledger row uses inline expansion in place (no modals) with a
   shared CSS-grid column template so per-field alignment lines up with
   the read-only row above it. When adding a new field to an editing row,
