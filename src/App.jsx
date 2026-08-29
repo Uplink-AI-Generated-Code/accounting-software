@@ -1913,6 +1913,50 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft, transactions, accounts, account]);
 
+  // Once a split has more than one leg, each not-yet-assigned leg gets its
+  // own candidate search too — using exactly what's typed into that leg's
+  // own In/Out + amount (no inversion, since that field already means
+  // "this is the other account's own recorded amount"), not derived from
+  // the main line's overall delta the way the very first link is. Scoped
+  // to plain cash legs; an investment leg still needs picking manually.
+  const otherLineCandidates = useMemo(() => {
+    if (!draft || !draft.date) return {};
+    const usedAccountIds = new Set([account.id, ...draft.otherLines.map((o) => o.accountId).filter(Boolean)]);
+    const map = {};
+    draft.otherLines.forEach((ol) => {
+      if (ol.accountId || ol.matchedTxnId) return;
+      const mag = parseFloat(ol.amountStr);
+      if (isNaN(mag) || mag === 0) return;
+      const targetAmount = ol.isOut ? -mag : mag;
+      const targetCurrency = account.currency;
+      const candidates = transactions
+        .filter((t) => t.id !== draft.txnId && t.lines.length === 1)
+        .map((t) => ({ txn: t, line: t.lines[0], acc: accounts.find((a) => a.id === t.lines[0].accountId) }))
+        .filter((c) => c.acc && !usedAccountIds.has(c.acc.id))
+        .map((c) => ({ ...c, comparable: getComparableAmount(c.line, c.acc, targetCurrency) }))
+        .filter((c) => c.comparable !== undefined && Math.abs(c.comparable - targetAmount) < 0.005)
+        .filter((c) => Math.abs(daysDiff(draft.date, c.line.date)) <= 3)
+        .sort((a, b) => Math.abs(daysDiff(draft.date, a.line.date)) - Math.abs(daysDiff(draft.date, b.line.date)));
+      if (candidates.length) map[ol.key] = candidates;
+    });
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, transactions, accounts, account]);
+
+  function selectMatchForOtherLine(key, candidate) {
+    setDraft((d) => {
+      if (!d) return d;
+      const otherLines = d.otherLines.map((ol) => {
+        if (ol.key !== key) return ol;
+        const resolved = otherLineFromLine(candidate.line, null);
+        resolved.key = ol.key;
+        resolved.matchedTxnId = candidate.txn.id;
+        return resolved;
+      });
+      return { ...d, otherLines };
+    });
+  }
+
   const effectiveTxns = useMemo(() => {
     let list = transactions;
     if (draft && draft.mode === "edit") list = list.map((t) => (t.id === draft.txnId ? draftToTxn(draft) : t));
@@ -2217,8 +2261,10 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
                     {draft.otherLines.map((ol) => {
                       const olAcc = accounts.find((a) => a.id === ol.accountId);
                       const isStock = olAcc && olAcc.type === "investment";
+                      const olCandidates = otherLineCandidates[ol.key];
                       return (
-                        <div key={ol.key} className="flex items-center gap-2 flex-wrap">
+                        <div key={ol.key} className="flex flex-col gap-1.5">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <select value={ol.accountId} onChange={(e) => updateOtherLine(ol.key, { accountId: e.target.value })} style={{ ...miniInput, width: 190 }}>
                             <option value="">Select account…</option>
                             {accounts.filter((a) => a.id !== account.id).map((a) => (
@@ -2276,6 +2322,26 @@ function AccountLedger({ account, accounts, transactions, balance, onEditAccount
 
                           {ol.matchedTxnId && <span title="Matched — will merge into one entry on save"><Check size={14} color={C.credit} /></span>}
                           <button type="button" onClick={() => removeOtherLine(ol.key)} title="Remove this link"><X size={15} color={C.inkFaint} /></button>
+                        </div>
+                        {!ol.accountId && !ol.matchedTxnId && olCandidates && olCandidates.length > 0 && (
+                          <div className="flex flex-col gap-1" style={{ paddingLeft: 4 }}>
+                            <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.5 }}>Possible matches</div>
+                            {olCandidates.map((c) => (
+                              <button
+                                key={c.txn.id}
+                                type="button"
+                                onClick={() => selectMatchForOtherLine(ol.key, c)}
+                                className="flex items-center justify-between px-2 py-1.5 rounded text-left"
+                                style={{ border: `1px solid ${C.line}`, background: C.card }}
+                              >
+                                <span style={{ fontSize: 12.5 }}>
+                                  <strong>{c.acc.name}</strong> · {fmtDate(c.line.date)}{c.line.description ? ` · ${c.line.description}` : ""}
+                                </span>
+                                <span className="ll-mono" style={{ fontSize: 12.5, color: c.line.amount < 0 ? C.debit : C.credit }}>{fmt(c.line.amount, c.acc.currency)}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                         </div>
                       );
                     })}
