@@ -63,14 +63,18 @@ class IsaAllowanceService
             $deposits = 0;
             foreach ($transactions as $t) {
                 foreach ($t['lines'] as $line) {
-                    if (!\in_array($line['accountId'], $product['accountIds'], true) || $line['amount'] <= 0) {
+                    if (!\in_array($line['accountId'], $product['accountIds'], true)) {
+                        continue;
+                    }
+                    $amount = $this->contributionAmount($line, $accounts);
+                    if (null === $amount || $amount <= 0) {
                         continue;
                     }
                     if ($line['date'] < $start || $line['date'] > $end) {
                         continue;
                     }
                     if ($this->isExternalLine($t, $line, $accounts)) {
-                        $deposits += $line['amount'];
+                        $deposits += $amount;
                     }
                 }
             }
@@ -101,14 +105,18 @@ class IsaAllowanceService
             foreach ($transactions as $t) {
                 foreach ($t['lines'] as $line) {
                     $product = $accountToProduct[$line['accountId']] ?? null;
-                    if (!$product || !$line['amount']) {
+                    if (!$product) {
+                        continue;
+                    }
+                    $amount = $this->contributionAmount($line, $accounts);
+                    if (null === $amount || !$amount) {
                         continue;
                     }
                     if ($line['date'] < $start || $line['date'] > $end) {
                         continue;
                     }
                     if ($this->isExternalLine($t, $line, $accounts)) {
-                        $events[] = ['date' => $line['date'], 'amount' => $line['amount'], 'product' => $product];
+                        $events[] = ['date' => $line['date'], 'amount' => $amount, 'product' => $product];
                     }
                 }
             }
@@ -227,19 +235,46 @@ class IsaAllowanceService
         }
         foreach ($transactions as $t) {
             foreach ($t['lines'] as $line) {
-                if (!\in_array($line['accountId'], $product['accountIds'], true) || !$line['amount']) {
+                if (!\in_array($line['accountId'], $product['accountIds'], true)) {
+                    continue;
+                }
+                $amount = $this->contributionAmount($line, $accounts);
+                if (null === $amount || !$amount) {
                     continue;
                 }
                 if ($line['date'] >= $yearStart) {
                     continue;
                 }
                 if ($this->isExternalLine($t, $line, $accounts)) {
-                    $pool += $line['amount'];
+                    $pool += $amount;
                 }
             }
         }
 
         return max(0, $pool);
+    }
+
+    /**
+     * The line's contribution to the ISA pool, in currency-scale units.
+     * `amount` is a cash figure for every account type except
+     * `investment`, where it's a unit count scaled by the Symbol's own
+     * scale (see CLAUDE.md's "Amounts, currencies, and reference data").
+     * For an investment line we use `cashValue` instead — same
+     * mirrored-sign convention as `amount` (positive = value entering the
+     * account) — and treat an untagged trade (no `cashValue`) as having no
+     * verifiable cash contribution rather than guessing.
+     *
+     * @param array<string, mixed>             $line
+     * @param array<int, array<string, mixed>> $accounts
+     */
+    private function contributionAmount(array $line, array $accounts): ?int
+    {
+        $acc = $this->findAccount($accounts, $line['accountId']);
+        if ($acc && 'investment' === $acc['type']) {
+            return $line['cashValue'] ?? null;
+        }
+
+        return $line['amount'];
     }
 
     /** @param array<int, array<string, mixed>> $accounts */

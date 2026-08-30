@@ -5,6 +5,7 @@ namespace App\Tests\Service;
 use App\Entity\Account;
 use App\Entity\Currency;
 use App\Entity\Line;
+use App\Entity\Symbol;
 use App\Entity\Transaction;
 use App\Service\IsaAllowanceService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -50,6 +51,22 @@ class IsaAllowanceServiceTest extends KernelTestCase
         }
 
         return $currency;
+    }
+
+    private function ensureSymbol(string $ticker, string $tradingCurrency = 'GBP', int $scale = 1000000): Symbol
+    {
+        $symbol = $this->em->getRepository(Symbol::class)->find($ticker);
+        if (!$symbol) {
+            $symbol = (new Symbol())
+                ->setTicker($ticker)
+                ->setName($ticker)
+                ->setScale($scale)
+                ->setTradingCurrency($this->em->getRepository(Currency::class)->find($tradingCurrency));
+            $this->em->persist($symbol);
+            $this->em->flush();
+        }
+
+        return $symbol;
     }
 
     private function makeAccount(string $id, array $overrides = []): Account
@@ -99,6 +116,44 @@ class IsaAllowanceServiceTest extends KernelTestCase
         $l->setDate($date);
         $l->setDescription('');
         $this->em->persist($l);
+    }
+
+    // A standalone line on an investment account, tagged with a
+    // `cashValue` — the shape a directly-bought (not linked to a cash
+    // leg) holding inside a Stocks & Shares ISA takes. `amount` here is
+    // units, not cash, so the pool tracking must read `cashValue` instead.
+    private function makeStandaloneInvestmentLine(Account $account, int $units, int $cashValue, string $date): void
+    {
+        $l = new Line();
+        $l->setAccount($account);
+        $l->setAmount($units);
+        $l->setCashValue($cashValue);
+        $l->setDate($date);
+        $l->setDescription('');
+        $this->em->persist($l);
+    }
+
+    public function testStandaloneInvestmentLineInsideIsaWrapperUsesCashValueNotUnits(): void
+    {
+        $wrapper = $this->makeAccount('isaWrapper', ['type' => 'isa-parent', 'flexible' => false]);
+        $symbol = $this->ensureSymbol('ACME');
+        $holding = $this->makeAccount('isaHolding', [
+            'type' => 'investment',
+            'isaParentId' => 'isaWrapper',
+        ]);
+        $holding->setSymbol($symbol);
+
+        // 1.5 units (symbol scale 1,000,000) bought for 3000 (£30.00 at
+        // GBP scale 2) — a standalone line, no linked cash counterpart.
+        // Using raw `amount` (1500000) instead of `cashValue` (3000) would
+        // produce a wildly wrong allowance figure.
+        $this->makeStandaloneInvestmentLine($holding, 1500000, 3000, '2026-05-01');
+        $this->em->flush();
+
+        $usage = $this->isa->computeUsage(2026);
+
+        self::assertSame(3000, $usage['byKind']['stocks-shares-isa']);
+        self::assertSame(3000, $usage['total']);
     }
 
     public function testNonFlexibleDepositCountsAndWithdrawalNeverReducesUsage(): void
