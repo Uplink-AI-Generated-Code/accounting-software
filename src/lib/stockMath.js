@@ -1,17 +1,32 @@
+import { divRoundHalfUp } from "./scale";
+
 // Applies one line's effect to a running {units, cost} position using the
 // average-cost method — shared by the chart series builder below, the
 // current-total helper, and the ledger's own running-total column, so
 // there's exactly one definition of "cost basis" across the whole app.
+//
+// All arithmetic here is exact integer arithmetic — no floats — mirrored
+// exactly from the backend's LedgerStateService::applyCostBasisLine() so
+// the two never disagree; see CLAUDE.md. `cost`/`cashValue` are
+// currency-scale integers, `units`/`amount` are symbol-scale integers; a
+// cross-multiply-then-divide (divRoundHalfUp) keeps every intermediate
+// value an exact integer of the correct implied scale without this
+// function ever needing to know either scale explicitly.
 export function applyCostBasisLine(state, l) {
   if (l.amount > 0) {
     state.units += l.amount;
     state.cost += l.cashValue || 0;
   } else if (l.amount < 0) {
     const sold = Math.min(-l.amount, state.units);
-    const avgCost = state.units > 0 ? state.cost / state.units : 0;
-    state.cost -= avgCost * sold;
+    const costRemoved = state.units > 0 ? divRoundHalfUp(state.cost * sold, state.units) : 0;
+    state.cost -= costRemoved;
     state.units -= sold;
-    if (state.units < 1e-9) { state.units = 0; state.cost = 0; }
+    if (state.units === 0) {
+      // Exact by construction once units is an integer — this only
+      // absorbs ±1-minor-unit rounding dust left over from
+      // divRoundHalfUp() above, not float fuzz.
+      state.cost = 0;
+    }
   }
 }
 
@@ -51,17 +66,22 @@ export function buildCostBasisSeries(sortedLines, startISO, endISO) {
 // remaining holding — not just the units in that trade. A trade with no
 // recorded value doesn't move the price; it just carries the last known
 // one forward.
+//
+// Keeps the last trade's raw cashValue/units pair rather than a
+// pre-rounded price, and divides only once — see applyPortfolioValueLine
+// below and buildPortfolioValueSeries's point-by-point call — to avoid
+// compounding rounding error across many trades. Mirrors the backend's
+// LedgerStateService::stockStatsFor()/applyPortfolioValueLine() exactly.
 export function applyPortfolioValueLine(state, l) {
   state.units += l.amount || 0;
-  if (state.units < 1e-9) state.units = 0;
   if (l.amount && l.cashValue !== undefined) {
-    const price = Math.abs(l.cashValue) / Math.abs(l.amount);
-    if (Number.isFinite(price)) state.lastPrice = price;
+    state.lastCashValue = Math.abs(l.cashValue);
+    state.lastUnits = Math.abs(l.amount);
   }
-  state.value = state.units * (state.lastPrice || 0);
+  state.value = state.lastUnits ? divRoundHalfUp(state.units * state.lastCashValue, state.lastUnits) : 0;
 }
 export function buildPortfolioValueSeries(sortedLines, startISO, endISO) {
-  const state = { units: 0, lastPrice: 0, value: 0 };
+  const state = { units: 0, lastCashValue: 0, lastUnits: 0, value: 0 };
   let idx = 0;
   while (idx < sortedLines.length && sortedLines[idx].date < startISO) {
     applyPortfolioValueLine(state, sortedLines[idx]);

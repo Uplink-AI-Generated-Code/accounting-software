@@ -17,6 +17,12 @@ use Doctrine\ORM\Mapping as ORM;
  * see CLAUDE.md's data model section for what each mirrored-sign field
  * means.
  *
+ * `amount`/`cashValue`/`exchangeAmount` are integers scaled by a currency's
+ * (or, for units on an investment account, a symbol's) `scale` — never
+ * floats, to avoid floating-point drift; see CLAUDE.md. `cashCurrency`/
+ * `exchangeCurrency` are FKs to the Currency entity rather than free
+ * strings.
+ *
  * `transaction` is nullable: an unpaired/unmatched entry is a standalone
  * Line with no Transaction at all, not a fake one-line Transaction. A
  * `Transaction` exists strictly to link 2+ lines together — see
@@ -45,7 +51,7 @@ class Line
     private Account $account;
 
     #[ORM\Column]
-    private float $amount;
+    private int $amount;
 
     #[ORM\Column(length: 10)]
     private string $date;
@@ -57,16 +63,18 @@ class Line
     private ?int $lineOrder = null;
 
     #[ORM\Column(nullable: true)]
-    private ?float $cashValue = null;
+    private ?int $cashValue = null;
 
-    #[ORM\Column(length: 8, nullable: true)]
-    private ?string $cashCurrency = null;
+    #[ORM\ManyToOne(targetEntity: Currency::class)]
+    #[ORM\JoinColumn(name: 'cash_currency', referencedColumnName: 'code', nullable: true)]
+    private ?Currency $cashCurrency = null;
 
     #[ORM\Column(nullable: true)]
-    private ?float $exchangeAmount = null;
+    private ?int $exchangeAmount = null;
 
-    #[ORM\Column(length: 8, nullable: true)]
-    private ?string $exchangeCurrency = null;
+    #[ORM\ManyToOne(targetEntity: Currency::class)]
+    #[ORM\JoinColumn(name: 'exchange_currency', referencedColumnName: 'code', nullable: true)]
+    private ?Currency $exchangeCurrency = null;
 
     public function getId(): ?int
     {
@@ -97,12 +105,12 @@ class Line
         return $this;
     }
 
-    public function getAmount(): float
+    public function getAmount(): int
     {
         return $this->amount;
     }
 
-    public function setAmount(float $amount): static
+    public function setAmount(int $amount): static
     {
         $this->amount = $amount;
 
@@ -145,48 +153,48 @@ class Line
         return $this;
     }
 
-    public function getCashValue(): ?float
+    public function getCashValue(): ?int
     {
         return $this->cashValue;
     }
 
-    public function setCashValue(?float $cashValue): static
+    public function setCashValue(?int $cashValue): static
     {
         $this->cashValue = $cashValue;
 
         return $this;
     }
 
-    public function getCashCurrency(): ?string
+    public function getCashCurrency(): ?Currency
     {
         return $this->cashCurrency;
     }
 
-    public function setCashCurrency(?string $cashCurrency): static
+    public function setCashCurrency(?Currency $cashCurrency): static
     {
         $this->cashCurrency = $cashCurrency;
 
         return $this;
     }
 
-    public function getExchangeAmount(): ?float
+    public function getExchangeAmount(): ?int
     {
         return $this->exchangeAmount;
     }
 
-    public function setExchangeAmount(?float $exchangeAmount): static
+    public function setExchangeAmount(?int $exchangeAmount): static
     {
         $this->exchangeAmount = $exchangeAmount;
 
         return $this;
     }
 
-    public function getExchangeCurrency(): ?string
+    public function getExchangeCurrency(): ?Currency
     {
         return $this->exchangeCurrency;
     }
 
-    public function setExchangeCurrency(?string $exchangeCurrency): static
+    public function setExchangeCurrency(?Currency $exchangeCurrency): static
     {
         $this->exchangeCurrency = $exchangeCurrency;
 

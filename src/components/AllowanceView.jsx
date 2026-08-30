@@ -21,6 +21,13 @@ export function AllowanceView({ accounts, settings, onSaveSettings, onSelect }) 
 
   const { label } = taxYearBounds(startYear);
   const rules = isaRulesFor(startYear, settings.over65);
+  // ISA amounts are GBP-only by design (see CLAUDE.md) — `usage` from the
+  // backend is already scaled pence, but the static ISA_RULE_TABLE in
+  // lib/isa.js is deliberately kept as plain whole pounds (legislative
+  // language, never user data, never round-tripped) — so caps get scaled
+  // up to pence here, at the one point they're compared/displayed
+  // alongside usage, rather than scaling the source table itself.
+  const toPence = (pounds) => Math.round(pounds * 100);
   const [usage, setUsage] = useState({ byKind: {}, total: 0 });
   useEffect(() => {
     let cancelled = false;
@@ -68,15 +75,15 @@ export function AllowanceView({ accounts, settings, onSaveSettings, onSelect }) 
       <div className="p-4 rounded mb-4" style={{ background: C.card, border: `1px solid ${C.line}` }}>
         <div className="flex items-center justify-between mb-2">
           <div style={{ fontSize: 13, fontWeight: 600 }}>Overall</div>
-          <div className="ll-mono" style={{ fontSize: 13 }}>{fmt(usage.total, "GBP")} <span style={{ color: C.inkFaint }}>of {fmt(rules.total, "GBP")}</span></div>
+          <div className="ll-mono" style={{ fontSize: 13 }}>{fmt(usage.total, "GBP")} <span style={{ color: C.inkFaint }}>of {fmt(toPence(rules.total), "GBP")}</span></div>
         </div>
-        <Bar used={usage.total} cap={rules.total} color={usage.total > rules.total ? C.debit : C.gold} />
+        <Bar used={usage.total} cap={toPence(rules.total)} color={usage.total > toPence(rules.total) ? C.debit : C.gold} />
       </div>
 
       <div className="flex flex-col gap-3">
         {ISA_KINDS.map((k) => {
           const used = usage.byKind[k.key] || 0;
-          const cap = rules.subCaps[k.key];
+          const cap = rules.subCaps[k.key] ? toPence(rules.subCaps[k.key]) : rules.subCaps[k.key];
           const holders = productsByKind[k.key] || [];
           if (used === 0 && holders.length === 0) return null;
           return (

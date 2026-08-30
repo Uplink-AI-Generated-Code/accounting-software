@@ -5,7 +5,7 @@ import { AccountCard } from "./AccountCard";
 
 // Renders nested groups on the Overview page — a subtotal line at every
 // non-Type level, and a card grid once a branch reaches its leaf.
-export function OverviewGroupTree({ groups, depth, accounts, onSelect }) {
+export function OverviewGroupTree({ groups, depth, accounts, symbols, onSelect }) {
   return groups.map((g) => {
     const sub = g.dim !== "type" ? subtotalsForItems(g.items) : null;
     return (
@@ -18,10 +18,10 @@ export function OverviewGroupTree({ groups, depth, accounts, onSelect }) {
         </div>
         {g.leaf ? (
           <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
-            {g.items.map((a) => <AccountCard key={a.id} a={a} accounts={accounts} onSelect={onSelect} />)}
+            {g.items.map((a) => <AccountCard key={a.id} a={a} accounts={accounts} symbols={symbols} onSelect={onSelect} />)}
           </div>
         ) : (
-          <OverviewGroupTree groups={g.children} depth={depth + 1} accounts={accounts} onSelect={onSelect} />
+          <OverviewGroupTree groups={g.children} depth={depth + 1} accounts={accounts} symbols={symbols} onSelect={onSelect} />
         )}
       </div>
     );

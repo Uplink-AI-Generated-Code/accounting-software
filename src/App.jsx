@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, AlertTriangle, BookOpen, X } from "lucide-react";
 import { C } from "./lib/theme";
-import { uid, fmt, fmtUnits } from "./lib/format";
+import { uid, fmt, fmtUnits, setCurrencyScales, setSymbolScales } from "./lib/format";
 import { buildNestedGroups } from "./lib/grouping";
 import { accountIdFromHash, setHashForAccount } from "./lib/hash";
 import * as api from "./api";
@@ -25,6 +25,15 @@ export default function App() {
   // fetched per account view by AccountLedger/StockLedger and discarded
   // on navigating away — see CLAUDE.md's "Backend" section.
   const [accounts, setAccounts] = useState([]);
+  // Reference data — currency/symbol/institution are lookup entities
+  // server-side (see CLAUDE.md), fetched once here alongside accounts and
+  // passed down to AccountFormModal's pickers. currencies/symbols also
+  // feed lib/format.js's setCurrencyScales()/setSymbolScales() so every
+  // fmt()/fmtUnits() call anywhere in the app can convert a scaled
+  // integer to a decimal without each one needing its own scale lookup.
+  const [currencies, setCurrencies] = useState([]);
+  const [symbols, setSymbols] = useState([]);
+  const [institutions, setInstitutions] = useState([]);
   const [settings, setSettings] = useState({ over65: false, groupLevels: ["type"], savedGroupings: [] });
   const [loaded, setLoaded] = useState(false);
   const [storageOK, setStorageOK] = useState(true);
@@ -116,6 +125,16 @@ export default function App() {
     (async () => {
       try {
         await refreshAccounts();
+        const [cur, sym, inst] = await Promise.all([
+          api.getCurrencies().catch(() => []),
+          api.getSymbols().catch(() => []),
+          api.getInstitutions().catch(() => []),
+        ]);
+        setCurrencies(cur);
+        setSymbols(sym);
+        setInstitutions(inst);
+        setCurrencyScales(cur);
+        setSymbolScales(sym);
         const s = await api.getSettings().catch(() => null);
         if (s) {
           setSettings({ over65: false, groupLevels: ["type"], savedGroupings: [], ...s });
@@ -192,7 +211,11 @@ export default function App() {
       return `${n} subaccount${n === 1 ? "" : "s"}`;
     }
     const bal = a.balance || 0;
-    return a.type === "investment" ? `${fmtUnits(bal)} ${a.symbol} · ${fmt(a.portfolioValue || 0, a.currency)}` : fmt(bal, a.currency);
+    if (a.type === "investment") {
+      const tradingCurrency = symbols.find((s) => s.ticker === a.symbol)?.tradingCurrency;
+      return `${fmtUnits(bal, a.symbol)} ${a.symbol} · ${fmt(a.portfolioValue || 0, tradingCurrency)}`;
+    }
+    return fmt(bal, a.currency);
   }
 
   function saveAccount(data) {
@@ -318,7 +341,7 @@ export default function App() {
           )}
 
           <SidebarGroupTree
-            groups={buildNestedGroups(accounts, settings.groupLevels || ["type"], accounts)}
+            groups={buildNestedGroups(accounts, settings.groupLevels || ["type"], accounts, symbols)}
             depth={0}
             selectedId={selectedId}
             onSelect={setSelectedId}
@@ -335,6 +358,7 @@ export default function App() {
               <IsaParentView
                 account={selected}
                 accounts={accounts}
+                symbols={symbols}
                 onEditAccount={() => setAccountForm(selected)}
                 onSelect={setSelectedId}
                 onNewSubaccount={(kind) => setAccountForm({ isaParentPreset: selected.id, typePreset: kind })}
@@ -343,6 +367,8 @@ export default function App() {
               <StockLedger
                 account={selected}
                 accounts={accounts}
+                symbols={symbols}
+                currencies={currencies}
                 balance={selected.balance || 0}
                 onEditAccount={() => setAccountForm(selected)}
                 onLedgerOperations={saveLedgerOperations}
@@ -352,6 +378,8 @@ export default function App() {
               <AccountLedger
                 account={selected}
                 accounts={accounts}
+                symbols={symbols}
+                currencies={currencies}
                 balance={selected.balance || 0}
                 onEditAccount={() => setAccountForm(selected)}
                 onLedgerOperations={saveLedgerOperations}
@@ -359,13 +387,22 @@ export default function App() {
               />
             )
           ) : (
-            <Overview accounts={accounts} settings={settings} onSaveSettings={saveSettings} onSaveGrouping={saveGroupingPreset} onRemoveGrouping={removeGroupingPreset} onSelect={setSelectedId} onNew={() => setAccountForm({})} />
+            <Overview accounts={accounts} symbols={symbols} settings={settings} onSaveSettings={saveSettings} onSaveGrouping={saveGroupingPreset} onRemoveGrouping={removeGroupingPreset} onSelect={setSelectedId} onNew={() => setAccountForm({})} />
           )}
         </main>
       </div>
 
       {accountForm !== null && (
-        <AccountFormModal initial={accountForm} accounts={accounts} onCancel={() => setAccountForm(null)} onSave={saveAccount} onDelete={accountForm.id ? () => requestDeleteAccount(accountForm.id) : null} />
+        <AccountFormModal
+          initial={accountForm}
+          accounts={accounts}
+          currencies={currencies}
+          symbols={symbols}
+          institutions={institutions}
+          onCancel={() => setAccountForm(null)}
+          onSave={saveAccount}
+          onDelete={accountForm.id ? () => requestDeleteAccount(accountForm.id) : null}
+        />
       )}
 
       {deleteConfirm && (

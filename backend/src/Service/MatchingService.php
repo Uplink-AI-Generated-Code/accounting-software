@@ -36,7 +36,7 @@ class MatchingService
      */
     public function findCandidates(
         string $targetCurrency,
-        float $targetAmount,
+        int $targetAmount,
         string $date,
         array $excludeAccountIds,
         string $mode,
@@ -59,7 +59,7 @@ class MatchingService
             /* @var Line $line */
             $acc = $line->getAccount();
             $comparable = $this->comparableAmount($line, $acc, $targetCurrency, $direct);
-            if (null === $comparable || abs($comparable - $targetAmount) >= 0.005) {
+            if (null === $comparable || $comparable !== $targetAmount) {
                 continue;
             }
             $days = $this->daysDiff($date, $line->getDate());
@@ -80,19 +80,19 @@ class MatchingService
 
     // Mirrors getComparableAmount (direct=false) / getDirectComparableAmount
     // (direct=true) exactly — see lib/matching.js.
-    private function comparableAmount(Line $line, Account $acc, string $targetCurrency, bool $direct): ?float
+    private function comparableAmount(Line $line, Account $acc, string $targetCurrency, bool $direct): ?int
     {
         if ('investment' === $acc->getType()) {
-            if ($line->getCashCurrency() !== $targetCurrency || null === $line->getCashValue()) {
+            if ($line->getCashCurrency()?->getCode() !== $targetCurrency || null === $line->getCashValue()) {
                 return null;
             }
 
             return $direct ? -$line->getCashValue() : $line->getCashValue();
         }
-        if ($acc->getCurrency() === $targetCurrency) {
+        if ($acc->getCurrency()?->getCode() === $targetCurrency) {
             return $line->getAmount();
         }
-        if (!$direct && $line->getExchangeCurrency() === $targetCurrency) {
+        if (!$direct && $line->getExchangeCurrency()?->getCode() === $targetCurrency) {
             return $line->getExchangeAmount();
         }
 

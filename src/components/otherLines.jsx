@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Plus, X, Check } from "lucide-react";
 import { C } from "../lib/theme";
 import { uid, todayISO, fmtDate } from "../lib/format";
+import { toMinorUnits, fromMinorUnits } from "../lib/scale";
 import { getMatchCandidates } from "../api";
 import { formatCandidateAmount, candidateIsNegative } from "../lib/matching";
 import { miniInput } from "./ui";
@@ -37,7 +38,21 @@ export function blankOtherLine(accountId) {
 // match candidates for whichever legs don't have an account chosen yet.
 // Parameterized by whichever account is being edited (cash or stock) so
 // the same logic drives both without duplicating it.
-export function useOtherLines(account, accounts, draft, setDraft, smartDefaultForFirst) {
+export function useOtherLines(account, accounts, draft, setDraft, smartDefaultForFirst, currencies, symbols) {
+  function scaleForCurrency(code) {
+    return currencies.find((c) => c.code === code)?.scale ?? 2;
+  }
+  function scaleForSymbol(ticker) {
+    return symbols.find((s) => s.ticker === ticker)?.scale ?? 6;
+  }
+  // An investment account's own trading currency now lives on its Symbol,
+  // not on the Account itself (see CLAUDE.md) — this is the one place to
+  // resolve it from, for any account (this ledger's own, or another leg's).
+  function tradingCurrencyFor(acc) {
+    return symbols.find((s) => s.ticker === acc?.symbol)?.tradingCurrency;
+  }
+  const primaryCurrency = account.type === "investment" ? tradingCurrencyFor(account) : account.currency;
+
   function otherLineFromLine(o, snapshot) {
     const oAcc = accounts.find((a) => a.id === o.accountId);
     const base = blankOtherLine(o.accountId);
@@ -45,12 +60,12 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
     if (oAcc && oAcc.type === "investment") {
       const naturalCash = o.cashValue !== undefined ? -o.cashValue : 0;
       base.unitsIsOut = o.amount < 0;
-      base.unitsStr = String(Math.abs(o.amount));
+      base.unitsStr = fromMinorUnits(Math.abs(o.amount), scaleForSymbol(oAcc.symbol));
       base.cashIsOut = naturalCash < 0;
-      base.cashStr = naturalCash !== 0 ? String(Math.abs(naturalCash)) : "";
+      base.cashStr = naturalCash !== 0 ? fromMinorUnits(Math.abs(naturalCash), scaleForCurrency(tradingCurrencyFor(oAcc))) : "";
     } else {
       base.isOut = o.amount < 0;
-      base.amountStr = String(Math.abs(o.amount));
+      base.amountStr = fromMinorUnits(Math.abs(o.amount), scaleForCurrency(oAcc?.currency));
     }
     return base;
   }
@@ -66,15 +81,16 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
     const unchanged = ol.snapshot && ol.snapshot.accountId === ol.accountId;
 
     if (olAcc && olAcc.type === "investment") {
-      const unitsMag = Math.abs(parseFloat(ol.unitsStr));
+      const unitsMag = Math.abs(toMinorUnits(ol.unitsStr, scaleForSymbol(olAcc.symbol)));
       const units = isNaN(unitsMag) ? 0 : ol.unitsIsOut ? -unitsMag : unitsMag;
       const base = unchanged ? { ...ol.snapshot } : { accountId: ol.accountId, date: d.date || todayISO(), description: d.description };
       base.amount = units;
-      const cashMag = Math.abs(parseFloat(ol.cashStr));
+      const olTradingCurrency = tradingCurrencyFor(olAcc);
+      const cashMag = Math.abs(toMinorUnits(ol.cashStr, scaleForCurrency(olTradingCurrency)));
       if (ol.cashStr !== "" && !isNaN(cashMag)) {
         const cashNatural = ol.cashIsOut ? -cashMag : cashMag;
         base.cashValue = -cashNatural;
-        base.cashCurrency = olAcc.currency;
+        base.cashCurrency = olTradingCurrency;
       } else {
         delete base.cashValue;
         delete base.cashCurrency;
@@ -82,7 +98,7 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
       return base;
     }
 
-    const mag = Math.abs(parseFloat(ol.amountStr));
+    const mag = Math.abs(toMinorUnits(ol.amountStr, scaleForCurrency(olAcc?.currency)));
     const amt = isNaN(mag) ? 0 : ol.isOut ? -mag : mag;
     if (unchanged) return { ...ol.snapshot, amount: amt };
     return { accountId: ol.accountId, amount: amt, date: d.date || todayISO(), description: d.description };
@@ -157,7 +173,7 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
     const usedAccountIds = [account.id, ...draft.otherLines.map((o) => o.accountId).filter(Boolean)];
     const pending = draft.otherLines.filter((ol) => {
       if (ol.accountId || ol.matchedLineId) return false;
-      const mag = parseFloat(ol.amountStr);
+      const mag = toMinorUnits(ol.amountStr, scaleForCurrency(primaryCurrency));
       return !isNaN(mag) && mag !== 0;
     });
     if (pending.length === 0) {
@@ -167,10 +183,10 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
     const handle = setTimeout(() => {
       Promise.all(
         pending.map((ol) => {
-          const mag = parseFloat(ol.amountStr);
+          const mag = toMinorUnits(ol.amountStr, scaleForCurrency(primaryCurrency));
           const targetAmount = ol.isOut ? -mag : mag;
           return getMatchCandidates({
-            currency: account.currency,
+            currency: primaryCurrency,
             amount: targetAmount,
             date: draft.date,
             excludeAccountIds: usedAccountIds,
@@ -213,7 +229,7 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
 // an account picker, then either plain In/Out + amount, or (for an
 // investment account) units and cost fields, plus that leg's own match
 // suggestions when it doesn't have an account chosen yet.
-export function OtherLinesEditor({ draft, account, accounts, otherLineCandidates, updateOtherLine, removeOtherLine, selectMatchForOtherLine, addOtherLine, paddingLeft }) {
+export function OtherLinesEditor({ draft, account, accounts, symbols, otherLineCandidates, updateOtherLine, removeOtherLine, selectMatchForOtherLine, addOtherLine, paddingLeft }) {
   return (
     <>
       {draft.otherLines.length > 0 && (
@@ -221,6 +237,7 @@ export function OtherLinesEditor({ draft, account, accounts, otherLineCandidates
           {draft.otherLines.map((ol) => {
             const olAcc = accounts.find((a) => a.id === ol.accountId);
             const isStock = olAcc && olAcc.type === "investment";
+            const olTradingCurrency = isStock ? symbols.find((s) => s.ticker === olAcc.symbol)?.tradingCurrency : null;
             const olCandidates = otherLineCandidates[ol.key];
             return (
               <div key={ol.key} className="flex flex-col gap-1.5">
@@ -260,7 +277,7 @@ export function OtherLinesEditor({ draft, account, accounts, otherLineCandidates
                         onChange={(e) => updateOtherLine(ol.key, { cashStr: e.target.value })}
                         className="ll-mono" style={{ ...miniInput, width: 90 }}
                       />
-                      <span className="ll-mono" style={{ fontSize: 12.5, color: C.inkFaint, padding: "0 4px" }}>{olAcc.currency}</span>
+                      <span className="ll-mono" style={{ fontSize: 12.5, color: C.inkFaint, padding: "0 4px" }}>{olTradingCurrency}</span>
                     </>
                   ) : (
                     <>

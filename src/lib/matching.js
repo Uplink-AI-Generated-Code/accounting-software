@@ -16,7 +16,7 @@ import { fmt, fmtUnits } from "./format";
 export function formatCandidateAmount(c) {
   if (c.account.type === "investment") {
     const natural = c.line.cashValue !== undefined ? -c.line.cashValue : 0;
-    return `${fmtUnits(c.line.amount)} units · ${fmt(natural, c.account.currency)}`;
+    return `${fmtUnits(c.line.amount, c.account.symbol)} units · ${fmt(natural, c.line.cashCurrency)}`;
   }
   return fmt(c.line.amount, c.account.currency);
 }
@@ -70,18 +70,22 @@ export function balanceHint(lines, accounts) {
 
   if (curs.length === 1) {
     const diff = byCur[curs[0]];
-    if (Math.abs(diff) < 0.005) return { type: "balanced", message: "Balanced" };
+    if (diff === 0) return { type: "balanced", message: "Balanced" };
     return { type: "unbalanced", message: `Off by ${fmt(Math.abs(diff), curs[0])}` };
   }
   if (curs.length === 2 && enriched.length === 2) {
     const [a, b] = enriched;
     if (Math.sign(a.value) !== Math.sign(b.value)) {
+      // A ratio between two different currencies' scaled integers is
+      // legitimately a display-only float here — it's never persisted or
+      // round-tripped, just shown once as an FX rate, so this is exempt
+      // from the "no floats" rule the actual stored amounts follow.
       const rate = Math.abs(b.value / a.value);
       return { type: "fx", message: `Exchange — implied rate 1 ${a.currency} = ${rate.toFixed(4)} ${b.currency}` };
     }
     return { type: "unbalanced", message: "Both legs move the same direction" };
   }
-  const allZero = curs.every((c) => Math.abs(byCur[c]) < 0.005);
+  const allZero = curs.every((c) => byCur[c] === 0);
   if (allZero) return { type: "balanced", message: "Balanced within each currency" };
   return { type: "unbalanced", message: curs.map((c) => fmt(byCur[c], c)).join("  ·  ") + " left over" };
 }

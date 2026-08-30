@@ -15,6 +15,15 @@ use Doctrine\ORM\Mapping as ORM;
  * frontend already resolves the parent by scanning the account list itself
  * (see institutionOf() in lib/grouping.js), and a bulk replace-on-save
  * doesn't need relational integrity here.
+ *
+ * `currency`/`symbol`/`institution` are FKs to natural-key reference
+ * entities (Currency/Symbol/Institution) rather than free strings — see
+ * CLAUDE.md's "half-normalization" note. `openingBalance` is stored as an
+ * integer scaled by the account's currency's `scale` (or, for an
+ * investment account, its symbol's `scale`) — never a float, to avoid
+ * floating-point drift; see CLAUDE.md. For an investment account (one with
+ * a `symbol` set), `currency` is unused/left null: trading currency is
+ * derived via `symbol.tradingCurrency` instead of being stored twice.
  */
 #[ORM\Entity(repositoryClass: AccountRepository::class)]
 class Account
@@ -29,17 +38,20 @@ class Account
     #[ORM\Column(length: 32)]
     private string $type;
 
-    #[ORM\Column(length: 8, nullable: true)]
-    private ?string $currency = null;
+    #[ORM\ManyToOne(targetEntity: Currency::class)]
+    #[ORM\JoinColumn(name: 'currency', referencedColumnName: 'code', nullable: true)]
+    private ?Currency $currency = null;
 
     #[ORM\Column(nullable: true)]
-    private ?float $openingBalance = null;
+    private ?int $openingBalance = null;
 
-    #[ORM\Column(length: 32, nullable: true)]
-    private ?string $symbol = null;
+    #[ORM\ManyToOne(targetEntity: Symbol::class)]
+    #[ORM\JoinColumn(name: 'symbol', referencedColumnName: 'ticker', nullable: true)]
+    private ?Symbol $symbol = null;
 
-    #[ORM\Column(length: 255, nullable: true)]
-    private ?string $institution = null;
+    #[ORM\ManyToOne(targetEntity: Institution::class)]
+    #[ORM\JoinColumn(name: 'institution', referencedColumnName: 'name', nullable: true)]
+    private ?Institution $institution = null;
 
     #[ORM\Column(length: 32, nullable: true)]
     private ?string $isaKind = null;
@@ -86,48 +98,48 @@ class Account
         return $this;
     }
 
-    public function getCurrency(): ?string
+    public function getCurrency(): ?Currency
     {
         return $this->currency;
     }
 
-    public function setCurrency(?string $currency): static
+    public function setCurrency(?Currency $currency): static
     {
         $this->currency = $currency;
 
         return $this;
     }
 
-    public function getOpeningBalance(): ?float
+    public function getOpeningBalance(): ?int
     {
         return $this->openingBalance;
     }
 
-    public function setOpeningBalance(?float $openingBalance): static
+    public function setOpeningBalance(?int $openingBalance): static
     {
         $this->openingBalance = $openingBalance;
 
         return $this;
     }
 
-    public function getSymbol(): ?string
+    public function getSymbol(): ?Symbol
     {
         return $this->symbol;
     }
 
-    public function setSymbol(?string $symbol): static
+    public function setSymbol(?Symbol $symbol): static
     {
         $this->symbol = $symbol;
 
         return $this;
     }
 
-    public function getInstitution(): ?string
+    public function getInstitution(): ?Institution
     {
         return $this->institution;
     }
 
-    public function setInstitution(?string $institution): static
+    public function setInstitution(?Institution $institution): static
     {
         $this->institution = $institution;
 

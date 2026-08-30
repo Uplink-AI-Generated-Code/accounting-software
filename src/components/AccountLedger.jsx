@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, Check, X, ArrowLeftRight, AlertTriangle, Pencil, Unlink2, TrendingUp, TableProperties, ChevronUp, ChevronDown } from "lucide-react";
-import { C, TYPES, CURRENCIES } from "../lib/theme";
+import { C, TYPES } from "../lib/theme";
 import { fmt, todayISO, fmtDate } from "../lib/format";
+import { toMinorUnits, fromMinorUnits } from "../lib/scale";
 import { reorderSameDate } from "../lib/grouping";
 import { formatCandidateAmount, candidateIsNegative, balanceHint } from "../lib/matching";
 import { buildSaveOperations, buildUnlinkOperations, buildDeleteOperations, buildReorderOperations } from "../lib/ledgerOperations";
@@ -38,7 +39,7 @@ function blankDraft(presetOtherId) {
   };
 }
 
-export function AccountLedger({ account, accounts, balance, onEditAccount, onLedgerOperations, guardRef }) {
+export function AccountLedger({ account, accounts, currencies, symbols, balance, onEditAccount, onLedgerOperations, guardRef }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
   const [view, setView] = useState("ledger");
@@ -48,17 +49,25 @@ export function AccountLedger({ account, accounts, balance, onEditAccount, onLed
   // after this ledger's own mutations succeed.
   const { records, loaded, reload } = useAccountLedger(account.id);
 
+  const accountScale = currencies.find((c) => c.code === account.currency)?.scale ?? 2;
+  function scaleFor(currencyCode) {
+    return currencies.find((c) => c.code === currencyCode)?.scale ?? accountScale;
+  }
+
   // If both In and Out are filled, the saved line is their difference —
-  // e.g. In 50 / Out 20 saves as an increase of 30.
+  // e.g. In 50 / Out 20 saves as an increase of 30. Amounts are scaled
+  // integers (see CLAUDE.md) — toMinorUnits() parses the typed decimal
+  // string straight into one, no float intermediate.
   function draftDelta(d) {
-    const inN = parseFloat(d.inAmountStr);
-    const outN = parseFloat(d.outAmountStr);
+    const inN = toMinorUnits(d.inAmountStr, accountScale);
+    const outN = toMinorUnits(d.outAmountStr, accountScale);
     return (isNaN(inN) ? 0 : inN) - (isNaN(outN) ? 0 : outN);
   }
 
   function exchangeDelta(d) {
-    const inN = parseFloat(d.exchangeInStr);
-    const outN = parseFloat(d.exchangeOutStr);
+    const scale = scaleFor(d.exchangeCurrency);
+    const inN = toMinorUnits(d.exchangeInStr, scale);
+    const outN = toMinorUnits(d.exchangeOutStr, scale);
     return (isNaN(inN) ? 0 : inN) - (isNaN(outN) ? 0 : outN);
   }
 
@@ -66,8 +75,9 @@ export function AccountLedger({ account, accounts, balance, onEditAccount, onLed
     account, accounts, draft, setDraft,
     (d) => {
       const delta = draftDelta(d);
-      return delta !== 0 ? { isOut: delta > 0, amountStr: String(Math.abs(delta)) } : null;
-    }
+      return delta !== 0 ? { isOut: delta > 0, amountStr: fromMinorUnits(Math.abs(delta), accountScale) } : null;
+    },
+    currencies, symbols
   );
 
   // This account's own line plus whichever other legs are active — the
@@ -195,11 +205,11 @@ export function AccountLedger({ account, accounts, balance, onEditAccount, onLed
       originalRecord: record,
       date: line.date,
       description: line.description || "",
-      inAmountStr: line.amount > 0 ? String(line.amount) : "",
-      outAmountStr: line.amount < 0 ? String(-line.amount) : "",
+      inAmountStr: line.amount > 0 ? fromMinorUnits(line.amount, accountScale) : "",
+      outAmountStr: line.amount < 0 ? fromMinorUnits(-line.amount, accountScale) : "",
       exchangeChecked: line.exchangeAmount !== undefined,
-      exchangeOutStr: line.exchangeAmount < 0 ? String(-line.exchangeAmount) : "",
-      exchangeInStr: line.exchangeAmount > 0 ? String(line.exchangeAmount) : "",
+      exchangeOutStr: line.exchangeAmount < 0 ? fromMinorUnits(-line.exchangeAmount, scaleFor(line.exchangeCurrency)) : "",
+      exchangeInStr: line.exchangeAmount > 0 ? fromMinorUnits(line.exchangeAmount, scaleFor(line.exchangeCurrency)) : "",
       exchangeCurrency: line.exchangeCurrency ? line.exchangeCurrency : "",
       otherLines: others.map((o) => otherLineFromLine(o, o)),
       splitOffLines: [],
@@ -363,13 +373,13 @@ export function AccountLedger({ account, accounts, balance, onEditAccount, onLed
                     {draft.otherLines.length === 0 ? "unmatched" : draft.otherLines.length === 1 ? "linked below" : `${draft.otherLines.length}-way split below`}
                   </div>
                   <input
-                    type="number" step="0.0001" placeholder="Out" value={draft.outAmountStr}
+                    type="number" step={10 ** -accountScale} placeholder="Out" value={draft.outAmountStr}
                     onChange={(e) => setDraft({ ...draft, outAmountStr: e.target.value })}
                     className="ll-mono text-right" style={{ ...miniInput, color: C.debit }}
                     onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }}
                   />
                   <input
-                    type="number" step="0.0001" placeholder="In" value={draft.inAmountStr}
+                    type="number" step={10 ** -accountScale} placeholder="In" value={draft.inAmountStr}
                     onChange={(e) => setDraft({ ...draft, inAmountStr: e.target.value })}
                     className="ll-mono text-right" style={{ ...miniInput, color: C.credit }}
                     onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }}
@@ -385,6 +395,7 @@ export function AccountLedger({ account, accounts, balance, onEditAccount, onLed
                   draft={draft}
                   account={account}
                   accounts={accounts}
+                  symbols={symbols}
                   otherLineCandidates={otherLineCandidates}
                   updateOtherLine={updateOtherLine}
                   removeOtherLine={removeOtherLine}
@@ -406,18 +417,18 @@ export function AccountLedger({ account, accounts, balance, onEditAccount, onLed
                       <div />
                       <select value={draft.exchangeCurrency} onChange={(e) => setDraft({ ...draft, exchangeCurrency: e.target.value })} style={{ ...miniInput, width: 90 }}>
                         <option value="">currency…</option>
-                        {CURRENCIES.filter((c) => c !== account.currency).map((c) => (
-                          <option key={c} value={c}>{c}</option>
+                        {currencies.filter((c) => c.code !== account.currency).map((c) => (
+                          <option key={c.code} value={c.code}>{c.code}</option>
                         ))}
                       </select>
                       <div />
                       <input
-                        type="number" step="0.0001" placeholder="Out" value={draft.exchangeOutStr}
+                        type="number" step={10 ** -scaleFor(draft.exchangeCurrency)} placeholder="Out" value={draft.exchangeOutStr}
                         onChange={(e) => setDraft({ ...draft, exchangeOutStr: e.target.value })}
                         className="ll-mono text-right" style={{ ...miniInput, color: C.debit }}
                       />
                       <input
-                        type="number" step="0.0001" placeholder="In" value={draft.exchangeInStr}
+                        type="number" step={10 ** -scaleFor(draft.exchangeCurrency)} placeholder="In" value={draft.exchangeInStr}
                         onChange={(e) => setDraft({ ...draft, exchangeInStr: e.target.value })}
                         className="ll-mono text-right" style={{ ...miniInput, color: C.credit }}
                       />

@@ -36,6 +36,6 @@ class MatchController
             return new JsonResponse(['error' => 'mode must be "mirrored" or "direct"'], 400);
         }
 
-        return new JsonResponse($this->matching->findCandidates($currency, (float) $amount, $date, $excludeAccountIds, $mode));
+        return new JsonResponse($this->matching->findCandidates($currency, (int) $amount, $date, $excludeAccountIds, $mode));
     }
 }

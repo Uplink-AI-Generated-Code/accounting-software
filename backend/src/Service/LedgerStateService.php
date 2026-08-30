@@ -3,8 +3,11 @@
 namespace App\Service;
 
 use App\Entity\Account;
+use App\Entity\Currency;
+use App\Entity\Institution;
 use App\Entity\Line;
 use App\Entity\Settings;
+use App\Entity\Symbol;
 use App\Entity\Transaction;
 use App\Repository\SettingsRepository;
 use Doctrine\ORM\EntityManagerInterface;
@@ -129,14 +132,14 @@ class LedgerStateService
         return $records;
     }
 
-    private function balanceFor(Account $a): float
+    private function balanceFor(Account $a): int
     {
-        $sum = (float) $this->em->getConnection()->fetchOne(
+        $sum = (int) $this->em->getConnection()->fetchOne(
             'SELECT COALESCE(SUM(amount), 0) FROM line WHERE account_id = ?',
             [$a->getId()]
         );
 
-        return ($a->getOpeningBalance() ?? 0.0) + $sum;
+        return ($a->getOpeningBalance() ?? 0) + $sum;
     }
 
     private function entryCountFor(Account $a): int
@@ -186,54 +189,85 @@ class LedgerStateService
      * own ordered lines so the two numbers can never drift from what the
      * frontend would compute given the same data.
      *
-     * @return array{cost: float, value: float}
+     * All arithmetic here is exact integer arithmetic — no floats — per
+     * CLAUDE.md. `cost`/`cashValue` are currency-scale integers, `units`/
+     * `amount` are symbol-scale integers; a cross-multiply-then-divide
+     * (see divRoundHalfUp()) keeps every intermediate value an exact
+     * integer of the correct implied scale without this method ever
+     * needing to know either scale explicitly. Portfolio value keeps the
+     * last trade's raw cashValue/units pair rather than a pre-rounded
+     * price, and divides only once, at the end, to avoid compounding
+     * rounding error across many trades.
+     *
+     * @return array{cost: int, value: int}
      */
     private function stockStatsFor(Account $a): array
     {
-        $costState = ['units' => 0.0, 'cost' => 0.0];
-        $valueState = ['units' => 0.0, 'lastPrice' => 0.0, 'value' => 0.0];
+        $costState = ['units' => 0, 'cost' => 0];
+        $valueState = ['units' => 0, 'lastCashValue' => 0, 'lastUnits' => 0];
 
         foreach ($this->orderedLinesFor($a) as $line) {
             $this->applyCostBasisLine($costState, $line);
             $this->applyPortfolioValueLine($valueState, $line);
         }
 
-        return ['cost' => $costState['cost'], 'value' => $valueState['value']];
+        $value = 0 !== $valueState['lastUnits']
+            ? $this->divRoundHalfUp($valueState['units'] * $valueState['lastCashValue'], $valueState['lastUnits'])
+            : 0;
+
+        return ['cost' => $costState['cost'], 'value' => $value];
     }
 
-    /** @param array{units: float, cost: float} $state */
+    /** @param array{units: int, cost: int} $state */
     private function applyCostBasisLine(array &$state, Line $l): void
     {
         $amount = $l->getAmount();
         if ($amount > 0) {
             $state['units'] += $amount;
-            $state['cost'] += $l->getCashValue() ?? 0.0;
+            $state['cost'] += $l->getCashValue() ?? 0;
         } elseif ($amount < 0) {
             $sold = min(-$amount, $state['units']);
-            $avgCost = $state['units'] > 0 ? $state['cost'] / $state['units'] : 0.0;
-            $state['cost'] -= $avgCost * $sold;
+            $costRemoved = $state['units'] > 0
+                ? $this->divRoundHalfUp($state['cost'] * $sold, $state['units'])
+                : 0;
+            $state['cost'] -= $costRemoved;
             $state['units'] -= $sold;
-            if ($state['units'] < 1e-9) {
-                $state['units'] = 0.0;
-                $state['cost'] = 0.0;
+            if (0 === $state['units']) {
+                // Exact by construction once units is an integer — this
+                // only absorbs ±1-minor-unit rounding dust left over from
+                // divRoundHalfUp() above, not float fuzz.
+                $state['cost'] = 0;
             }
         }
     }
 
-    /** @param array{units: float, lastPrice: float, value: float} $state */
+    /** @param array{units: int, lastCashValue: int, lastUnits: int} $state */
     private function applyPortfolioValueLine(array &$state, Line $l): void
     {
-        $state['units'] += $l->getAmount() ?? 0.0;
-        if ($state['units'] < 1e-9) {
-            $state['units'] = 0.0;
+        $state['units'] += $l->getAmount();
+        if (0 !== $l->getAmount() && null !== $l->getCashValue()) {
+            $state['lastCashValue'] = abs($l->getCashValue());
+            $state['lastUnits'] = abs($l->getAmount());
         }
-        if ($l->getAmount() && null !== $l->getCashValue()) {
-            $price = abs($l->getCashValue()) / abs($l->getAmount());
-            if (is_finite($price)) {
-                $state['lastPrice'] = $price;
-            }
+    }
+
+    /**
+     * Exact integer division with round-half-up, using only native int
+     * arithmetic (no bcmath, no float division) — safe for any amount a
+     * personal ledger could realistically hold, well within PHP's 64-bit
+     * int range even after the ×2 below. Mirrored exactly in the frontend
+     * (see lib/scale.js) so the two never disagree.
+     */
+    private function divRoundHalfUp(int $numerator, int $denominator): int
+    {
+        if (0 === $denominator) {
+            return 0;
         }
-        $state['value'] = $state['units'] * $state['lastPrice'];
+        $sign = (($numerator < 0) xor ($denominator < 0)) ? -1 : 1;
+        $num = abs($numerator);
+        $den = abs($denominator);
+
+        return $sign * intdiv(2 * $num + $den, 2 * $den);
     }
 
     /**
@@ -510,15 +544,73 @@ class LedgerStateService
     {
         $account->setName((string) $data['name']);
         $account->setType((string) $data['type']);
-        $account->setCurrency($data['currency'] ?? null);
-        $account->setOpeningBalance(isset($data['openingBalance']) ? (float) $data['openingBalance'] : null);
-        $account->setSymbol($data['symbol'] ?? null);
-        $account->setInstitution($data['institution'] ?? null);
+        $account->setCurrency($this->resolveCurrency($data['currency'] ?? null));
+        $account->setOpeningBalance(isset($data['openingBalance']) ? (int) $data['openingBalance'] : null);
+        $account->setSymbol($this->resolveSymbol($data['symbol'] ?? null));
+        $account->setInstitution($this->resolveInstitution($data['institution'] ?? null));
         $account->setIsaKind($data['isaKind'] ?? null);
         $account->setIsaParentId($data['isaParentId'] ?? null);
         $account->setFlexible(isset($data['flexible']) ? (bool) $data['flexible'] : null);
 
         return $account;
+    }
+
+    /**
+     * Looks up a Currency/Symbol/Institution by its natural key. Throws a
+     * clear error naming the missing code rather than silently
+     * fabricating a row with a guessed scale — these are reference data,
+     * not something a ledger write should be allowed to invent on the
+     * fly. Only ImportLocalStorageCommand and the live batch/account
+     * write paths call these, never anything user-facing without a
+     * chance to fix the input first.
+     *
+     * Currency and Symbol are deliberately curated, closed sets (a new
+     * one needs a real scale decided — see CLAUDE.md's plan for a future
+     * "add symbol" admin flow that actually asks for that), so an
+     * unknown code/ticker is always an error. Institution is different:
+     * free-text institution names were always fine before this schema
+     * existed (any bank the user hasn't used yet), and there's no
+     * meaningful extra data a first use needs to supply — so
+     * resolveInstitution() find-or-creates instead of find-or-throws.
+     */
+    private function resolveCurrency(mixed $code): ?Currency
+    {
+        if (null === $code || '' === $code) {
+            return null;
+        }
+        $currency = $this->em->getRepository(Currency::class)->find((string) $code);
+        if (!$currency) {
+            throw new \InvalidArgumentException(sprintf('Unknown currency code "%s".', $code));
+        }
+
+        return $currency;
+    }
+
+    private function resolveSymbol(mixed $ticker): ?Symbol
+    {
+        if (null === $ticker || '' === $ticker) {
+            return null;
+        }
+        $symbol = $this->em->getRepository(Symbol::class)->find((string) $ticker);
+        if (!$symbol) {
+            throw new \InvalidArgumentException(sprintf('Unknown symbol "%s".', $ticker));
+        }
+
+        return $symbol;
+    }
+
+    private function resolveInstitution(mixed $name): ?Institution
+    {
+        if (null === $name || '' === $name) {
+            return null;
+        }
+        $institution = $this->em->getRepository(Institution::class)->find((string) $name);
+        if (!$institution) {
+            $institution = (new Institution())->setName((string) $name);
+            $this->em->persist($institution);
+        }
+
+        return $institution;
     }
 
     /**
@@ -542,14 +634,14 @@ class LedgerStateService
             $line->setTransaction(null);
         }
         $line->setAccount($account);
-        $line->setAmount((float) $data['amount']);
+        $line->setAmount((int) $data['amount']);
         $line->setDate((string) $data['date']);
         $line->setDescription((string) ($data['description'] ?? ''));
         $line->setLineOrder(isset($data['order']) ? (int) $data['order'] : null);
-        $line->setCashValue(isset($data['cashValue']) ? (float) $data['cashValue'] : null);
-        $line->setCashCurrency($data['cashCurrency'] ?? null);
-        $line->setExchangeAmount(isset($data['exchangeAmount']) ? (float) $data['exchangeAmount'] : null);
-        $line->setExchangeCurrency($data['exchangeCurrency'] ?? null);
+        $line->setCashValue(isset($data['cashValue']) ? (int) $data['cashValue'] : null);
+        $line->setCashCurrency($this->resolveCurrency($data['cashCurrency'] ?? null));
+        $line->setExchangeAmount(isset($data['exchangeAmount']) ? (int) $data['exchangeAmount'] : null);
+        $line->setExchangeCurrency($this->resolveCurrency($data['exchangeCurrency'] ?? null));
 
         return $line;
     }
@@ -594,10 +686,10 @@ class LedgerStateService
             'id' => $a->getId(),
             'name' => $a->getName(),
             'type' => $a->getType(),
-            'currency' => $a->getCurrency(),
+            'currency' => $a->getCurrency()?->getCode(),
             'openingBalance' => $a->getOpeningBalance(),
-            'symbol' => $a->getSymbol(),
-            'institution' => $a->getInstitution(),
+            'symbol' => $a->getSymbol()?->getTicker(),
+            'institution' => $a->getInstitution()?->getName(),
             'isaKind' => $a->getIsaKind(),
             'isaParentId' => $a->getIsaParentId(),
             'flexible' => $a->isFlexible(),
@@ -633,9 +725,9 @@ class LedgerStateService
             'description' => $l->getDescription(),
             'order' => $l->getLineOrder(),
             'cashValue' => $l->getCashValue(),
-            'cashCurrency' => $l->getCashCurrency(),
+            'cashCurrency' => $l->getCashCurrency()?->getCode(),
             'exchangeAmount' => $l->getExchangeAmount(),
-            'exchangeCurrency' => $l->getExchangeCurrency(),
+            'exchangeCurrency' => $l->getExchangeCurrency()?->getCode(),
         ], static fn ($v) => null !== $v);
     }
 

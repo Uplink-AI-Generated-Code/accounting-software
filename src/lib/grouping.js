@@ -15,8 +15,11 @@ export function institutionOf(account, allAccounts) {
 
 // Splits one set of accounts into labelled buckets along a single
 // dimension. `allAccounts` is only needed to resolve inherited
-// institutions correctly inside a nested/filtered subset.
-export function bucketBy(subset, dim, allAccounts) {
+// institutions correctly inside a nested/filtered subset. `symbols` is
+// only needed to resolve an investment account's trading currency (which
+// lives on its Symbol, not the account itself — see CLAUDE.md) for the
+// "currency" dimension.
+export function bucketBy(subset, dim, allAccounts, symbols = []) {
   if (dim === "type") {
     return TYPES.map((t) => ({ key: t.key, label: t.label, items: subset.filter((a) => a.type === t.key) })).filter((g) => g.items.length);
   }
@@ -25,7 +28,7 @@ export function bucketBy(subset, dim, allAccounts) {
     const wrappers = [];
     subset.forEach((a) => {
       if (a.type === "isa-parent") { wrappers.push(a); return; }
-      const cur = a.currency || "—";
+      const cur = (a.type === "investment" ? symbols.find((s) => s.ticker === a.symbol)?.tradingCurrency : a.currency) || "—";
       byCur[cur] = byCur[cur] || [];
       byCur[cur].push(a);
     });
@@ -50,16 +53,16 @@ export function bucketBy(subset, dim, allAccounts) {
 // per top level, each split into currency sub-sections underneath. Every
 // node (leaf or not) keeps its full flattened `items` list, so a subtotal
 // can be shown at any level, not just the deepest one.
-export function buildNestedGroups(subset, levels, allAccounts) {
+export function buildNestedGroups(subset, levels, allAccounts, symbols = []) {
   const [dim, ...rest] = levels;
-  const buckets = bucketBy(subset, dim, allAccounts);
+  const buckets = bucketBy(subset, dim, allAccounts, symbols);
   return buckets.map((b) => ({
     key: `${dim}:${b.key}`,
     label: b.label,
     dim,
     items: b.items,
     leaf: rest.length === 0,
-    children: rest.length === 0 ? null : buildNestedGroups(b.items, rest, allAccounts),
+    children: rest.length === 0 ? null : buildNestedGroups(b.items, rest, allAccounts, symbols),
   }));
 }
 

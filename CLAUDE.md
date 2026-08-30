@@ -35,16 +35,19 @@ domain, not by component-per-file dogma — some UI pieces still share a file
 because they're small or tightly coupled:
 
 - `src/lib/` — pure logic, no JSX, no fetching: `theme.js` (colors/tokens,
-  `TYPES`, `ISA_KINDS`, `CURRENCIES`, `GROUP_DIMENSIONS`), `format.js`
-  (date/currency formatting, `uid`), `grouping.js` (sidebar/Overview
-  nesting, `bucketBy`, `reorderSameDate`), `isa.js` (the static tax-year
-  rules and `isaProducts` grouping — the actual usage computation is
-  server-side now, see below), `stockMath.js` (the running cost-basis /
-  portfolio-value walk, still used client-side for a ledger's own running
-  column and its chart), `matching.js` (`formatCandidateAmount`,
-  `candidateIsNegative`, `balanceHint` — the actual match *search* is
-  server-side now), `chartSeries.js` (daily-series builder for charts),
-  `hash.js` (the `#/account/<id>` router).
+  `TYPES`, `ISA_KINDS`, `GROUP_DIMENSIONS` — no `CURRENCIES` constant
+  anymore, see "Amounts, currencies, and reference data" below),
+  `format.js` (date/currency formatting, `uid`), `scale.js`
+  (integer⟷decimal-string conversion, no floats — see below),
+  `grouping.js` (sidebar/Overview nesting, `bucketBy`, `reorderSameDate`),
+  `isa.js` (the static tax-year rules and `isaProducts` grouping — the
+  actual usage computation is server-side now, see below), `stockMath.js`
+  (the running cost-basis / portfolio-value walk, still used client-side
+  for a ledger's own running column and its chart), `matching.js`
+  (`formatCandidateAmount`, `candidateIsNegative`, `balanceHint` — the
+  actual match *search* is server-side now), `chartSeries.js`
+  (daily-series builder for charts), `hash.js` (the `#/account/<id>`
+  router).
 - `src/components/` — UI: `AccountLedger.jsx` and `StockLedger.jsx` are the
   two ledger views; both depend on `otherLines.jsx`, which holds the
   `useOtherLines` hook and `OtherLinesEditor` component **shared between
@@ -173,6 +176,13 @@ it covers and why); no test suite and no linter on the frontend.
   - `GET /api/isa-allowance?taxYearStart=YYYY` (`IsaAllowanceController` /
     `IsaAllowanceService::computeUsage()`) — see "ISA allowance engine"
     below.
+  - `GET /api/currencies` / `GET /api/symbols` / `GET /api/institutions`
+    (`CurrencyController`/`SymbolController`/`InstitutionController`) —
+    read-only lists of the three reference entities, fetched once by
+    `App.jsx` alongside the account list (see "Amounts, currencies, and
+    reference data" below). No write endpoints exist yet — deliberately
+    out of scope until an admin area is built; don't add `POST`/`PUT`
+    here without discussing scope first.
 - **None of the write handlers are optimistic on the frontend** except
   `saveAccount`/`saveSettings` in `App.jsx` (plain replaces with no
   cascading effect elsewhere). Account deletion and every transaction
@@ -248,9 +258,11 @@ it covers and why); no test suite and no linter on the frontend.
   transaction-level date/description.
 - A **line** is `{ accountId, amount, date, description, order?, ... }`,
   plus a backend-assigned `id` once persisted (see the id-exposure note
-  under "Backend" above). `amount` is signed: positive = increase,
-  negative = decrease, regardless of account type. There is no separate
-  debit/credit; the UI just labels positive/negative as "In"/"Out".
+  under "Backend" above). `amount` is a **scaled integer**, signed:
+  positive = increase, negative = decrease, regardless of account type —
+  see "Amounts, currencies, and reference data" below for what "scaled"
+  means. There is no separate debit/credit; the UI just labels
+  positive/negative as "In"/"Out".
 - `src/lib/ledgerOperations.js` is where every UI transition (plain edit,
   merge, unlink, split-off, 2→1 demotion, same-date reorder) gets
   translated into `POST /api/ledger/batch` operations — see the endpoint
@@ -268,9 +280,13 @@ it covers and why); no test suite and no linter on the frontend.
 - Account types: `asset`, `liability`, `equity`, `income`, `expense`,
   `investment`, `isa-parent`. An `isa-parent` holds no balance itself —
   it's a wrapper grouping subaccounts via `isaParentId`.
-- **Investment accounts hold exactly one security** (symbol + trading
-  currency live on the account, not per-line). `amount` on an investment
-  line is *units*, not cash.
+- **Investment accounts hold exactly one security**, referenced via
+  `account.symbol` (a `Symbol` entity — see below). Trading currency
+  lives on the `Symbol`, not the account: an investment account's own
+  `currency` field is unused/absent — always derive trading currency via
+  `symbol.tradingCurrency`, never `account.currency`, for an investment
+  account. `amount` on an investment line is *units* (scaled by the
+  symbol's own `scale`, a different scale from any currency's), not cash.
 - **Never store a price-per-unit field.** Price is always derived as
   `cashValue / units` on demand. This has come up multiple times — resist
   adding a stored price field even when it seems convenient.
@@ -285,6 +301,81 @@ it covers and why); no test suite and no linter on the frontend.
   "fix" the sign without re-deriving every call site that depends on it.
 - `line.exchangeAmount` / `line.exchangeCurrency`: same mirror convention,
   for a currency-exchange tag on a plain cash line.
+
+## Amounts, currencies, and reference data
+
+Amounts used to be plain floats. They're **exact integers now, scaled by
+a currency's or symbol's own `scale`** (e.g. `2000` = £20.00 at GBP's
+scale of 2; `0` decimal places for JPY) — ported from a related legacy
+project specifically to eliminate floating-point drift. This touches
+every amount-like field: `Line.amount`, `Line.cashValue`,
+`Line.exchangeAmount`, `Account.openingBalance`. The scaled-integer
+representation crosses the API boundary too — the backend never emits a
+decimal string for an amount, and the frontend never receives one; it's
+integers in both directions, JSON like `"amount": 2000`.
+
+- **`Currency`, `Symbol`, `Institution` are natural-key reference
+  entities** (`backend/src/Entity/`), each with the business key itself
+  as primary key — `Currency.code` (`"GBP"`), `Symbol.ticker`
+  (`"AAPL"`), `Institution.name` (`"Barclays"`) — no surrogate id,
+  deliberately, so raw DB records stay human-readable. `Account.currency`
+  / `Account.symbol` / `Account.institution` and `Line.cashCurrency` /
+  `Line.exchangeCurrency` are FKs to these, not free strings anymore.
+  `Symbol` additionally carries `name`, `scale` (unit precision — *not* a
+  currency scale), and `tradingCurrency` (FK to `Currency`).
+- **API wire format for these FKs is still just the natural-key string**
+  (`"currency": "GBP"`, `"symbol": "AAPL"`), consistent with how
+  `Account`/`Transaction` ids already work — never a nested object.
+- **`LedgerStateService::resolveCurrency()`/`resolveSymbol()`/
+  `resolveInstitution()`** are where a JSON payload's currency
+  code/ticker/institution name gets turned into the actual entity on
+  write. `resolveCurrency`/`resolveSymbol` **hard-error** (`InvalidArgumentException`)
+  on an unknown code/ticker — Currency and Symbol are deliberately
+  curated, closed sets; a new one needs a real `scale` decided, which is
+  exactly what a future "add symbol" admin flow (asking for name +
+  scale) would exist to do. `resolveInstitution` **find-or-creates**
+  instead — institution names were always free text before this schema
+  existed (any bank not used yet is fine to type in `AccountFormModal`),
+  and there's no meaningful extra data a first use needs to supply, so it
+  stays that way rather than regressing into a closed picker.
+- **`GET /api/currencies`/`/api/symbols`/`/api/institutions`** are
+  read-only for now (see "Backend" above) — `App.jsx` fetches all three
+  once alongside the account list and passes them down as props
+  (`currencies`, `symbols`, `institutions`) to whatever needs them
+  (`AccountFormModal`'s pickers, `AccountLedger`/`StockLedger`/
+  `otherLines.jsx`'s scale lookups, `lib/grouping.js`'s currency-dimension
+  bucketing). There's no context/global store — this app prop-drills
+  already, see `accounts` itself.
+- **`src/lib/scale.js`** is the one place that converts between the
+  wire-format integer and a human-editable decimal string, without ever
+  going through a float intermediate: `toMinorUnits(str, scale)` (parse,
+  mirrors `parseFloat`'s NaN-on-failure contract) and `fromMinorUnits(value,
+  scale)` (format, trims trailing zeros). Every input field's onChange
+  handler across `AccountLedger.jsx`/`StockLedger.jsx`/`otherLines.jsx`/
+  `AccountFormModal.jsx` goes through these instead of `parseFloat`/
+  `String()` — don't reintroduce either.
+- **`divRoundHalfUp(numerator, denominator)`** (also `lib/scale.js`, and
+  mirrored exactly as a private method on `LedgerStateService` in PHP) is
+  exact-integer division with round-half-up, implemented with plain
+  integer arithmetic (`(2n*num + den) / (2n*den)` — no bcmath, no float
+  division; PHP's 64-bit ints and JS `BigInt` both have ample headroom
+  for any realistic ledger amount). This is the one place naive
+  int-division would silently reintroduce drift — see "Stock valuation"
+  below for where it's actually used, and keep the PHP and JS versions
+  byte-identical if you ever touch either.
+- **`src/lib/format.js`'s `fmt(amount, currencyCode)`/`fmtUnits(n,
+  symbolTicker)`** keep their existing 2-argument call-site shape
+  everywhere in the app — they don't take a `scale` parameter directly.
+  Instead, `setCurrencyScales(currencies)`/`setSymbolScales(symbols)` are
+  called once by `App.jsx` right after fetching `/api/currencies`/
+  `/api/symbols`, populating a small module-level lookup `fmt`/`fmtUnits`
+  read from internally. This was a deliberate choice over threading a
+  `scale` argument through every single display call site (`AccountCard`,
+  `Overview`, `charts.jsx`, ...) — a lookup by code/ticker is simpler than
+  a prop-drilled parameter for something that's genuinely global,
+  read-only, loaded-once data. If a value's scale genuinely isn't in the
+  registry yet (e.g. mid-load), `fmt`/`fmtUnits` fall back to a plausible
+  default (2 / 6) rather than crashing.
 
 ## Matching and linking — two different comparison modes, on purpose
 
@@ -310,13 +401,17 @@ line's value against a target, and where each is used.
   that finds a stock trade — this was ported from the frontend's old
   `getComparableAmount`/`getDirectComparableAmount` and has no test
   coverage of its own yet.
-- `useOtherLines(account, accounts, draft, setDraft, smartDefaultForFirst)`
-  is a shared hook used by **both** `AccountLedger` and `StockLedger` for
-  their arrays of linked "other account" legs — adding, removing,
-  updating, resolving to a savable line, and a debounced per-leg match
-  search. `OtherLinesEditor` is the shared row-rendering component. Do not
-  reintroduce a per-component copy of this logic; extend the shared
-  hook/component instead.
+- `useOtherLines(account, accounts, draft, setDraft, smartDefaultForFirst,
+  currencies, symbols)` is a shared hook used by **both** `AccountLedger`
+  and `StockLedger` for their arrays of linked "other account" legs —
+  adding, removing, updating, resolving to a savable line, and a
+  debounced per-leg match search. `currencies`/`symbols` are needed for
+  scale-aware amount parsing and to resolve an investment leg's trading
+  currency via its `Symbol` (never `account.currency` — see "Amounts,
+  currencies, and reference data" above). `OtherLinesEditor` is the
+  shared row-rendering component (also takes `symbols`, for the same
+  reason). Do not reintroduce a per-component copy of this logic; extend
+  the shared hook/component instead.
 - A selected match candidate's line data is stored directly on the
   `otherLine` as `matchedLineId`/`matchedLine` (set in `selectMatch`/
   `selectMatchForOtherLine`) rather than looked up from a `transactions`
@@ -370,6 +465,20 @@ since they're pure and only need the account list, which is loaded anyway.
 - **Portfolio value** (`applyPortfolioValueLine`, same PHP-port
   situation, → `portfolioValue`): "mark to last trade" — the most recent
   trade's own implied price, applied to the *whole* current holding.
+  Rather than storing a rounded price, the state keeps the last trade's
+  raw `cashValue`/`units` pair and divides only once per computation
+  (`divRoundHalfUp`) — avoids compounding rounding error across many
+  trades. The old `1e-9` float-epsilon "snap to zero" is gone entirely:
+  with exact integers, units hits exactly `0` when fully sold; the only
+  thing zeroed defensively now is `cost`, to absorb ±1-minor-unit
+  rounding dust from `divRoundHalfUp`, not float fuzz.
+- Cost basis / portfolio value math mixes **two different scales** —
+  `cost`/`cashValue` are currency-scale integers, `units`/`amount` are
+  symbol-scale integers. A cross-multiply-then-divide via
+  `divRoundHalfUp` (see "Amounts, currencies, and reference data" above)
+  keeps every intermediate value an exact integer of the correct implied
+  scale without either function ever needing to know either scale
+  explicitly — don't "simplify" this to a plain `/` division.
 - Both live in **two places now**: `src/lib/stockMath.js` still has
   `applyCostBasisLine`/`applyPortfolioValueLine`/`buildCostBasisSeries`/
   `buildPortfolioValueSeries`, used client-side for a stock ledger's own
@@ -414,3 +523,9 @@ since they're pure and only need the account list, which is loaded anyway.
 - No live market price feed / real "current value".
 - No multi-currency conversion beyond the per-line exchange tag.
 - No JISA, no LISA bonus modeling, no flexible-ISA partial-year handling.
+- No admin UI/write endpoints for currencies, symbols, or institutions —
+  `GET /api/currencies`/`/api/symbols`/`/api/institutions` are read-only
+  by design (see "Amounts, currencies, and reference data"). A future
+  admin area, including a modal to define a new stock symbol's name and
+  scale, is planned but not started — don't build ahead of that
+  conversation.

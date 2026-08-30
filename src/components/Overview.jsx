@@ -8,7 +8,7 @@ import { OverviewGroupTree } from "./OverviewGroupTree";
 /* ---------------------------------------------------------
    Overview
 --------------------------------------------------------- */
-export function Overview({ accounts, settings, onSaveSettings, onSaveGrouping, onRemoveGrouping, onSelect, onNew }) {
+export function Overview({ accounts, symbols, settings, onSaveSettings, onSaveGrouping, onRemoveGrouping, onSelect, onNew }) {
   if (accounts.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center" style={{ marginTop: 100, color: C.inkFaint }}>
@@ -45,7 +45,7 @@ export function Overview({ accounts, settings, onSaveSettings, onSaveGrouping, o
         Combined balance by currency: {Object.entries(totalsByCurrency).map(([c, v]) => fmt(v, c)).join("  ·  ")}
       </p>
 
-      <OverviewGroupTree groups={buildNestedGroups(accounts, groupLevels, accounts)} depth={0} accounts={accounts} onSelect={onSelect} />
+      <OverviewGroupTree groups={buildNestedGroups(accounts, groupLevels, accounts, symbols)} depth={0} accounts={accounts} symbols={symbols} onSelect={onSelect} />
     </div>
   );
 }

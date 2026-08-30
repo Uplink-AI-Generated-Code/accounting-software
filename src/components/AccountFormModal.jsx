@@ -1,20 +1,26 @@
 import { useState } from "react";
 import { Trash2 } from "lucide-react";
-import { C, TYPES, CURRENCIES, ISA_KINDS } from "../lib/theme";
+import { C, TYPES, ISA_KINDS } from "../lib/theme";
+import { toMinorUnits, fromMinorUnits } from "../lib/scale";
 import { ModalShell, Field, inputStyle } from "./ui";
 
 /* ---------------------------------------------------------
    Account form modal
 --------------------------------------------------------- */
-export function AccountFormModal({ initial, accounts, onCancel, onSave, onDelete }) {
+export function AccountFormModal({ initial, accounts, currencies, symbols, institutions, onCancel, onSave, onDelete }) {
   const wrappers = accounts.filter((a) => a.type === "isa-parent");
 
   const [name, setName] = useState(initial.name || "");
   const [type, setType] = useState(initial.typePreset || initial.type || "asset");
   const [currency, setCurrency] = useState(initial.currency || "GBP");
   const [symbol, setSymbol] = useState(initial.symbol || "");
-  const [opening, setOpening] = useState(initial.openingBalance ? String(initial.openingBalance) : "0");
+  const currencyScale = currencies.find((c) => c.code === currency)?.scale ?? 2;
+  const [opening, setOpening] = useState(initial.openingBalance ? fromMinorUnits(initial.openingBalance, currencyScale) : "0");
   const [flexible, setFlexible] = useState(!!initial.flexible);
+  // Institution names were always free text (any bank not used yet is
+  // fine to type) — the backend find-or-creates one on save (see
+  // LedgerStateService::resolveInstitution()), so this stays a text
+  // input with a datalist rather than becoming a closed picker.
   const [institution, setInstitution] = useState(initial.institution || "");
   // "" = not an ISA, "cash-isa"/"lifetime-isa"/"innovative-finance-isa" = a
   // standalone flat ISA, or an isa-parent account id = "this is a
@@ -28,7 +34,8 @@ export function AccountFormModal({ initial, accounts, onCancel, onSave, onDelete
   // appears where it actually applies. Institution works the same way.
   const showFlexible = isWrapper || (!isSubaccount && !!isaChoice);
   const showInstitution = !isSubaccount;
-  const knownInstitutions = Array.from(new Set(accounts.map((a) => a.institution).filter(Boolean))).sort();
+  const knownInstitutions = institutions.map((i) => i.name).sort();
+  const tradingCurrency = symbols.find((s) => s.ticker === symbol)?.tradingCurrency;
 
   function submit() {
     if (!name.trim()) return;
@@ -37,9 +44,8 @@ export function AccountFormModal({ initial, accounts, onCancel, onSave, onDelete
       id: initial.id,
       name: name.trim(),
       type,
-      currency,
-      openingBalance: parseFloat(opening) || 0,
-      ...(type === "investment" ? { symbol: symbol.trim().toUpperCase() } : {}),
+      openingBalance: toMinorUnits(opening, currencyScale) || 0,
+      ...(type === "investment" ? { symbol: symbol.trim().toUpperCase() } : { currency }),
       ...(showInstitution && institution.trim() ? { institution: institution.trim() } : {}),
     };
     const isaEligible = type === "asset" || type === "investment";
@@ -78,18 +84,29 @@ export function AccountFormModal({ initial, accounts, onCancel, onSave, onDelete
 
         {!isWrapper && type === "investment" && (
           <Field label="Symbol">
-            <input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} style={{ ...inputStyle, textTransform: "uppercase" }} placeholder="e.g. AAPL" />
+            <select value={symbol} onChange={(e) => setSymbol(e.target.value)} style={inputStyle}>
+              <option value="">Select symbol…</option>
+              {symbols.map((s) => <option key={s.ticker} value={s.ticker}>{s.ticker} — {s.name}</option>)}
+            </select>
+            {symbols.length === 0 && (
+              <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 4 }}>No symbols set up yet — adding a new one isn't supported here yet.</div>
+            )}
           </Field>
         )}
-        {!isWrapper && (
-          <Field label={type === "investment" ? "Trading currency" : "Currency"}>
+        {!isWrapper && type === "investment" && symbol && (
+          <Field label="Trading currency">
+            <div style={{ fontSize: 13.5, color: C.inkSoft, padding: "6px 0" }}>{tradingCurrency} <span style={{ color: C.inkFaint, fontSize: 12 }}>— set by the symbol, not editable per account</span></div>
+          </Field>
+        )}
+        {!isWrapper && type !== "investment" && (
+          <Field label="Currency">
             <select value={currency} onChange={(e) => setCurrency(e.target.value)} style={inputStyle}>
-              {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
             </select>
           </Field>
         )}
         {!isWrapper && type !== "investment" && (
-          <Field label="Opening balance"><input type="number" step="0.01" value={opening} onChange={(e) => setOpening(e.target.value)} style={inputStyle} /></Field>
+          <Field label="Opening balance"><input type="number" step={10 ** -currencyScale} value={opening} onChange={(e) => setOpening(e.target.value)} style={inputStyle} /></Field>
         )}
 
         {!isWrapper && (type === "asset" || type === "investment") && (

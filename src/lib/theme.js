@@ -32,8 +32,6 @@ export const TYPES = [
 // for the balance-check hint — never shown to the user, never used for storage or display.
 export const CONTRA_TYPES = new Set(["liability", "equity", "income"]);
 
-export const CURRENCIES = ["GBP", "USD", "EUR", "JPY", "CHF", "CAD", "AUD"];
-
 export const ISA_KINDS = [
   { key: "cash-isa", label: "Cash ISA" },
   { key: "stocks-shares-isa", label: "Stocks & Shares ISA" },

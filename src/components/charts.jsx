@@ -136,7 +136,7 @@ export function BalanceChart({ account, transactions }) {
   );
 }
 
-function StockChartTooltip({ active, payload, account, compareYoY }) {
+function StockChartTooltip({ active, payload, account, tradingCurrency, compareYoY }) {
   if (!active || !payload || !payload.length) return null;
   const byKey = {};
   payload.forEach((p) => { byKey[p.dataKey] = p; });
@@ -151,21 +151,21 @@ function StockChartTooltip({ active, payload, account, compareYoY }) {
   return (
     <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 6, padding: "8px 10px", fontSize: 12.5, lineHeight: 1.7 }}>
       <div style={{ fontWeight: 600, marginBottom: 3 }}>{fmtDateShort(date)}</div>
-      {row(C.gold, "Units", byKey.units && byKey.units.value, (v) => `${fmtUnits(v)} ${account.symbol}`)}
-      {row(C.credit, "Cost basis", byKey.cost && byKey.cost.value, (v) => fmt(v, account.currency))}
-      {row(C.plum, "Worth", byKey.value && byKey.value.value, (v) => fmt(v, account.currency))}
+      {row(C.gold, "Units", byKey.units && byKey.units.value, (v) => `${fmtUnits(v, account.symbol)} ${account.symbol}`)}
+      {row(C.credit, "Cost basis", byKey.cost && byKey.cost.value, (v) => fmt(v, tradingCurrency))}
+      {row(C.plum, "Worth", byKey.value && byKey.value.value, (v) => fmt(v, tradingCurrency))}
       {compareYoY && (
         <div style={{ marginTop: 4, paddingTop: 4, borderTop: `1px solid ${C.lineSoft}`, color: C.inkFaint }}>
-          {row(C.goldDim, "Units, last year", byKey.unitsPrev && byKey.unitsPrev.value, (v) => `${fmtUnits(v)} ${account.symbol}`)}
-          {row(C.credit, "Cost, last year", byKey.costPrev && byKey.costPrev.value, (v) => fmt(v, account.currency))}
-          {row(C.plum, "Worth, last year", byKey.valuePrev && byKey.valuePrev.value, (v) => fmt(v, account.currency))}
+          {row(C.goldDim, "Units, last year", byKey.unitsPrev && byKey.unitsPrev.value, (v) => `${fmtUnits(v, account.symbol)} ${account.symbol}`)}
+          {row(C.credit, "Cost, last year", byKey.costPrev && byKey.costPrev.value, (v) => fmt(v, tradingCurrency))}
+          {row(C.plum, "Worth, last year", byKey.valuePrev && byKey.valuePrev.value, (v) => fmt(v, tradingCurrency))}
         </div>
       )}
     </div>
   );
 }
 
-export function UnitsChart({ account, transactions }) {
+export function UnitsChart({ account, transactions, tradingCurrency }) {
   const [interval, setInterval_] = useState("3m");
   const [compareYoY, setCompareYoY] = useState(false);
 
@@ -215,9 +215,9 @@ export function UnitsChart({ account, transactions }) {
           <ComposedChart data={merged} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
             <CartesianGrid stroke={C.lineSoft} vertical={false} />
             <XAxis dataKey="offset" tickFormatter={(o) => (merged[o] ? fmtDateShort(merged[o].date) : "")} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={{ stroke: C.line }} tickLine={false} minTickGap={40} />
-            <YAxis yAxisId="units" tickFormatter={(v) => fmtUnits(v)} tick={{ fontSize: 11, fill: C.gold }} axisLine={false} tickLine={false} width={55} />
-            <YAxis yAxisId="money" orientation="right" tickFormatter={(v) => fmt(v, account.currency)} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={80} />
-            <Tooltip content={<StockChartTooltip account={account} compareYoY={compareYoY} />} />
+            <YAxis yAxisId="units" tickFormatter={(v) => fmtUnits(v, account.symbol)} tick={{ fontSize: 11, fill: C.gold }} axisLine={false} tickLine={false} width={55} />
+            <YAxis yAxisId="money" orientation="right" tickFormatter={(v) => fmt(v, tradingCurrency)} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={80} />
+            <Tooltip content={<StockChartTooltip account={account} tradingCurrency={tradingCurrency} compareYoY={compareYoY} />} />
             <Legend wrapperStyle={{ fontSize: 12 }} />
             {compareYoY && <Line yAxisId="units" type="stepAfter" dataKey="unitsPrev" name="Units (last year)" stroke={C.goldDim} strokeWidth={1.5} strokeDasharray="4 3" dot={false} isAnimationActive={false} />}
             <Bar yAxisId="units" dataKey="units" name={`${account.symbol} units`} fill={C.gold} fillOpacity={0.3} isAnimationActive={false} />

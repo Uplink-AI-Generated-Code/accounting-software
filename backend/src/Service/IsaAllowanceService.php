@@ -33,13 +33,13 @@ class IsaAllowanceService
     ) {
     }
 
-    /** @return array{byKind: array<string, float>, total: float} */
+    /** @return array{byKind: array<string, int>, total: int} */
     public function computeUsage(int $startYear): array
     {
         $start = sprintf('%d-04-06', $startYear);
         $end = sprintf('%d-04-05', $startYear + 1);
 
-        $byKind = array_fill_keys(self::ISA_KINDS, 0.0);
+        $byKind = array_fill_keys(self::ISA_KINDS, 0);
 
         $accounts = array_map($this->ledgerState->accountToArray(...), $this->em->getRepository(Account::class)->findAll());
         $products = $this->isaProducts($accounts);
@@ -52,7 +52,7 @@ class IsaAllowanceService
         }
         $isaAccountIds = array_keys($isaAccountIds);
         if (!$isaAccountIds) {
-            return ['byKind' => $byKind, 'total' => 0.0];
+            return ['byKind' => $byKind, 'total' => 0];
         }
 
         $transactions = $this->transactionsTouching($isaAccountIds);
@@ -60,7 +60,7 @@ class IsaAllowanceService
         // Non-flexible: every deposit counts, withdrawals never reduce
         // anything.
         foreach (array_filter($products, static fn ($p) => !$p['flexible']) as $product) {
-            $deposits = 0.0;
+            $deposits = 0;
             foreach ($transactions as $t) {
                 foreach ($t['lines'] as $line) {
                     if (!\in_array($line['accountId'], $product['accountIds'], true) || $line['amount'] <= 0) {
@@ -74,7 +74,7 @@ class IsaAllowanceService
                     }
                 }
             }
-            $byKind[$product['kind']] = ($byKind[$product['kind']] ?? 0.0) + $deposits;
+            $byKind[$product['kind']] = ($byKind[$product['kind']] ?? 0) + $deposits;
         }
 
         // Flexible: simulate withdrawal/replacement ordering together, in
@@ -88,14 +88,14 @@ class IsaAllowanceService
                 $state[$p['accountId']] = [
                     'product' => $p,
                     'priorBalance' => $this->priorPoolEntering($p, $accounts, $transactions, $start),
-                    'priorReplaceable' => 0.0,
-                    'thisYearBalance' => 0.0,
+                    'priorReplaceable' => 0,
+                    'thisYearBalance' => 0,
                 ];
                 foreach ($p['accountIds'] as $id) {
                     $accountToProduct[$id] = $p;
                 }
             }
-            $globalReplaceable = 0.0; // this-year money, replaceable into any flexible ISA
+            $globalReplaceable = 0; // this-year money, replaceable into any flexible ISA
 
             $events = [];
             foreach ($transactions as $t) {
@@ -154,7 +154,7 @@ class IsaAllowanceService
             // this-year-sourced money is currently sitting in it — see
             // isa.js's computeIsaUsage for the full reasoning.
             foreach ($state as $s) {
-                $byKind[$s['product']['kind']] = ($byKind[$s['product']['kind']] ?? 0.0) + max(0.0, $s['thisYearBalance']);
+                $byKind[$s['product']['kind']] = ($byKind[$s['product']['kind']] ?? 0) + max(0, $s['thisYearBalance']);
             }
         }
 
@@ -216,13 +216,13 @@ class IsaAllowanceService
      * @param array<int, array<string, mixed>>  $accounts
      * @param array<int, array<string, mixed>>  $transactions
      */
-    private function priorPoolEntering(array $product, array $accounts, array $transactions, string $yearStart): float
+    private function priorPoolEntering(array $product, array $accounts, array $transactions, string $yearStart): int
     {
-        $pool = 0.0;
+        $pool = 0;
         foreach ($product['accountIds'] as $id) {
             $acc = $this->findAccount($accounts, $id);
             if ($acc) {
-                $pool += $acc['openingBalance'] ?? 0.0;
+                $pool += $acc['openingBalance'] ?? 0;
             }
         }
         foreach ($transactions as $t) {
@@ -239,7 +239,7 @@ class IsaAllowanceService
             }
         }
 
-        return max(0.0, $pool);
+        return max(0, $pool);
     }
 
     /** @param array<int, array<string, mixed>> $accounts */
