@@ -30,6 +30,15 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  * its own backend-assigned id anyway. This is what lets an export from
  * before this app supported standalone lines — or a similarly-shaped
  * database from an entirely different project — import cleanly.
+ *
+ * An optional `currencies` array (`[{code, scale, name?}, ...]`) is
+ * upserted into the Currency table — see
+ * LedgerStateService::writeState()'s docblock for why this is an upsert,
+ * not a wipe-and-rebuild like everything else here. A currency used by
+ * imported data (e.g. a foreign-currency account from another project's
+ * database) is part of that data, not something this app's own baseline
+ * list can be expected to anticipate — omit it and any account/line
+ * referencing an unrecognized currency code fails the whole import.
  */
 #[AsCommand(
     name: 'app:import-local-storage',
@@ -101,15 +110,17 @@ class ImportLocalStorageCommand extends Command
         }
 
         $settings = $data['settings'] ?? [];
+        $currencies = isset($data['currencies']) && \is_array($data['currencies']) ? $data['currencies'] : [];
 
         $linkedCount = \count(array_filter($records, static fn ($r) => null !== ($r['transactionId'] ?? null)));
         $standaloneCount = \count($records) - $linkedCount;
 
         $io->note(\sprintf(
-            'Importing %d account(s), %d linked transaction(s), and %d standalone line(s) from %s. This replaces the current database contents.',
+            'Importing %d account(s), %d linked transaction(s), %d standalone line(s), and %d currenc(y/ies) from %s. This replaces the current database\'s accounts/lines/transactions and upserts the given currencies (existing ones not mentioned are left alone — see LedgerStateService::writeState()).',
             \count($accounts),
             $linkedCount,
             $standaloneCount,
+            \count($currencies),
             $path,
         ));
 
@@ -119,7 +130,7 @@ class ImportLocalStorageCommand extends Command
             return Command::SUCCESS;
         }
 
-        $this->state->writeState($accounts, $records, $settings);
+        $this->state->writeState($accounts, $records, $settings, $currencies);
 
         $io->success('Import complete.');
 

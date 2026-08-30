@@ -95,11 +95,17 @@ SQLite. All commands run from `backend/`.
   (`copy(localStorage.getItem('ledger-storage:personal:ledger-data'))`),
   save it as a JSON file, then `php bin/console app:import-local-storage
   path/to/file.json` — see `src/Command/ImportLocalStorageCommand.php`.
-  **This replaces the whole database**, it's not a merge.
+  **This replaces the whole database's accounts/lines/transactions** (not
+  a merge) **and upserts whatever `currencies` the file declares** — see
+  "Amounts, currencies, and reference data" below.
 - Backup/export the current database: `php bin/console app:export-state
   path/to/file.json` — see `src/Command/ExportStateCommand.php`. Writes
   the same shape `LedgerStateService::readState()` produces internally, so
   the file round-trips straight back through `app:import-local-storage`.
+- Fresh database bootstrap: `php bin/console app:currencies:seed` populates
+  a baseline currency list (GBP/USD/EUR/JPY/CHF/CAD/AUD/RON/INR) — see
+  `src/Command/SeedCurrenciesCommand.php`. Idempotent, safe to re-run.
+  Not the only way a currency gets added — see below.
 - The SQLite file lives at `backend/var/data_dev.db` (gitignored, along with
   the rest of `var/`); a separate `var/data_test.db` is used for the test
   suite (see below).
@@ -321,8 +327,32 @@ integers in both directions, JSON like `"amount": 2000`.
   deliberately, so raw DB records stay human-readable. `Account.currency`
   / `Account.symbol` / `Account.institution` and `Line.cashCurrency` /
   `Line.exchangeCurrency` are FKs to these, not free strings anymore.
-  `Symbol` additionally carries `name`, `scale` (unit precision — *not* a
-  currency scale), and `tradingCurrency` (FK to `Currency`).
+  `Currency` also carries an optional `name` (e.g. "British Pound
+  Sterling"). `Symbol` additionally carries `name`, `scale` (unit
+  precision — *not* a currency scale), and `tradingCurrency` (FK to
+  `Currency`).
+- **A currency is part of the imported *data*, not a fixed app-wide
+  list** — `LedgerStateService::writeState()` (so `app:import-local-storage`
+  too) takes an optional `currencies` array (`[{code, scale, name?},
+  ...]`) and **upserts** each one (write scale/name, create if missing)
+  *before* rebuilding accounts/lines/transactions from the rest of the
+  same file. This is deliberately an upsert, not a wipe-and-rebuild like
+  account/line/transactions: `Symbol.tradingCurrency` and this same
+  import's own account/line rows hold `NOT DEFERRABLE INITIALLY
+  IMMEDIATE` foreign keys into `currency`, so deleting a code a `Symbol`
+  still references (when that `Symbol` isn't itself part of this import)
+  would throw immediately — upsert gets the real goal ("the currencies
+  this data needs now exist, with the right scale") without that
+  failure mode. `LedgerStateService::readState()` (so `app:export-state`
+  too) always includes the *full* `currencies` table in its output, not
+  just codes actually referenced — a full export should carry currency
+  data the same way it carries everything else.
+- **`app:currencies:seed`** (`SeedCurrenciesCommand`) is a separate,
+  idempotent convenience for bootstrapping a *fresh* database with a
+  baseline currency list — not the mechanism real data flows through.
+  A state-JSON import from a database with different currencies (e.g.
+  RON/INR from the sibling Nucleware/Accounts project) just declares
+  them in its own `currencies` array instead.
 - **API wire format for these FKs is still just the natural-key string**
   (`"currency": "GBP"`, `"symbol": "AAPL"`), consistent with how
   `Account`/`Transaction` ids already work — never a nested object.

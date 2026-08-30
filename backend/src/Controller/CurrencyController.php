@@ -25,7 +25,11 @@ class CurrencyController
         $currencies = $this->em->getRepository(Currency::class)->findAll();
 
         return new JsonResponse(array_map(
-            static fn (Currency $c) => ['code' => $c->getCode(), 'scale' => $c->getScale()],
+            static fn (Currency $c) => array_filter([
+                'code' => $c->getCode(),
+                'scale' => $c->getScale(),
+                'name' => $c->getName(),
+            ], static fn ($v) => null !== $v),
             $currencies
         ));
     }

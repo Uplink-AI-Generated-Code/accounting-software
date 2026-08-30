@@ -68,10 +68,11 @@ class ExportStateCommand extends Command
         $standaloneCount = \count($state['records']) - $linkedCount;
 
         $io->success(\sprintf(
-            'Exported %d account(s), %d linked transaction(s), and %d standalone line(s) to %s',
+            'Exported %d account(s), %d linked transaction(s), %d standalone line(s), and %d currenc(y/ies) to %s',
             \count($state['accounts']),
             $linkedCount,
             $standaloneCount,
+            \count($state['currencies']),
             $path,
         ));
 

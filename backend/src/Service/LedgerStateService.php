@@ -53,7 +53,7 @@ class LedgerStateService
     ) {
     }
 
-    /** @return array{accounts: array<int, array<string, mixed>>, records: array<int, array<string, mixed>>, settings: array<string, mixed>} */
+    /** @return array{accounts: array<int, array<string, mixed>>, records: array<int, array<string, mixed>>, settings: array<string, mixed>, currencies: array<int, array<string, mixed>>} */
     public function readState(): array
     {
         $settings = $this->settingsRepository->getOrCreate();
@@ -62,6 +62,7 @@ class LedgerStateService
             'accounts' => $this->accountsArray(),
             'records' => $this->recordsArray(),
             'settings' => $this->settingsToArray($settings),
+            'currencies' => $this->currenciesArray(),
         ];
     }
 
@@ -279,13 +280,32 @@ class LedgerStateService
      * ImportLocalStorageCommand::upgradeLegacyShape()) creates a
      * standalone line instead of a Transaction.
      *
+     * `$currenciesData` (`[{code, scale, name?}, ...]`) is **upserted**,
+     * not wiped-and-rebuilt like account/line/transactions — a currency
+     * is part of the imported data (a legacy database's own Currency
+     * table, say — see CLAUDE.md), so whatever's here gets its scale/name
+     * written, but nothing is deleted. A destructive full replace was
+     * considered and rejected: `Symbol.tradingCurrency` (and this same
+     * import's own account/line rows) hold `NOT DEFERRABLE INITIALLY
+     * IMMEDIATE` foreign keys into `currency`, so deleting a code still
+     * referenced by a Symbol this import doesn't also touch would throw
+     * immediately, not silently orphan anything. Upsert gets the actual
+     * goal — "the currencies this data needs now exist with the right
+     * scale" — without that failure mode.
+     *
      * @param array<int, array<string, mixed>> $accountsData
      * @param array<int, array<string, mixed>> $recordsData
      * @param array<string, mixed>             $settingsData
+     * @param array<int, array<string, mixed>> $currenciesData
      */
-    public function writeState(array $accountsData, array $recordsData, array $settingsData): void
+    public function writeState(array $accountsData, array $recordsData, array $settingsData, array $currenciesData = []): void
     {
-        $this->em->wrapInTransaction(function () use ($accountsData, $recordsData, $settingsData) {
+        $this->em->wrapInTransaction(function () use ($accountsData, $recordsData, $settingsData, $currenciesData) {
+            foreach ($currenciesData as $data) {
+                $this->hydrateCurrency($data);
+            }
+            $this->em->flush();
+
             $connection = $this->em->getConnection();
             $connection->executeStatement('DELETE FROM line');
             $connection->executeStatement('DELETE FROM transactions');
@@ -646,6 +666,27 @@ class LedgerStateService
         return $line;
     }
 
+    /**
+     * Find-or-create a Currency and write its scale/name from import
+     * data — the one place a Currency's own attributes get *written*
+     * from outside the app (contrast resolveCurrency(), which only ever
+     * looks one up and never writes). See writeState()'s docblock for
+     * why this upserts rather than replacing the whole table.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function hydrateCurrency(array $data): void
+    {
+        if (!isset($data['code'], $data['scale'])) {
+            return;
+        }
+        $code = (string) $data['code'];
+        $currency = $this->em->getRepository(Currency::class)->find($code) ?? (new Currency())->setCode($code);
+        $currency->setScale((int) $data['scale']);
+        $currency->setName(isset($data['name']) ? (string) $data['name'] : $currency->getName());
+        $this->em->persist($currency);
+    }
+
     /** @param array<string, mixed> $data */
     private function hydrateSettings(Settings $settings, array $data): Settings
     {
@@ -660,6 +701,26 @@ class LedgerStateService
     private function accountsArray(): array
     {
         return array_map($this->accountToArray(...), $this->em->getRepository(Account::class)->findAll());
+    }
+
+    /**
+     * Every currency in the table — not just ones referenced by an
+     * account/line right now — so a full backup/export genuinely carries
+     * the currency data along with it, the way it would for any other
+     * table. See writeState()'s docblock for the other half of this.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function currenciesArray(): array
+    {
+        return array_map(
+            static fn (Currency $c) => array_filter([
+                'code' => $c->getCode(),
+                'scale' => $c->getScale(),
+                'name' => $c->getName(),
+            ], static fn ($v) => null !== $v),
+            $this->em->getRepository(Currency::class)->findAll()
+        );
     }
 
     /**

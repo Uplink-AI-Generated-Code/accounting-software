@@ -22,6 +22,9 @@ class Currency
     #[ORM\Column]
     private int $scale;
 
+    #[ORM\Column(length: 255, nullable: true)]
+    private ?string $name = null;
+
     public function getCode(): string
     {
         return $this->code;
@@ -42,6 +45,18 @@ class Currency
     public function setScale(int $scale): static
     {
         $this->scale = $scale;
+
+        return $this;
+    }
+
+    public function getName(): ?string
+    {
+        return $this->name;
+    }
+
+    public function setName(?string $name): static
+    {
+        $this->name = $name;
 
         return $this;
     }
