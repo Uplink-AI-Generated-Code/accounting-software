@@ -37,6 +37,19 @@ export function bucketBy(subset, dim, allAccounts, symbols = []) {
     if (wrappers.length) groups.push({ key: "__isa", label: "Stocks & Shares ISAs", items: wrappers });
     return groups;
   }
+  if (dim === "subtype") {
+    // No inheritance from an ISA wrapper (unlike institution) — subtype is
+    // a property of the individual account/product, not something a
+    // wrapper meaningfully has one of on behalf of its subaccounts.
+    const bySub = {};
+    subset.forEach((a) => {
+      const sub = a.subtype || "No subtype";
+      bySub[sub] = bySub[sub] || [];
+      bySub[sub].push(a);
+    });
+    const keys = Object.keys(bySub).sort((a, b) => (a === "No subtype" ? 1 : b === "No subtype" ? -1 : a.localeCompare(b)));
+    return keys.map((k) => ({ key: k, label: k, items: bySub[k] }));
+  }
   // institution
   const byInst = {};
   subset.forEach((a) => {

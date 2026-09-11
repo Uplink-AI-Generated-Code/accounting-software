@@ -22,6 +22,11 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, insti
   // LedgerStateService::resolveInstitution()), so this stays a text
   // input with a datalist rather than becoming a closed picker.
   const [institution, setInstitution] = useState(initial.institution || "");
+  // Same free-text-with-datalist treatment as institution — a product-type
+  // tag ("Credit Card", "Loan", "Trading") for further grouping when
+  // institution alone doesn't distinguish enough accounts apart. Plain
+  // string on the account itself, no backing entity — see CLAUDE.md.
+  const [subtype, setSubtype] = useState(initial.subtype || "");
   // "" = not an ISA, "cash-isa"/"lifetime-isa"/"innovative-finance-isa" = a
   // standalone flat ISA, or an isa-parent account id = "this is a
   // subaccount of that Stocks & Shares ISA wrapper".
@@ -35,6 +40,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, insti
   const showFlexible = isWrapper || (!isSubaccount && !!isaChoice);
   const showInstitution = !isSubaccount;
   const knownInstitutions = institutions.map((i) => i.name).sort();
+  const knownSubtypes = Array.from(new Set(accounts.map((a) => a.subtype).filter(Boolean))).sort();
   const tradingCurrency = symbols.find((s) => s.ticker === symbol)?.tradingCurrency;
 
   function submit() {
@@ -47,6 +53,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, insti
       openingBalance: toMinorUnits(opening, currencyScale) || 0,
       ...(type === "investment" ? { symbol: symbol.trim().toUpperCase() } : { currency }),
       ...(showInstitution && institution.trim() ? { institution: institution.trim() } : {}),
+      ...(!isWrapper && subtype.trim() ? { subtype: subtype.trim() } : {}),
     };
     const isaEligible = type === "asset" || type === "investment";
     if (isWrapper) {
@@ -73,6 +80,14 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, insti
             <input value={institution} onChange={(e) => setInstitution(e.target.value)} style={inputStyle} placeholder="e.g. Barclays" list="ll-institutions" />
             <datalist id="ll-institutions">
               {knownInstitutions.map((i) => <option key={i} value={i} />)}
+            </datalist>
+          </Field>
+        )}
+        {!isWrapper && (
+          <Field label="Subtype">
+            <input value={subtype} onChange={(e) => setSubtype(e.target.value)} style={inputStyle} placeholder="e.g. Credit Card, Loan, Trading" list="ll-subtypes" />
+            <datalist id="ll-subtypes">
+              {knownSubtypes.map((s) => <option key={s} value={s} />)}
             </datalist>
           </Field>
         )}

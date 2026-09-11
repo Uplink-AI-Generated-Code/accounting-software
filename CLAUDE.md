@@ -330,7 +330,11 @@ integers in both directions, JSON like `"amount": 2000`.
   `Currency` also carries an optional `name` (e.g. "British Pound
   Sterling"). `Symbol` additionally carries `name`, `scale` (unit
   precision — *not* a currency scale), and `tradingCurrency` (FK to
-  `Currency`).
+  `Currency`). `Account.subtype`, by contrast, is a **plain string
+  column, not a reference entity** — nothing else references it, so
+  there's no half-normalization benefit to a table for it the way there
+  is for Currency/Symbol/Institution; see "UI conventions" below for what
+  it's for.
 - **A currency is part of the imported *data*, not a fixed app-wide
   list** — `LedgerStateService::writeState()` (so `app:import-local-storage`
   too) takes an optional `currencies` array (`[{code, scale, name?},
@@ -543,10 +547,18 @@ since they're pure and only need the account list, which is loaded anyway.
   rather than calling `setSelectedId`/state setters directly, or it will
   silently bypass the guard.
 - Grouping (sidebar + Overview) is a cascading 1–3 level picker over
-  {Type, Institution, Currency} with savable presets in
+  {Type, Institution, Subtype, Currency} with savable presets in
   `settings.savedGroupings`. `buildNestedGroups` / `bucketBy` are generic
   over the dimension — extend those rather than writing a new grouping
-  path for a new dimension.
+  path for a new dimension. `account.subtype` (a free-text product-type
+  tag like "Credit Card"/"Loan"/"Trading", not a reference entity — see
+  "Data model" below) exists specifically as a fourth dimension for when
+  institution alone doesn't split a crowded chart of accounts finely
+  enough (e.g. several credit products at one bank, or several accounts
+  with no real institution at all). Unlike institution, an ISA
+  subaccount does **not** inherit `subtype` from its wrapper — it's a
+  property of the individual product, not something a wrapper has one of
+  on its subaccounts' behalf.
 
 ## Things intentionally *not* built (don't add without asking)
 

@@ -24,6 +24,16 @@ use Doctrine\ORM\Mapping as ORM;
  * floating-point drift; see CLAUDE.md. For an investment account (one with
  * a `symbol` set), `currency` is unused/left null: trading currency is
  * derived via `symbol.tradingCurrency` instead of being stored twice.
+ *
+ * `subtype` is a free-text product-type tag (e.g. "Credit Card", "Loan",
+ * "Trading") — a fourth grouping dimension alongside type/institution/
+ * currency, for when institution alone doesn't distinguish enough
+ * accounts apart (e.g. several credit products at the same bank, or
+ * several loan accounts with no real institution at all). Deliberately a
+ * plain string column, not a reference entity like Currency/Symbol/
+ * Institution — nothing else references it, so there's no half-
+ * normalization benefit to a separate table, just a free-text field with
+ * the same UX as institution's datalist-backed input.
  */
 #[ORM\Entity(repositoryClass: AccountRepository::class)]
 class Account
@@ -52,6 +62,9 @@ class Account
     #[ORM\ManyToOne(targetEntity: Institution::class)]
     #[ORM\JoinColumn(name: 'institution', referencedColumnName: 'name', nullable: true)]
     private ?Institution $institution = null;
+
+    #[ORM\Column(length: 255, nullable: true)]
+    private ?string $subtype = null;
 
     #[ORM\Column(length: 32, nullable: true)]
     private ?string $isaKind = null;
@@ -142,6 +155,18 @@ class Account
     public function setInstitution(?Institution $institution): static
     {
         $this->institution = $institution;
+
+        return $this;
+    }
+
+    public function getSubtype(): ?string
+    {
+        return $this->subtype;
+    }
+
+    public function setSubtype(?string $subtype): static
+    {
+        $this->subtype = $subtype;
 
         return $this;
     }

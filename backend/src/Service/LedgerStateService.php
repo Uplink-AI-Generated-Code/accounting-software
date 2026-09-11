@@ -568,6 +568,7 @@ class LedgerStateService
         $account->setOpeningBalance(isset($data['openingBalance']) ? (int) $data['openingBalance'] : null);
         $account->setSymbol($this->resolveSymbol($data['symbol'] ?? null));
         $account->setInstitution($this->resolveInstitution($data['institution'] ?? null));
+        $account->setSubtype(isset($data['subtype']) ? (string) $data['subtype'] : null);
         $account->setIsaKind($data['isaKind'] ?? null);
         $account->setIsaParentId($data['isaParentId'] ?? null);
         $account->setFlexible(isset($data['flexible']) ? (bool) $data['flexible'] : null);
@@ -751,6 +752,7 @@ class LedgerStateService
             'openingBalance' => $a->getOpeningBalance(),
             'symbol' => $a->getSymbol()?->getTicker(),
             'institution' => $a->getInstitution()?->getName(),
+            'subtype' => $a->getSubtype(),
             'isaKind' => $a->getIsaKind(),
             'isaParentId' => $a->getIsaParentId(),
             'flexible' => $a->isFlexible(),
