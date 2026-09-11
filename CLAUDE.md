@@ -283,9 +283,24 @@ it covers and why); no test suite and no linter on the frontend.
   `draftLines()` helper intentionally omits `id` when building the lines
   a save would send, so the `effectiveRecords` substitution has to add it
   back in for display purposes).
-- Account types: `asset`, `liability`, `equity`, `income`, `expense`,
-  `investment`, `isa-parent`. An `isa-parent` holds no balance itself —
-  it's a wrapper grouping subaccounts via `isaParentId`.
+- Account types: `asset`, `liability`, `equity`, `income`, `isa-income`,
+  `expense`, `investment`, `isa-parent`. An `isa-parent` holds no balance
+  itself — it's a wrapper grouping subaccounts via `isaParentId`.
+- **`isa-income`** is a plain, balance-bearing, contra (credit-normal —
+  it's in `CONTRA_TYPES`) account type for dividends/interest generated
+  *inside* an ISA — HMRC doesn't count that money against the
+  subscription limit even though it's genuinely new money entering an
+  ISA-tagged account. It is **not** itself one of `isaProducts()` (no
+  `isaKind`, no allowance usage of its own, no ISA picker in
+  `AccountFormModal`) — it only matters as the *counterpart* line of a
+  transaction: `IsaAllowanceService::isExternalLine()` treats a
+  counterpart on an `isa-income` account the same as one on an
+  `isaKind`-tagged account (internal, not a new subscription). Model a
+  dividend/interest credit as a linked transaction between the ISA
+  account and an `isa-income` account, not a standalone line — a
+  standalone line has no counterpart to check and is always treated as
+  external (see `isExternalLine()`'s docblock), so it would incorrectly
+  count towards the allowance.
 - **Investment accounts hold exactly one security**, referenced via
   `account.symbol` (a `Symbol` entity — see below). Trading currency
   lives on the `Symbol`, not the account: an investment account's own

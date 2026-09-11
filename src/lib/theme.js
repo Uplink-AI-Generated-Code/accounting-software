@@ -24,13 +24,14 @@ export const TYPES = [
   { key: "liability", label: "Liabilities" },
   { key: "equity", label: "Equity" },
   { key: "income", label: "Income" },
+  { key: "isa-income", label: "ISA Income" },
   { key: "expense", label: "Expenses" },
   { key: "investment", label: "Stocks & Shares" },
   { key: "isa-parent", label: "Stocks & Shares ISAs" },
 ];
 // Used only to translate a plain "increase/decrease" entry into formal debit/credit
 // for the balance-check hint — never shown to the user, never used for storage or display.
-export const CONTRA_TYPES = new Set(["liability", "equity", "income"]);
+export const CONTRA_TYPES = new Set(["liability", "equity", "income", "isa-income"]);
 
 export const ISA_KINDS = [
   { key: "cash-isa", label: "Cash ISA" },

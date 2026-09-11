@@ -199,6 +199,17 @@ class IsaAllowanceService
     }
 
     /**
+     * A line's other leg counts as "internal to the ISA" — and so doesn't
+     * make this line a new subscription — either because that account is
+     * itself ISA-tagged (`isaKind`, a transfer between two of the user's
+     * own ISA products) or because it's an `isa-income` account (a
+     * dividend/interest credit generated *inside* an ISA, which HMRC
+     * doesn't count against the subscription limit even though the money
+     * is genuinely new — see CLAUDE.md's "ISA allowance engine"). Unlike
+     * `isaKind` accounts, `isa-income` accounts aren't themselves one of
+     * the `isaProducts()` — they never accrue usage of their own, they
+     * only ever appear here as a counterpart.
+     *
      * @param array<string, mixed>            $t
      * @param array<string, mixed>            $line
      * @param array<int, array<string, mixed>> $accounts
@@ -211,7 +222,7 @@ class IsaAllowanceService
         }
         foreach ($others as $l) {
             $oAcc = $this->findAccount($accounts, $l['accountId']);
-            if ($oAcc && !empty($oAcc['isaKind'])) {
+            if ($oAcc && (!empty($oAcc['isaKind']) || 'isa-income' === $oAcc['type'])) {
                 return false;
             }
         }
