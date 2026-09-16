@@ -5,7 +5,6 @@ import { fmt } from "../lib/format";
 import { buildNestedGroups, flattenAllAccounts, leafMatchesQuery } from "../lib/grouping";
 import { GroupLevelPicker } from "./GroupLevelPicker";
 import { OverviewGroupTree } from "./OverviewGroupTree";
-import { AccountRow } from "./AccountRow";
 import { miniInput } from "./ui";
 
 /* ---------------------------------------------------------
@@ -60,34 +59,20 @@ export function Overview({ accounts, symbols, settings, onSaveSettings, onSaveGr
         Combined balance by currency: {Object.entries(totalsByCurrency).map(([c, v]) => fmt(v, c)).join("  ·  ")}
       </p>
 
-      {query.trim() ? (
-        <OverviewSearchResults
-          leaves={flattenAllAccounts(accounts, accounts, symbols).filter((l) => leafMatchesQuery(l, query))}
-          accounts={accounts}
-          symbols={symbols}
-          onSelect={onSelect}
-        />
-      ) : (
-        <OverviewGroupTree groups={buildNestedGroups(accounts, groupLevels, accounts, symbols)} depth={0} accounts={accounts} symbols={symbols} onSelect={onSelect} />
-      )}
-    </div>
-  );
-}
-
-// The flat equivalent of OverviewGroupTree, shown instead of the grouped
-// grid while a search query is active — each matched account keeps its
-// existing card, just ungrouped, plus a small breadcrumb of the grouping
-// path it matched on (so a hit against an institution/subtype/currency
-// name, not just the account's own name, is still legible).
-function OverviewSearchResults({ leaves, accounts, symbols, onSelect }) {
-  if (leaves.length === 0) {
-    return <p style={{ fontSize: 13, color: C.inkFaint }}>No accounts match.</p>;
-  }
-  return (
-    <div className="ll-rowlist flex flex-col" style={{ border: `1px solid ${C.line}`, borderRadius: 6, background: C.card }}>
-      {leaves.map(({ account: a, path }) => (
-        <AccountRow key={a.id} a={a} accounts={accounts} symbols={symbols} onSelect={onSelect} subtitle={path.join(" › ")} />
-      ))}
+      {(() => {
+        // Searching narrows *which* accounts show (matched against all
+        // four dimensions, independent of the active grouping — see
+        // CLAUDE.md), but keeps the same nested grouping layout rather
+        // than flattening to a list: buildNestedGroups naturally drops
+        // any group that ends up with no matching accounts in it.
+        const matched = query.trim()
+          ? flattenAllAccounts(accounts, accounts, symbols).filter((l) => leafMatchesQuery(l, query)).map((l) => l.account)
+          : accounts;
+        if (query.trim() && matched.length === 0) {
+          return <p style={{ fontSize: 13, color: C.inkFaint }}>No accounts match.</p>;
+        }
+        return <OverviewGroupTree groups={buildNestedGroups(matched, groupLevels, accounts, symbols)} depth={0} accounts={accounts} symbols={symbols} onSelect={onSelect} />;
+      })()}
     </div>
   );
 }

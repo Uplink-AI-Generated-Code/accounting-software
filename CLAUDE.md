@@ -584,8 +584,21 @@ since they're pure and only need the account list, which is loaded anyway.
   `path + name`. This is deliberately decoupled from `buildNestedGroups`
   (which only nests by the levels actually selected) — searching by
   institution has to work even when the tree on screen is grouped by
-  Type alone. Browsing (no query) still shows the active grouping's own
-  tree; only the *search* path is always-full.
+  Type alone.
+- The sidebar and Overview keep their normal nested-tree/grid layout
+  while searching, rather than flattening to a plain result list: a
+  query first narrows the account list down to matches (via
+  `flattenAllAccounts`/`leafMatchesQuery` above), then that narrowed
+  list is run back through `buildNestedGroups` with the *active*
+  `groupLevels` and rendered with the same `SidebarGroupTree`/
+  `OverviewGroupTree` used for normal browsing — empty groups just drop
+  out on their own. A match on a dimension the active grouping doesn't
+  nest by (e.g. institution while grouped by Type alone) still surfaces
+  the right account, just nested under whatever levels are actually
+  active, not annotated with the dimension it matched on. The account
+  picker (`AccountPicker.jsx`) is the one exception — it's a compact
+  select-one widget, not a browsing view, so its search intentionally
+  stays a flat, path-annotated list for fast keyboard selection.
 
 ## Things intentionally *not* built (don't add without asking)
 

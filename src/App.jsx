@@ -7,7 +7,7 @@ import { accountIdFromHash, setHashForAccount } from "./lib/hash";
 import * as api from "./api";
 import { ModalShell, miniInput } from "./components/ui";
 import { GroupLevelPicker } from "./components/GroupLevelPicker";
-import { SidebarGroupTree, SidebarSearchResults } from "./components/SidebarGroupTree";
+import { SidebarGroupTree } from "./components/SidebarGroupTree";
 import { Overview } from "./components/Overview";
 import { IsaParentView } from "./components/IsaParentView";
 import { AllowanceView } from "./components/AllowanceView";
@@ -355,22 +355,28 @@ export default function App() {
             <p style={{ fontSize: 12.5, color: C.inkFaint, padding: "0 8px", lineHeight: 1.5 }}>No accounts yet. Add one to start keeping books.</p>
           )}
 
-          {sidebarQuery.trim() ? (
-            <SidebarSearchResults
-              leaves={flattenAllAccounts(accounts, accounts, symbols).filter((l) => leafMatchesQuery(l, sidebarQuery))}
-              selectedId={selectedId}
-              onSelect={setSelectedId}
-              accountDisplay={accountDisplay}
-            />
-          ) : (
-            <SidebarGroupTree
-              groups={buildNestedGroups(accounts, settings.groupLevels || ["type"], accounts, symbols)}
-              depth={0}
-              selectedId={selectedId}
-              onSelect={setSelectedId}
-              accountDisplay={accountDisplay}
-            />
-          )}
+          {(() => {
+            // Searching narrows *which* accounts show (matched against all
+            // four dimensions, independent of the active grouping — see
+            // CLAUDE.md), but keeps the same nested grouping layout rather
+            // than flattening to a list: buildNestedGroups naturally drops
+            // any group that ends up with no matching accounts in it.
+            const matched = sidebarQuery.trim()
+              ? flattenAllAccounts(accounts, accounts, symbols).filter((l) => leafMatchesQuery(l, sidebarQuery)).map((l) => l.account)
+              : accounts;
+            if (sidebarQuery.trim() && matched.length === 0) {
+              return <p style={{ fontSize: 12.5, color: C.inkFaint, padding: "0 8px" }}>No accounts match.</p>;
+            }
+            return (
+              <SidebarGroupTree
+                groups={buildNestedGroups(matched, settings.groupLevels || ["type"], accounts, symbols)}
+                depth={0}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                accountDisplay={accountDisplay}
+              />
+            );
+          })()}
         </aside>
 
 
