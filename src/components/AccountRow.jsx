@@ -16,14 +16,16 @@ export function AccountRow({ a, accounts, symbols, onSelect, subtitle }) {
   // Trading currency lives on the Symbol now, not the account — see
   // CLAUDE.md.
   const tradingCurrency = symbols.find((s) => s.ticker === a.symbol)?.tradingCurrency;
-  // `imbalancedLineCount`/`imbalanceValue` come from the backend's
-  // GET /api/accounts (LedgerStateService::imbalanceStatsByAccount()) — a
-  // global, per-line-balance-check mirror of lib/matching.js's
-  // balanceHint(), computed once server-side since it needs every
-  // account's own ledger, not just this one. `imbalanceValue` is a plain
-  // signed sum, not a magnitude, so it can legitimately read 0 even with
-  // imbalancedLineCount > 0 (e.g. two separate unmatched lines, +50 and
-  // -50, that happen to net out) — see CLAUDE.md's "Matching and
+  // `imbalancedLineCount`/`imbalanceIn`/`imbalanceOut` come from the
+  // backend's GET /api/accounts
+  // (LedgerStateService::imbalanceStatsByAccount()) — a global,
+  // per-line-balance-check mirror of lib/matching.js's balanceHint(),
+  // computed once server-side since it needs every account's own ledger,
+  // not just this one. `imbalanceIn`/`imbalanceOut` are kept as two
+  // separate non-negative sums rather than netted into one signed value,
+  // specifically so two canceling unmatched lines (e.g. +50 and -50)
+  // still show up as real, visible imbalance instead of disappearing
+  // into an innocuous-looking 0 — see CLAUDE.md's "Matching and
   // linking".
   const imbalanced = (a.imbalancedLineCount || 0) > 0;
   const imbalanceCurrency = a.type === "investment" ? tradingCurrency : a.currency;
@@ -50,12 +52,14 @@ export function AccountRow({ a, accounts, symbols, onSelect, subtitle }) {
       <span className="ll-mono flex items-center gap-2" style={{ fontSize: 12.5, flexShrink: 0, marginLeft: 12 }}>
         {imbalanced && (
           <span
-            title={`${a.imbalancedLineCount} imbalanced line${a.imbalancedLineCount === 1 ? "" : "s"} — off by ${fmt(a.imbalanceValue || 0, imbalanceCurrency)}`}
-            className="flex items-center gap-1"
-            style={{ color: C.debit, fontSize: 11 }}
+            title={`${a.imbalancedLineCount} imbalanced line${a.imbalancedLineCount === 1 ? "" : "s"}`}
+            className="flex items-center gap-1.5"
+            style={{ fontSize: 11 }}
           >
-            <AlertTriangle size={11} />
-            {fmt(a.imbalanceValue || 0, imbalanceCurrency)} · {a.imbalancedLineCount}
+            <AlertTriangle size={11} color={C.debit} />
+            {a.imbalanceOut > 0 && <span style={{ color: C.debit }}>Out {fmt(a.imbalanceOut, imbalanceCurrency)}</span>}
+            {a.imbalanceIn > 0 && <span style={{ color: C.credit }}>In {fmt(a.imbalanceIn, imbalanceCurrency)}</span>}
+            <span style={{ color: C.inkFaint }}>· {a.imbalancedLineCount}</span>
           </span>
         )}
         {a.type === "isa-parent" ? (

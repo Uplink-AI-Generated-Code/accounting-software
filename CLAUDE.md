@@ -130,8 +130,8 @@ it covers and why); no test suite and no linter on the frontend.
     investment accounts — `costBasis`/`portfolioValue` by walking that
     one account's own lines in the same order the frontend's ledger rows
     use (see "Stock valuation" below), plus `imbalancedLineCount`/
-    `imbalanceValue` when the account has any (see "Matching and
-    linking" below). Called on load and after every mutation
+    `imbalanceIn`/`imbalanceOut` when the account has any (see "Matching
+    and linking" below). Called on load and after every mutation
     (`App.jsx`'s `refreshAccounts()`).
   - `GET /api/accounts/{id}/ledger` (`AccountController::ledger`) — every
     **record** touching one account (see "Data model" below for what a
@@ -473,8 +473,8 @@ line's value against a target, and where each is used.
   standalone record. This is load-bearing behavior, not an edge case:
   unlinking, deleting an account with entries, and repointing a split leg
   all rely on it.
-- **Account-level imbalance stats** (`imbalancedLineCount`/
-  `imbalanceValue`, in `GET /api/accounts`) are a global, precomputed
+- **Account-level imbalance stats** (`imbalancedLineCount`/`imbalanceIn`/
+  `imbalanceOut`, in `GET /api/accounts`) are a global, precomputed
   mirror of `balanceHint()`'s own classification, not something the
   frontend re-derives — `LedgerStateService::imbalanceStatsByAccount()`
   walks every record once (a record's lines can span more than one
@@ -486,14 +486,22 @@ line's value against a target, and where each is used.
   zero within a currency ("unbalanced"); a genuine FX exchange (two
   legs, two currencies, opposite signs) and an empty/all-zero record are
   *not* imbalanced. Every line of an imbalanced record adds to its own
-  account's count and to a plain signed sum (`imbalanceValue`) — **not**
-  a magnitude — so an account can show a nonzero `imbalancedLineCount`
-  with `imbalanceValue: 0` (e.g. two separate unmatched lines, +50 and
-  -50, that happen to net out); don't "fix" that into an absolute-value
-  sum, it's intentional. Both fields are omitted (not `0`) when an
-  account has no imbalanced lines, per the usual null-omission
-  convention. `AccountRow`/`SidebarGroupTree` highlight an imbalanced
-  account with a left border + ⚠ badge (value · count); its own ledger
+  account's count, and to `imbalanceIn` (sum of its positive-valued
+  imbalanced lines) or `imbalanceOut` (sum of the magnitude of its
+  negative-valued ones) — the same sign convention the ledger's own
+  In/Out columns already use (see "Data model" above). **Deliberately
+  two non-negative sums, not one netted signed value** — an account can
+  show a nonzero `imbalancedLineCount` with real, nonzero `imbalanceIn`
+  *and* `imbalanceOut` that happen to cancel (e.g. two separate
+  unmatched lines, +50 and -50); a single net figure would hide that
+  entirely, which is exactly the case this split exists to surface —
+  don't collapse it back into one value. All three fields are omitted
+  (not `0`) when an account has no imbalanced lines, per the usual
+  null-omission convention; `imbalanceIn`/`imbalanceOut` individually
+  can still be `0` while the account has imbalance (e.g. every
+  imbalanced line is an "Out"). `AccountRow`/`SidebarGroupTree`
+  highlight an imbalanced account with a left border + ⚠ badge (Out/In ·
+  count, only whichever of Out/In is actually nonzero); its own ledger
   page (`AccountLedger`/`StockLedger`'s header) shows the same via the
   shared `ImbalanceBadge` in `ui.jsx` — pass it the account's own
   currency, or its Symbol's `tradingCurrency` for an investment account,

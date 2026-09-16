@@ -18,20 +18,22 @@ export function Field({ label, children, style }) {
 // Shown on an account's own detail page (AccountLedger/StockLedger's
 // header) when it has any imbalanced lines — see AccountRow.jsx/
 // CLAUDE.md's "Matching and linking" for what `imbalancedLineCount`/
-// `imbalanceValue` mean and why the value can legitimately read 0
-// alongside a nonzero count. `currency` is the account's own currency for
-// a cash account, or its Symbol's tradingCurrency for an investment
-// account — callers already have that computed for their own balance
-// display, so it's passed in rather than re-derived here.
+// `imbalanceIn`/`imbalanceOut` mean and why In/Out are kept as two
+// separate sums instead of one net value. `currency` is the account's
+// own currency for a cash account, or its Symbol's tradingCurrency for
+// an investment account — callers already have that computed for their
+// own balance display, so it's passed in rather than re-derived here.
 export function ImbalanceBadge({ account, currency }) {
   if (!(account.imbalancedLineCount > 0)) return null;
   return (
     <span
-      className="flex items-center gap-1.5"
+      className="flex items-center gap-2"
       style={{ marginTop: 6, fontSize: 12.5, color: C.debit, background: C.debitBg, padding: "3px 8px", borderRadius: 4, width: "fit-content" }}
     >
       <AlertTriangle size={13} />
-      {account.imbalancedLineCount} imbalanced line{1 === account.imbalancedLineCount ? "" : "s"} · off by {fmt(account.imbalanceValue || 0, currency)}
+      {account.imbalancedLineCount} imbalanced line{1 === account.imbalancedLineCount ? "" : "s"}
+      {account.imbalanceOut > 0 && <span>· Out {fmt(account.imbalanceOut, currency)}</span>}
+      {account.imbalanceIn > 0 && <span>· In {fmt(account.imbalanceIn, currency)}</span>}
     </span>
   );
 }

@@ -386,6 +386,7 @@ export default function App() {
                 selectedId={selectedId}
                 onSelect={setSelectedId}
                 accountDisplay={accountDisplay}
+                symbols={symbols}
               />
             );
           })()}

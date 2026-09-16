@@ -51,7 +51,7 @@ class LedgerStateService
      * Mirrors src/lib/theme.js's CONTRA_TYPES — only used here to flip a
      * line's sign the same way lib/matching.js's balanceHint() does before
      * summing a record's lines, so "imbalanced" agrees with what the
-     * ledger-row editor already tells the user. See imbalanceStatsFor().
+     * ledger-row editor already tells the user. See imbalanceStatsByAccount().
      */
     private const CONTRA_TYPES = ['liability', 'equity', 'income', 'isa-income'];
 
@@ -99,7 +99,8 @@ class LedgerStateService
             }
             if (isset($imbalance[$a->getId()])) {
                 $arr['imbalancedLineCount'] = $imbalance[$a->getId()]['count'];
-                $arr['imbalanceValue'] = $imbalance[$a->getId()]['value'];
+                $arr['imbalanceIn'] = $imbalance[$a->getId()]['in'];
+                $arr['imbalanceOut'] = $imbalance[$a->getId()]['out'];
             }
 
             return $arr;
@@ -171,17 +172,21 @@ class LedgerStateService
      * zero within each currency ("unbalanced"); a genuine two-currency
      * exchange ("fx", opposite-signed legs) and an empty/all-zero record
      * are *not* imbalanced. Every line of an imbalanced record counts
-     * toward its own account's stats — an account can show a nonzero
-     * `imbalancedLineCount` with an `imbalanceValue` of 0 (e.g. two
-     * separate unmatched standalone lines, +50 and -50, that happen to
-     * net out) since the value is a plain sum, not an absolute-value
-     * count. This has to be computed globally in one pass (a record's
+     * toward its own account's stats, split into `in` (sum of its
+     * positive-valued imbalanced lines) and `out` (sum of the magnitude
+     * of its negative-valued ones) — the same sign convention the
+     * ledger's own In/Out columns already use (see CLAUDE.md's "Data
+     * model": positive = increase, negative = decrease). Keeping these
+     * separate rather than netting them into one signed value is
+     * deliberate — an account can have a large `in` and a large `out`
+     * that happen to cancel, which a single net figure would hide
+     * entirely. This has to be computed globally in one pass (a record's
      * lines can span more than one account), not per-account, since
      * GET /api/accounts is the one place the frontend gets this without
      * loading every account's own ledger — see CLAUDE.md's "The frontend
      * is a per-account editor" and "Matching and linking".
      *
-     * @return array<string, array{count: int, value: int}>
+     * @return array<string, array{count: int, in: int, out: int}>
      */
     private function imbalanceStatsByAccount(): array
     {
@@ -202,9 +207,9 @@ class LedgerStateService
     }
 
     /**
-     * @param array<int, array<string, mixed>>        $lines
-     * @param array<string, array<string, mixed>>     $accountsById
-     * @param array<string, array{count: int, value: int}> $stats
+     * @param array<int, array<string, mixed>>              $lines
+     * @param array<string, array<string, mixed>>           $accountsById
+     * @param array<string, array{count: int, in: int, out: int}> $stats
      */
     private function accumulateImbalance(array $lines, array $accountsById, array &$stats): void
     {
@@ -234,9 +239,13 @@ class LedgerStateService
         }
 
         foreach ($enriched as $e) {
-            $stats[$e['accountId']] ??= ['count' => 0, 'value' => 0];
+            $stats[$e['accountId']] ??= ['count' => 0, 'in' => 0, 'out' => 0];
             ++$stats[$e['accountId']]['count'];
-            $stats[$e['accountId']]['value'] += $e['value'];
+            if ($e['value'] > 0) {
+                $stats[$e['accountId']]['in'] += $e['value'];
+            } else {
+                $stats[$e['accountId']]['out'] += -$e['value'];
+            }
         }
     }
 
