@@ -279,7 +279,7 @@ export default function App() {
   const selected = accounts.find((a) => a.id === selectedId) || null;
 
   return (
-    <div style={{ background: C.paper, color: C.ink, minHeight: "100%", fontFamily: "'Inter', sans-serif" }} className="w-full min-h-full">
+    <div style={{ background: C.paper, color: C.ink, height: "100%", display: "flex", flexDirection: "column", fontFamily: "'Inter', sans-serif" }} className="w-full">
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
         .ll-serif { font-family: 'Fraunces', serif; }
@@ -313,8 +313,8 @@ export default function App() {
         </div>
       )}
 
-      <div className="flex" style={{ minHeight: "calc(100vh - 73px)" }}>
-        <aside className="shrink-0" style={{ width: 260, borderRight: `1px solid ${C.line}`, padding: "18px 12px" }}>
+      <div className="flex" style={{ flex: 1, minHeight: 0 }}>
+        <aside className="shrink-0" style={{ width: 260, borderRight: `1px solid ${C.line}`, padding: "18px 12px", overflowY: "auto" }}>
           <button onClick={() => setSelectedId(null)} className="w-full text-left px-2 py-1.5 rounded mb-1" style={{ background: selectedId === null && !showAllowance ? C.paperDim : "transparent", fontSize: 13, fontWeight: 600, color: C.inkSoft }}>
             Overview
           </button>
@@ -350,7 +350,7 @@ export default function App() {
         </aside>
 
 
-        <main className="flex-1 p-6">
+        <main className="flex-1 p-6" style={{ overflowY: "auto" }}>
           {showAllowance ? (
             <AllowanceView accounts={accounts} settings={settings} onSaveSettings={saveSettings} onSelect={setSelectedId} />
           ) : selected ? (
