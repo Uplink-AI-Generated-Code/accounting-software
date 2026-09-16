@@ -47,14 +47,6 @@ use Doctrine\ORM\EntityManagerInterface;
  */
 class LedgerStateService
 {
-    /**
-     * Mirrors src/lib/theme.js's CONTRA_TYPES — only used here to flip a
-     * line's sign the same way lib/matching.js's balanceHint() does before
-     * summing a record's lines, so "imbalanced" agrees with what the
-     * ledger-row editor already tells the user. See imbalanceStatsByAccount().
-     */
-    private const CONTRA_TYPES = ['liability', 'equity', 'income', 'isa-income'];
-
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly SettingsRepository $settingsRepository,
@@ -287,8 +279,7 @@ class LedgerStateService
     {
         $byCur = [];
         foreach ($enriched as $e) {
-            $trueSigned = \in_array($e['type'], self::CONTRA_TYPES, true) ? -$e['value'] : $e['value'];
-            $byCur[$e['currency']] = ($byCur[$e['currency']] ?? 0) + $trueSigned;
+            $byCur[$e['currency']] = ($byCur[$e['currency']] ?? 0) + $e['value'];
         }
         $curs = array_keys($byCur);
 

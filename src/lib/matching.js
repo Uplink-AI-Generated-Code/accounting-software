@@ -1,4 +1,3 @@
-import { CONTRA_TYPES } from "./theme";
 import { fmt, fmtUnits } from "./format";
 
 // getComparableAmount/getDirectComparableAmount — the mirrored-vs-natural
@@ -63,8 +62,7 @@ export function balanceHint(lines, accounts) {
 
   const byCur = {};
   enriched.forEach((x) => {
-    const trueSigned = x.acc && CONTRA_TYPES.has(x.acc.type) ? -x.value : x.value;
-    byCur[x.currency] = (byCur[x.currency] || 0) + trueSigned;
+    byCur[x.currency] = (byCur[x.currency] || 0) + x.value;
   });
   const curs = Object.keys(byCur);
 
