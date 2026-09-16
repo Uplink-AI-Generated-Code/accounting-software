@@ -373,6 +373,10 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
           const inn = r.line.amount > 0 ? r.line.amount : 0;
           const hint = balanceHint(r.record.lines, accounts);
           const unbalanced = hint.type === "unbalanced";
+          const single = hint.type === "single";
+          const iconColor = unbalanced ? C.debit : C.gold;
+          const flagBg = unbalanced ? C.debitBg : single ? C.goldBg : "transparent";
+          const flagBorder = unbalanced ? C.debit : single ? C.gold : "transparent";
           const hasAbove = idx > 0 && rows[idx - 1].line.date === r.line.date;
           const hasBelow = idx < rows.length - 1 && rows[idx + 1].line.date === r.line.date;
 
@@ -503,13 +507,21 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
               ref={(el) => (rowRefs.current[key] = el)}
               onClick={() => (draft ? null : startEdit(r.record))}
               className="grid ll-row cursor-pointer"
-              style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 60px", fontSize: 13.5, padding: "10px 16px", borderBottom: `1px solid ${C.lineSoft}`, alignItems: "center" }}
+              style={{
+                gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 60px",
+                fontSize: 13.5,
+                padding: "10px 16px 10px 13px",
+                borderBottom: `1px solid ${C.lineSoft}`,
+                borderLeft: `3px solid ${flagBorder}`,
+                background: flagBg,
+                alignItems: "center",
+              }}
             >
               <div style={{ color: C.inkSoft, fontSize: 12.5 }}>{fmtDate(r.line.date)}</div>
               <div className="flex items-center gap-2">
                 <span style={{ color: unbalanced ? C.debit : C.ink }}>{r.line.description || <span style={{ color: C.inkFaint }}>—</span>}</span>
                 {hint.type !== "balanced" && hint.type !== "empty" && (
-                  <span title={hint.message}><AlertTriangle size={12} color={unbalanced ? C.debit : C.gold} /></span>
+                  <span title={hint.message}><AlertTriangle size={12} color={iconColor} /></span>
                 )}
               </div>
               <div style={{ color: C.inkFaint, fontSize: 12.5, display: "flex", alignItems: "center", gap: 4 }}>

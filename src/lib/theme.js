@@ -12,6 +12,7 @@ export const C = {
   inkFaint: "#9A9480",
   gold: "#9C7A2E",
   goldDim: "#C8AD6C",
+  goldBg: "#F1E9D3",
   debit: "#8A3B2B",
   debitBg: "#F3E1D8",
   credit: "#2E5F52",
