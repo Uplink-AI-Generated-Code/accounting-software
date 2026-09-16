@@ -2,10 +2,11 @@ import { C, ISA_KINDS } from "../lib/theme";
 
 // The flat equivalent of SidebarGroupTree, shown instead of the tree while
 // a search query is active — `leaves` is already filtered
-// (lib/grouping.js's flattenGroupLeaves + leafMatchesQuery), each carrying
-// its full grouping path so a match against, say, an institution or
+// (lib/grouping.js's flattenAllAccounts + leafMatchesQuery), each carrying
+// all four grouping dimensions so a match against, say, an institution or
 // subtype name is still legible even though the tree itself is collapsed
-// away.
+// away, and even when that dimension isn't part of the currently active
+// grouping.
 export function SidebarSearchResults({ leaves, selectedId, onSelect, accountDisplay }) {
   if (leaves.length === 0) {
     return <p style={{ fontSize: 12.5, color: C.inkFaint, padding: "4px 8px" }}>No accounts match.</p>;

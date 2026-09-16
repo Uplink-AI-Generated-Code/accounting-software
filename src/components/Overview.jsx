@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Plus, Wallet, Search, X } from "lucide-react";
 import { C } from "../lib/theme";
 import { fmt } from "../lib/format";
-import { buildNestedGroups, flattenGroupLeaves, leafMatchesQuery } from "../lib/grouping";
+import { buildNestedGroups, flattenAllAccounts, leafMatchesQuery } from "../lib/grouping";
 import { GroupLevelPicker } from "./GroupLevelPicker";
 import { OverviewGroupTree } from "./OverviewGroupTree";
 import { AccountRow } from "./AccountRow";
@@ -62,7 +62,7 @@ export function Overview({ accounts, symbols, settings, onSaveSettings, onSaveGr
 
       {query.trim() ? (
         <OverviewSearchResults
-          leaves={flattenGroupLeaves(buildNestedGroups(accounts, groupLevels, accounts, symbols)).filter((l) => leafMatchesQuery(l, query))}
+          leaves={flattenAllAccounts(accounts, accounts, symbols).filter((l) => leafMatchesQuery(l, query))}
           accounts={accounts}
           symbols={symbols}
           onSelect={onSelect}

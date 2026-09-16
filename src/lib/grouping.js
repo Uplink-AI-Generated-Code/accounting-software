@@ -61,7 +61,7 @@ export function bucketBy(subset, dim, allAccounts, symbols = []) {
   return keys.map((k) => ({ key: k, label: k, items: byInst[k] }));
 }
 
-// Recursively buckets accounts through up to three chosen dimensions —
+// Recursively buckets accounts through up to four chosen dimensions —
 // levels like ["institution", "currency"] produce one institution section
 // per top level, each split into currency sub-sections underneath. Every
 // node (leaf or not) keeps its full flattened `items` list, so a subtotal
@@ -79,23 +79,22 @@ export function buildNestedGroups(subset, levels, allAccounts, symbols = []) {
   }));
 }
 
-// Flattens a nested group tree (buildNestedGroups' output) into one entry
-// per account, each carrying the labels of every ancestor group it sits
-// under — the "path" free-text account search matches against (the
-// account picker in otherLines.jsx, and the sidebar/Overview searches),
-// so a query can hit any level of the *current* grouping (institution,
-// subtype, currency, ...), not just the account's own name.
-export function flattenGroupLeaves(nodes, path = []) {
-  const out = [];
-  nodes.forEach((node) => {
-    const nextPath = [...path, node.label];
-    if (node.leaf) {
-      node.items.forEach((a) => out.push({ account: a, path: nextPath }));
-    } else {
-      out.push(...flattenGroupLeaves(node.children, nextPath));
-    }
+// Flattens the account list into one search entry per account, each
+// carrying all four grouping dimensions (Type, Institution, Subtype,
+// Currency) as its "path", regardless of which ones the currently active
+// grouping actually nests by — so a free-text query (the account picker
+// in otherLines.jsx, and the sidebar/Overview searches) can match on e.g.
+// institution even when the tree on screen is grouped by Type alone.
+// Browsing the tree itself still follows the active grouping
+// (buildNestedGroups) — this is only for the free-text match.
+export function flattenAllAccounts(accounts, allAccounts, symbols = []) {
+  return accounts.map((a) => {
+    const typeLabel = TYPES.find((t) => t.key === a.type)?.label || a.type;
+    const institution = institutionOf(a, allAccounts) || "No institution";
+    const subtype = a.subtype || "No subtype";
+    const currency = (a.type === "investment" ? symbols.find((s) => s.ticker === a.symbol)?.tradingCurrency : a.currency) || "—";
+    return { account: a, path: [typeLabel, institution, subtype, currency] };
   });
-  return out;
 }
 
 // Every whitespace-separated search word must appear somewhere in the
@@ -114,7 +113,7 @@ export function subtotalsForItems(items) {
   return sub;
 }
 
-// A compact cascading picker for up to three nested grouping levels — the
+// A compact cascading picker for up to four nested grouping levels — the
 // first is always active (defaulting to Type); each subsequent one offers
 // "—" to stop nesting there, plus whichever dimensions aren't already
 // used earlier in the chain. Changing a level resets anything after it,

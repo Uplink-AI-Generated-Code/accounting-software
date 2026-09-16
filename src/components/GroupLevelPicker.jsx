@@ -14,8 +14,8 @@ export function GroupLevelPicker({ levels, onChange, saved, onSave, onRemove }) 
   const alreadySaved = (saved || []).some((s) => JSON.stringify(s.levels) === JSON.stringify(levels));
   return (
     <div className="flex items-center gap-2 flex-wrap">
-      <div className="flex items-center gap-1">
-        {[0, 1, 2].map((i) => {
+      <div className="flex items-center gap-1 flex-wrap" style={{ rowGap: 4 }}>
+        {GROUP_DIMENSIONS.map((_, i) => {
           if (i > 0 && !levels[i - 1]) return null;
           const used = levels.slice(0, i);
           const options = GROUP_DIMENSIONS.filter((d) => !used.includes(d.key));

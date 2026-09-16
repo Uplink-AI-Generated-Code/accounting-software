@@ -561,7 +561,7 @@ since they're pure and only need the account list, which is loaded anyway.
   top-level navigation action, route it through `attemptNavigation`
   rather than calling `setSelectedId`/state setters directly, or it will
   silently bypass the guard.
-- Grouping (sidebar + Overview) is a cascading 1–3 level picker over
+- Grouping (sidebar + Overview) is a cascading 1–4 level picker over
   {Type, Institution, Subtype, Currency} with savable presets in
   `settings.savedGroupings`. `buildNestedGroups` / `bucketBy` are generic
   over the dimension — extend those rather than writing a new grouping
@@ -574,6 +574,18 @@ since they're pure and only need the account list, which is loaded anyway.
   subaccount does **not** inherit `subtype` from its wrapper — it's a
   property of the individual product, not something a wrapper has one of
   on its subaccounts' behalf.
+- Every account search (the sidebar, Overview, and the linked-account
+  picker in `otherLines.jsx`) is free text over all four grouping
+  dimensions **plus the account name**, matched independently of
+  whatever grouping is currently active — `lib/grouping.js`'s
+  `flattenAllAccounts()` always builds the full {Type, Institution,
+  Subtype, Currency} path for every account, and `leafMatchesQuery()`
+  does a whitespace-split, order-independent AND match against
+  `path + name`. This is deliberately decoupled from `buildNestedGroups`
+  (which only nests by the levels actually selected) — searching by
+  institution has to work even when the tree on screen is grouped by
+  Type alone. Browsing (no query) still shows the active grouping's own
+  tree; only the *search* path is always-full.
 
 ## Things intentionally *not* built (don't add without asking)
 

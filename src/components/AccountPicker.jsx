@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, X } from "lucide-react";
 import { C } from "../lib/theme";
-import { buildNestedGroups, flattenGroupLeaves, leafMatchesQuery } from "../lib/grouping";
+import { buildNestedGroups, flattenAllAccounts, leafMatchesQuery } from "../lib/grouping";
 import { miniInput } from "./ui";
 
 function accountLabel(a) {
@@ -38,12 +38,12 @@ function GroupNodeList({ nodes, depth, onSelect }) {
 // Replaces a plain `<select>` of every account with a combobox that, when
 // idle, browses the *same* nested tree the sidebar/Overview currently show
 // (via `groupLevels` + `buildNestedGroups` — see CLAUDE.md's "UI
-// conventions"), and when the user types, flattens to a free-text search
-// across every level of that grouping at once (institution, subtype,
-// currency, ...), not just the account name. `accounts` is the already-
-// filtered candidate list (e.g. minus the ledger's own account);
-// `allAccounts` is the full list, needed by `buildNestedGroups` to resolve
-// an ISA subaccount's inherited institution correctly.
+// conventions"), and when the user types, searches across all four
+// dimensions (Type, Institution, Subtype, Currency) at once regardless of
+// which ones the active grouping actually nests by — see
+// `flattenAllAccounts`. `accounts` is the already-filtered candidate list
+// (e.g. minus the ledger's own account); `allAccounts` is the full list,
+// needed to resolve an ISA subaccount's inherited institution correctly.
 export function AccountPicker({ accounts, allAccounts, symbols, groupLevels, value, onChange, placeholder = "Select account…" }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -63,7 +63,7 @@ export function AccountPicker({ accounts, allAccounts, symbols, groupLevels, val
 
   const selected = accounts.find((a) => a.id === value) || allAccounts.find((a) => a.id === value);
   const tree = useMemo(() => buildNestedGroups(accounts, groupLevels, allAccounts, symbols), [accounts, groupLevels, allAccounts, symbols]);
-  const leaves = useMemo(() => (query.trim() ? flattenGroupLeaves(tree) : null), [tree, query]);
+  const leaves = useMemo(() => (query.trim() ? flattenAllAccounts(accounts, allAccounts, symbols) : null), [accounts, allAccounts, symbols, query]);
   const filtered = leaves ? leaves.filter((l) => leafMatchesQuery(l, query)) : null;
 
   function select(id) {

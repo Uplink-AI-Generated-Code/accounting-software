@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Plus, AlertTriangle, BookOpen, X, Search } from "lucide-react";
 import { C } from "./lib/theme";
 import { uid, fmt, fmtUnits, setCurrencyScales, setSymbolScales } from "./lib/format";
-import { buildNestedGroups, flattenGroupLeaves, leafMatchesQuery } from "./lib/grouping";
+import { buildNestedGroups, flattenAllAccounts, leafMatchesQuery } from "./lib/grouping";
 import { accountIdFromHash, setHashForAccount } from "./lib/hash";
 import * as api from "./api";
 import { ModalShell, miniInput } from "./components/ui";
@@ -357,7 +357,7 @@ export default function App() {
 
           {sidebarQuery.trim() ? (
             <SidebarSearchResults
-              leaves={flattenGroupLeaves(buildNestedGroups(accounts, settings.groupLevels || ["type"], accounts, symbols)).filter((l) => leafMatchesQuery(l, sidebarQuery))}
+              leaves={flattenAllAccounts(accounts, accounts, symbols).filter((l) => leafMatchesQuery(l, sidebarQuery))}
               selectedId={selectedId}
               onSelect={setSelectedId}
               accountDisplay={accountDisplay}
