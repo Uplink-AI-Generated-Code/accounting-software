@@ -286,6 +286,7 @@ export default function App() {
         .ll-serif { font-family: 'Fraunces', serif; }
         .ll-mono { font-family: 'IBM Plex Mono', monospace; font-variant-numeric: tabular-nums; }
         .ll-row:hover { background-color: ${C.paperDim}; }
+        .ll-rowlist > button:last-child { border-bottom: none; }
         input, select { font-family: inherit; }
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-thumb { background: ${C.line}; border-radius: 4px; }

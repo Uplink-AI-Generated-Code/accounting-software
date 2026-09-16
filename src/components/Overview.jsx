@@ -5,7 +5,7 @@ import { fmt } from "../lib/format";
 import { buildNestedGroups, flattenGroupLeaves, leafMatchesQuery } from "../lib/grouping";
 import { GroupLevelPicker } from "./GroupLevelPicker";
 import { OverviewGroupTree } from "./OverviewGroupTree";
-import { AccountCard } from "./AccountCard";
+import { AccountRow } from "./AccountRow";
 import { miniInput } from "./ui";
 
 /* ---------------------------------------------------------
@@ -84,12 +84,9 @@ function OverviewSearchResults({ leaves, accounts, symbols, onSelect }) {
     return <p style={{ fontSize: 13, color: C.inkFaint }}>No accounts match.</p>;
   }
   return (
-    <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
+    <div className="ll-rowlist flex flex-col" style={{ border: `1px solid ${C.line}`, borderRadius: 6, background: C.card }}>
       {leaves.map(({ account: a, path }) => (
-        <div key={a.id} className="flex flex-col">
-          <AccountCard a={a} accounts={accounts} symbols={symbols} onSelect={onSelect} />
-          <div style={{ fontSize: 10.5, color: C.inkFaint, marginTop: 4, paddingLeft: 2 }}>{path.join(" › ")}</div>
-        </div>
+        <AccountRow key={a.id} a={a} accounts={accounts} symbols={symbols} onSelect={onSelect} subtitle={path.join(" › ")} />
       ))}
     </div>
   );

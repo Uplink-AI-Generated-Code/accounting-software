@@ -1,7 +1,7 @@
 import { C } from "../lib/theme";
 import { fmt } from "../lib/format";
 import { subtotalsForItems } from "../lib/grouping";
-import { AccountCard } from "./AccountCard";
+import { AccountRow } from "./AccountRow";
 
 // Renders nested groups on the Overview page — a subtotal line at every
 // non-Type level, and a card grid once a branch reaches its leaf.
@@ -17,8 +17,8 @@ export function OverviewGroupTree({ groups, depth, accounts, symbols, onSelect }
           )}
         </div>
         {g.leaf ? (
-          <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
-            {g.items.map((a) => <AccountCard key={a.id} a={a} accounts={accounts} symbols={symbols} onSelect={onSelect} />)}
+          <div className="ll-rowlist flex flex-col" style={{ border: `1px solid ${C.line}`, borderRadius: 6, background: C.card }}>
+            {g.items.map((a) => <AccountRow key={a.id} a={a} accounts={accounts} symbols={symbols} onSelect={onSelect} />)}
           </div>
         ) : (
           <OverviewGroupTree groups={g.children} depth={depth + 1} accounts={accounts} symbols={symbols} onSelect={onSelect} />

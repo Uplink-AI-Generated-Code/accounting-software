@@ -56,7 +56,7 @@ because they're small or tightly coupled:
   and `useMatchCandidates.js` (debounced match search for the row currently
   being edited). `charts.jsx` holds all the Recharts wrappers together
   since they share tooltip/series-hook plumbing. `Overview.jsx`,
-  `OverviewGroupTree.jsx`, `SidebarGroupTree.jsx`, `AccountCard.jsx`,
+  `OverviewGroupTree.jsx`, `SidebarGroupTree.jsx`, `AccountRow.jsx`,
   `GroupLevelPicker.jsx` are the grouping/browsing UI — all read
   `balance`/`costBasis`/`portfolioValue` straight off each account object
   rather than from a separately-computed lookup map. `IsaParentView.jsx`,
@@ -419,7 +419,7 @@ integers in both directions, JSON like `"amount": 2000`.
   called once by `App.jsx` right after fetching `/api/currencies`/
   `/api/symbols`, populating a small module-level lookup `fmt`/`fmtUnits`
   read from internally. This was a deliberate choice over threading a
-  `scale` argument through every single display call site (`AccountCard`,
+  `scale` argument through every single display call site (`AccountRow`,
   `Overview`, `charts.jsx`, ...) — a lookup by code/ticker is simpler than
   a prop-drilled parameter for something that's genuinely global,
   read-only, loaded-once data. If a value's scale genuinely isn't in the
