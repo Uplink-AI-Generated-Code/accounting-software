@@ -39,6 +39,7 @@ export default function App() {
   const [storageOK, setStorageOK] = useState(true);
   const [selectedId, setSelectedIdRaw] = useState(null);
   const [sidebarQuery, setSidebarQuery] = useState("");
+  const [sidebarImbalancedOnly, setSidebarImbalancedOnly] = useState(false);
   const [showAllowance, setShowAllowance] = useState(false);
   const [accountForm, setAccountForm] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null); // { id, entryCount, name }
@@ -339,7 +340,7 @@ export default function App() {
           </div>
 
           {accounts.length > 0 && (
-            <div className="flex items-center gap-1.5 mb-3" style={{ ...miniInput, padding: "5px 8px" }}>
+            <div className="flex items-center gap-1.5 mb-2" style={{ ...miniInput, padding: "5px 8px" }}>
               <Search size={13} color={C.inkFaint} />
               <input
                 value={sidebarQuery}
@@ -351,6 +352,14 @@ export default function App() {
             </div>
           )}
 
+          {accounts.some((a) => a.imbalancedLineCount > 0) && (
+            <label className="flex items-center gap-1.5 mb-3" style={{ fontSize: 11.5, color: sidebarImbalancedOnly ? C.debit : C.inkSoft, padding: "0 2px", cursor: "pointer" }}>
+              <input type="checkbox" checked={sidebarImbalancedOnly} onChange={(e) => setSidebarImbalancedOnly(e.target.checked)} />
+              <AlertTriangle size={12} />
+              Imbalanced only ({accounts.filter((a) => a.imbalancedLineCount > 0).length})
+            </label>
+          )}
+
           {loaded && accounts.length === 0 && (
             <p style={{ fontSize: 12.5, color: C.inkFaint, padding: "0 8px", lineHeight: 1.5 }}>No accounts yet. Add one to start keeping books.</p>
           )}
@@ -360,11 +369,14 @@ export default function App() {
             // four dimensions, independent of the active grouping — see
             // CLAUDE.md), but keeps the same nested grouping layout rather
             // than flattening to a list: buildNestedGroups naturally drops
-            // any group that ends up with no matching accounts in it.
-            const matched = sidebarQuery.trim()
+            // any group that ends up with no matching accounts in it. The
+            // "imbalanced only" toggle narrows the same way, and combines
+            // with an active search.
+            let matched = sidebarQuery.trim()
               ? flattenAllAccounts(accounts, accounts, symbols).filter((l) => leafMatchesQuery(l, sidebarQuery)).map((l) => l.account)
               : accounts;
-            if (sidebarQuery.trim() && matched.length === 0) {
+            if (sidebarImbalancedOnly) matched = matched.filter((a) => a.imbalancedLineCount > 0);
+            if ((sidebarQuery.trim() || sidebarImbalancedOnly) && matched.length === 0) {
               return <p style={{ fontSize: 12.5, color: C.inkFaint, padding: "0 8px" }}>No accounts match.</p>;
             }
             return (

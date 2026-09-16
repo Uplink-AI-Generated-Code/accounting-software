@@ -12,7 +12,7 @@ import { useAccountLedger } from "./useAccountLedger";
 import { useMatchCandidates } from "./useMatchCandidates";
 import { useLedgerRowAnimation } from "./useLedgerRowAnimation";
 import { UnitsChart } from "./charts";
-import { iconBtn, miniInput } from "./ui";
+import { iconBtn, miniInput, ImbalanceBadge } from "./ui";
 
 /* ---------------------------------------------------------
    Stock Ledger — one account, one security. Trades are units against a
@@ -302,6 +302,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
             {avgCost !== null && <span style={{ fontSize: 13, color: C.inkFaint, marginLeft: 10 }}>avg {fmt(avgCost, tradingCurrency)}/unit</span>}
           </div>
           <div style={{ fontSize: 12.5, color: C.inkFaint, marginTop: 2 }}>Cost basis {fmt(costBasis, tradingCurrency)}</div>
+          <ImbalanceBadge account={account} currency={tradingCurrency} />
         </div>
         <div className="flex gap-2">
           <div className="flex rounded overflow-hidden" style={{ border: `1px solid ${C.line}` }}>

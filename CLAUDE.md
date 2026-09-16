@@ -129,8 +129,10 @@ it covers and why); no test suite and no linter on the frontend.
     account's `balance` (a SQL `SUM`) and `entryCount`, plus — for
     investment accounts — `costBasis`/`portfolioValue` by walking that
     one account's own lines in the same order the frontend's ledger rows
-    use (see "Stock valuation" below). Called on load and after every
-    mutation (`App.jsx`'s `refreshAccounts()`).
+    use (see "Stock valuation" below), plus `imbalancedLineCount`/
+    `imbalanceValue` when the account has any (see "Matching and
+    linking" below). Called on load and after every mutation
+    (`App.jsx`'s `refreshAccounts()`).
   - `GET /api/accounts/{id}/ledger` (`AccountController::ledger`) — every
     **record** touching one account (see "Data model" below for what a
     record is), complete with *all* of that record's lines (not just this
@@ -471,6 +473,36 @@ line's value against a target, and where each is used.
   standalone record. This is load-bearing behavior, not an edge case:
   unlinking, deleting an account with entries, and repointing a split leg
   all rely on it.
+- **Account-level imbalance stats** (`imbalancedLineCount`/
+  `imbalanceValue`, in `GET /api/accounts`) are a global, precomputed
+  mirror of `balanceHint()`'s own classification, not something the
+  frontend re-derives — `LedgerStateService::imbalanceStatsByAccount()`
+  walks every record once (a record's lines can span more than one
+  account, so this can't be done per-account without loading every
+  account's own ledger, which is exactly what the always-loaded account
+  list exists to avoid — see "The frontend is a per-account editor"
+  above). A record is imbalanced under the same rule `balanceHint()`
+  uses: a lone unmatched line ("single"), or lines that don't net to
+  zero within a currency ("unbalanced"); a genuine FX exchange (two
+  legs, two currencies, opposite signs) and an empty/all-zero record are
+  *not* imbalanced. Every line of an imbalanced record adds to its own
+  account's count and to a plain signed sum (`imbalanceValue`) — **not**
+  a magnitude — so an account can show a nonzero `imbalancedLineCount`
+  with `imbalanceValue: 0` (e.g. two separate unmatched lines, +50 and
+  -50, that happen to net out); don't "fix" that into an absolute-value
+  sum, it's intentional. Both fields are omitted (not `0`) when an
+  account has no imbalanced lines, per the usual null-omission
+  convention. `AccountRow`/`SidebarGroupTree` highlight an imbalanced
+  account with a left border + ⚠ badge (value · count); its own ledger
+  page (`AccountLedger`/`StockLedger`'s header) shows the same via the
+  shared `ImbalanceBadge` in `ui.jsx` — pass it the account's own
+  currency, or its Symbol's `tradingCurrency` for an investment account,
+  same as the header's own balance display already does. The sidebar and
+  Overview both offer an "Imbalanced only" checkbox that composes with
+  an active search the same way (narrow first, then rebuild the nested
+  grouping from what's left — see the search behavior above). Keep the
+  PHP port and `lib/matching.js`'s `balanceHint()`/`lineBalanceValue()`
+  in agreement if you touch either.
 
 ## ISA allowance engine
 

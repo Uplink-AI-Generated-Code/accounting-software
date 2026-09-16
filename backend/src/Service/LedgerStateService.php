@@ -47,6 +47,14 @@ use Doctrine\ORM\EntityManagerInterface;
  */
 class LedgerStateService
 {
+    /**
+     * Mirrors src/lib/theme.js's CONTRA_TYPES — only used here to flip a
+     * line's sign the same way lib/matching.js's balanceHint() does before
+     * summing a record's lines, so "imbalanced" agrees with what the
+     * ledger-row editor already tells the user. See imbalanceStatsFor().
+     */
+    private const CONTRA_TYPES = ['liability', 'equity', 'income', 'isa-income'];
+
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly SettingsRepository $settingsRepository,
@@ -78,8 +86,9 @@ class LedgerStateService
     public function accountsWithStats(): array
     {
         $accounts = $this->em->getRepository(Account::class)->findAll();
+        $imbalance = $this->imbalanceStatsByAccount();
 
-        return array_map(function (Account $a) {
+        return array_map(function (Account $a) use ($imbalance) {
             $arr = $this->accountToArray($a);
             $arr['balance'] = $this->balanceFor($a);
             $arr['entryCount'] = $this->entryCountFor($a);
@@ -87,6 +96,10 @@ class LedgerStateService
                 ['cost' => $cost, 'value' => $value] = $this->stockStatsFor($a);
                 $arr['costBasis'] = $cost;
                 $arr['portfolioValue'] = $value;
+            }
+            if (isset($imbalance[$a->getId()])) {
+                $arr['imbalancedLineCount'] = $imbalance[$a->getId()]['count'];
+                $arr['imbalanceValue'] = $imbalance[$a->getId()]['value'];
             }
 
             return $arr;
@@ -149,6 +162,143 @@ class LedgerStateService
             'SELECT COUNT(*) FROM line WHERE account_id = ?',
             [$a->getId()]
         );
+    }
+
+    /**
+     * "Imbalanced" mirrors lib/matching.js's balanceHint() exactly — a
+     * record (linked Transaction or standalone Line) is imbalanced if it's
+     * a lone unmatched line ("single"), or its lines' values don't net to
+     * zero within each currency ("unbalanced"); a genuine two-currency
+     * exchange ("fx", opposite-signed legs) and an empty/all-zero record
+     * are *not* imbalanced. Every line of an imbalanced record counts
+     * toward its own account's stats — an account can show a nonzero
+     * `imbalancedLineCount` with an `imbalanceValue` of 0 (e.g. two
+     * separate unmatched standalone lines, +50 and -50, that happen to
+     * net out) since the value is a plain sum, not an absolute-value
+     * count. This has to be computed globally in one pass (a record's
+     * lines can span more than one account), not per-account, since
+     * GET /api/accounts is the one place the frontend gets this without
+     * loading every account's own ledger — see CLAUDE.md's "The frontend
+     * is a per-account editor" and "Matching and linking".
+     *
+     * @return array<string, array{count: int, value: int}>
+     */
+    private function imbalanceStatsByAccount(): array
+    {
+        $accountsById = [];
+        foreach ($this->em->getRepository(Account::class)->findAll() as $a) {
+            $accountsById[$a->getId()] = $this->accountToArray($a);
+        }
+
+        $stats = [];
+        foreach ($this->em->getRepository(Transaction::class)->findAll() as $t) {
+            $this->accumulateImbalance(array_map($this->lineToArray(...), $t->getLines()->toArray()), $accountsById, $stats);
+        }
+        foreach ($this->em->getRepository(Line::class)->findBy(['transaction' => null]) as $l) {
+            $this->accumulateImbalance([$this->lineToArray($l)], $accountsById, $stats);
+        }
+
+        return $stats;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>>        $lines
+     * @param array<string, array<string, mixed>>     $accountsById
+     * @param array<string, array{count: int, value: int}> $stats
+     */
+    private function accumulateImbalance(array $lines, array $accountsById, array &$stats): void
+    {
+        $enriched = [];
+        foreach ($lines as $line) {
+            $accId = $line['accountId'] ?? null;
+            if (!$accId || !isset($accountsById[$accId])) {
+                continue;
+            }
+            $acc = $accountsById[$accId];
+            $bv = $this->lineBalanceValue($line, $acc);
+            if (null === $bv || 0 === $bv['value']) {
+                continue;
+            }
+            $enriched[] = ['accountId' => $accId, 'type' => $acc['type'] ?? null, ...$bv];
+        }
+
+        if (\count($enriched) === 0) {
+            return; // "empty" — nothing to balance.
+        }
+        // count===1 is "single" (an unmatched standalone line) — always
+        // imbalanced, same as balanceHint(). Only run the balance check
+        // once there's more than one contributing line.
+        $imbalanced = 1 === \count($enriched) || !$this->enrichedIsBalanced($enriched);
+        if (!$imbalanced) {
+            return;
+        }
+
+        foreach ($enriched as $e) {
+            $stats[$e['accountId']] ??= ['count' => 0, 'value' => 0];
+            ++$stats[$e['accountId']]['count'];
+            $stats[$e['accountId']]['value'] += $e['value'];
+        }
+    }
+
+    /**
+     * The line's contribution to a balance check, in real cash terms —
+     * ported from lib/matching.js's lineBalanceValue(). An investment
+     * line's `amount` is units, not cash, so its contribution is the
+     * trade's cash side instead; a stock line with no cash info recorded
+     * contributes nothing verifiable and is excluded.
+     *
+     * @param array<string, mixed> $line
+     * @param array<string, mixed> $acc
+     *
+     * @return array{value: int, currency: string}|null
+     */
+    private function lineBalanceValue(array $line, array $acc): ?array
+    {
+        if ('investment' === ($acc['type'] ?? null)) {
+            if (isset($line['cashValue'], $line['cashCurrency'])) {
+                return ['value' => (int) $line['cashValue'], 'currency' => (string) $line['cashCurrency']];
+            }
+
+            return null;
+        }
+
+        return ['value' => (int) ($line['amount'] ?? 0), 'currency' => $acc['currency'] ?? '???'];
+    }
+
+    /**
+     * True for "balanced" (nets to zero) and "fx" (a legitimate two-leg,
+     * two-currency, opposite-signed exchange) — both non-imbalanced. False
+     * for "unbalanced" — same-direction legs, or nonzero leftover in any
+     * currency. Caller already excludes the single-line ("single") case.
+     * Mirrors lib/matching.js's balanceHint() byCur/curs logic exactly.
+     *
+     * @param array<int, array{accountId: string, type: ?string, value: int, currency: string}> $enriched
+     */
+    private function enrichedIsBalanced(array $enriched): bool
+    {
+        $byCur = [];
+        foreach ($enriched as $e) {
+            $trueSigned = \in_array($e['type'], self::CONTRA_TYPES, true) ? -$e['value'] : $e['value'];
+            $byCur[$e['currency']] = ($byCur[$e['currency']] ?? 0) + $trueSigned;
+        }
+        $curs = array_keys($byCur);
+
+        if (1 === \count($curs)) {
+            return 0 === $byCur[$curs[0]];
+        }
+        if (2 === \count($curs) && 2 === \count($enriched)) {
+            [$a, $b] = $enriched;
+
+            return ($a['value'] > 0) !== ($b['value'] > 0);
+        }
+
+        foreach ($curs as $c) {
+            if (0 !== $byCur[$c]) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

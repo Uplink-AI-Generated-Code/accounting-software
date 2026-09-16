@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, Wallet, Search, X } from "lucide-react";
+import { Plus, Wallet, Search, X, AlertTriangle } from "lucide-react";
 import { C } from "../lib/theme";
 import { fmt } from "../lib/format";
 import { buildNestedGroups, flattenAllAccounts, leafMatchesQuery } from "../lib/grouping";
@@ -12,6 +12,7 @@ import { miniInput } from "./ui";
 --------------------------------------------------------- */
 export function Overview({ accounts, symbols, settings, onSaveSettings, onSaveGrouping, onRemoveGrouping, onSelect, onNew }) {
   const [query, setQuery] = useState("");
+  const [imbalancedOnly, setImbalancedOnly] = useState(false);
 
   if (accounts.length === 0) {
     return (
@@ -32,9 +33,9 @@ export function Overview({ accounts, symbols, settings, onSaveSettings, onSaveGr
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-1">
+      <div className="flex items-center justify-between mb-1 flex-wrap" style={{ rowGap: 8 }}>
         <h2 className="ll-serif" style={{ fontSize: 20 }}>Chart of accounts</h2>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap" style={{ rowGap: 6 }}>
           <div className="flex items-center gap-1.5" style={{ ...miniInput, width: 200, padding: "5px 8px" }}>
             <Search size={13} color={C.inkFaint} />
             <input
@@ -45,6 +46,13 @@ export function Overview({ accounts, symbols, settings, onSaveSettings, onSaveGr
             />
             {query && <button onClick={() => setQuery("")}><X size={12} color={C.inkFaint} /></button>}
           </div>
+          {accounts.some((a) => a.imbalancedLineCount > 0) && (
+            <label className="flex items-center gap-1.5" style={{ fontSize: 12, color: imbalancedOnly ? C.debit : C.inkSoft, cursor: "pointer" }}>
+              <input type="checkbox" checked={imbalancedOnly} onChange={(e) => setImbalancedOnly(e.target.checked)} />
+              <AlertTriangle size={12} />
+              Imbalanced only ({accounts.filter((a) => a.imbalancedLineCount > 0).length})
+            </label>
+          )}
           <span style={{ fontSize: 11.5, color: C.inkFaint }}>Group by</span>
           <GroupLevelPicker
             levels={groupLevels}
@@ -64,11 +72,14 @@ export function Overview({ accounts, symbols, settings, onSaveSettings, onSaveGr
         // four dimensions, independent of the active grouping — see
         // CLAUDE.md), but keeps the same nested grouping layout rather
         // than flattening to a list: buildNestedGroups naturally drops
-        // any group that ends up with no matching accounts in it.
-        const matched = query.trim()
+        // any group that ends up with no matching accounts in it. The
+        // "imbalanced only" toggle narrows the same way, and combines
+        // with an active search.
+        let matched = query.trim()
           ? flattenAllAccounts(accounts, accounts, symbols).filter((l) => leafMatchesQuery(l, query)).map((l) => l.account)
           : accounts;
-        if (query.trim() && matched.length === 0) {
+        if (imbalancedOnly) matched = matched.filter((a) => a.imbalancedLineCount > 0);
+        if ((query.trim() || imbalancedOnly) && matched.length === 0) {
           return <p style={{ fontSize: 13, color: C.inkFaint }}>No accounts match.</p>;
         }
         return <OverviewGroupTree groups={buildNestedGroups(matched, groupLevels, accounts, symbols)} depth={0} accounts={accounts} symbols={symbols} onSelect={onSelect} />;

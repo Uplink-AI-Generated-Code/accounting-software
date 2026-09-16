@@ -1,3 +1,4 @@
+import { AlertTriangle } from "lucide-react";
 import { C, TYPES, ISA_KINDS } from "../lib/theme";
 import { fmt, fmtUnits } from "../lib/format";
 
@@ -15,11 +16,22 @@ export function AccountRow({ a, accounts, symbols, onSelect, subtitle }) {
   // Trading currency lives on the Symbol now, not the account — see
   // CLAUDE.md.
   const tradingCurrency = symbols.find((s) => s.ticker === a.symbol)?.tradingCurrency;
+  // `imbalancedLineCount`/`imbalanceValue` come from the backend's
+  // GET /api/accounts (LedgerStateService::imbalanceStatsByAccount()) — a
+  // global, per-line-balance-check mirror of lib/matching.js's
+  // balanceHint(), computed once server-side since it needs every
+  // account's own ledger, not just this one. `imbalanceValue` is a plain
+  // signed sum, not a magnitude, so it can legitimately read 0 even with
+  // imbalancedLineCount > 0 (e.g. two separate unmatched lines, +50 and
+  // -50, that happen to net out) — see CLAUDE.md's "Matching and
+  // linking".
+  const imbalanced = (a.imbalancedLineCount || 0) > 0;
+  const imbalanceCurrency = a.type === "investment" ? tradingCurrency : a.currency;
   return (
     <button
       onClick={() => onSelect(a.id)}
       className="ll-row w-full flex items-center justify-between text-left"
-      style={{ padding: "7px 10px", borderBottom: `1px solid ${C.lineSoft}` }}
+      style={{ padding: "7px 10px 7px 8px", borderBottom: `1px solid ${C.lineSoft}`, borderLeft: `3px solid ${imbalanced ? C.debit : "transparent"}` }}
     >
       <span className="flex flex-col" style={{ minWidth: 0 }}>
         <span className="flex items-center gap-2" style={{ minWidth: 0 }}>
@@ -36,6 +48,16 @@ export function AccountRow({ a, accounts, symbols, onSelect, subtitle }) {
         {subtitle && <span style={{ fontSize: 10.5, color: C.inkFaint }}>{subtitle}</span>}
       </span>
       <span className="ll-mono flex items-center gap-2" style={{ fontSize: 12.5, flexShrink: 0, marginLeft: 12 }}>
+        {imbalanced && (
+          <span
+            title={`${a.imbalancedLineCount} imbalanced line${a.imbalancedLineCount === 1 ? "" : "s"} — off by ${fmt(a.imbalanceValue || 0, imbalanceCurrency)}`}
+            className="flex items-center gap-1"
+            style={{ color: C.debit, fontSize: 11 }}
+          >
+            <AlertTriangle size={11} />
+            {fmt(a.imbalanceValue || 0, imbalanceCurrency)} · {a.imbalancedLineCount}
+          </span>
+        )}
         {a.type === "isa-parent" ? (
           <span style={{ color: C.inkFaint }}>{accounts.filter((x) => x.isaParentId === a.id).length} subaccounts</span>
         ) : a.type === "investment" ? (

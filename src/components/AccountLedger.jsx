@@ -11,7 +11,7 @@ import { useAccountLedger } from "./useAccountLedger";
 import { useMatchCandidates } from "./useMatchCandidates";
 import { useLedgerRowAnimation } from "./useLedgerRowAnimation";
 import { BalanceChart } from "./charts";
-import { iconBtn, miniInput } from "./ui";
+import { iconBtn, miniInput, ImbalanceBadge } from "./ui";
 
 // A record's stable row identity: its transaction id when linked, or
 // "line-<id>" for a standalone one — used for React keys, row refs, and
@@ -319,6 +319,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
           <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>{TYPES.find((t) => t.key === account.type)?.label} · {account.currency}</div>
           <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{account.name}</h2>
           <div className="ll-mono" style={{ fontSize: 22, marginTop: 6, color: balance < 0 ? C.debit : C.ink }}>{fmt(balance, account.currency)}</div>
+          <ImbalanceBadge account={account} currency={account.currency} />
         </div>
         <div className="flex gap-2">
           <div className="flex rounded overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
