@@ -369,6 +369,7 @@ export default function App() {
                 accounts={accounts}
                 symbols={symbols}
                 currencies={currencies}
+                groupLevels={settings.groupLevels || ["type"]}
                 balance={selected.balance || 0}
                 onEditAccount={() => setAccountForm(selected)}
                 onLedgerOperations={saveLedgerOperations}
@@ -380,6 +381,7 @@ export default function App() {
                 accounts={accounts}
                 symbols={symbols}
                 currencies={currencies}
+                groupLevels={settings.groupLevels || ["type"]}
                 balance={selected.balance || 0}
                 onEditAccount={() => setAccountForm(selected)}
                 onLedgerOperations={saveLedgerOperations}

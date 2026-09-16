@@ -43,7 +43,7 @@ function blankStockDraft() {
   };
 }
 
-export function StockLedger({ account, accounts, symbols, currencies, balance, onEditAccount, onLedgerOperations, guardRef }) {
+export function StockLedger({ account, accounts, symbols, currencies, groupLevels, balance, onEditAccount, onLedgerOperations, guardRef }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
   const [view, setView] = useState("ledger");
@@ -391,6 +391,7 @@ export function StockLedger({ account, accounts, symbols, currencies, balance, o
                   account={account}
                   accounts={accounts}
                   symbols={symbols}
+                  groupLevels={groupLevels}
                   otherLineCandidates={otherLineCandidates}
                   updateOtherLine={updateOtherLine}
                   removeOtherLine={removeOtherLine}

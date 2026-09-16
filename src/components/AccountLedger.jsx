@@ -39,7 +39,7 @@ function blankDraft(presetOtherId) {
   };
 }
 
-export function AccountLedger({ account, accounts, currencies, symbols, balance, onEditAccount, onLedgerOperations, guardRef }) {
+export function AccountLedger({ account, accounts, currencies, symbols, groupLevels, balance, onEditAccount, onLedgerOperations, guardRef }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
   const [view, setView] = useState("ledger");
@@ -396,6 +396,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, balance,
                   account={account}
                   accounts={accounts}
                   symbols={symbols}
+                  groupLevels={groupLevels}
                   otherLineCandidates={otherLineCandidates}
                   updateOtherLine={updateOtherLine}
                   removeOtherLine={removeOtherLine}

@@ -6,6 +6,7 @@ import { toMinorUnits, fromMinorUnits } from "../lib/scale";
 import { getMatchCandidates } from "../api";
 import { formatCandidateAmount, candidateIsNegative } from "../lib/matching";
 import { miniInput } from "./ui";
+import { AccountPicker } from "./AccountPicker";
 
 const DEBOUNCE_MS = 300;
 
@@ -229,7 +230,7 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
 // an account picker, then either plain In/Out + amount, or (for an
 // investment account) units and cost fields, plus that leg's own match
 // suggestions when it doesn't have an account chosen yet.
-export function OtherLinesEditor({ draft, account, accounts, symbols, otherLineCandidates, updateOtherLine, removeOtherLine, selectMatchForOtherLine, addOtherLine, paddingLeft }) {
+export function OtherLinesEditor({ draft, account, accounts, symbols, groupLevels, otherLineCandidates, updateOtherLine, removeOtherLine, selectMatchForOtherLine, addOtherLine, paddingLeft }) {
   return (
     <>
       {draft.otherLines.length > 0 && (
@@ -242,12 +243,14 @@ export function OtherLinesEditor({ draft, account, accounts, symbols, otherLineC
             return (
               <div key={ol.key} className="flex flex-col gap-1.5">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <select value={ol.accountId} onChange={(e) => updateOtherLine(ol.key, { accountId: e.target.value })} style={{ ...miniInput, width: 190 }}>
-                    <option value="">Select account…</option>
-                    {accounts.filter((a) => a.id !== account.id).map((a) => (
-                      <option key={a.id} value={a.id}>{a.name} ({a.type === "investment" ? a.symbol : a.currency})</option>
-                    ))}
-                  </select>
+                  <AccountPicker
+                    accounts={accounts.filter((a) => a.id !== account.id)}
+                    allAccounts={accounts}
+                    symbols={symbols}
+                    groupLevels={groupLevels}
+                    value={ol.accountId}
+                    onChange={(id) => updateOtherLine(ol.key, { accountId: id })}
+                  />
 
                   {isStock ? (
                     <>
