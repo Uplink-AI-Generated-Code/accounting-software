@@ -620,6 +620,26 @@ outside this app's concern.
   predate the determined tax year even when the row being edited
   otherwise looks fine. That's intentional, not a bug to "fix" by only
   checking `draft.date`.
+- **`BalanceChart`/`UnitsChart` only offer two intervals: "Tax Year" and
+  "Custom"** (`lib/chartSeries.js`'s `CHART_INTERVALS`/`intervalRange()`)
+  — every fixed-lookback preset that used to exist (30D/3M/6M/1Y/YTD/All)
+  was removed deliberately: they're all anchored to *today*, which makes
+  them useless once you're looking at a past tax year's chart (a "1Y"
+  button showing the wrong year is worse than not having it). "Tax Year"
+  defaults every account's chart to this ledger's own computed tax year
+  — `intervalRange("taxyear", { taxYearStart, ... })` uses `lib/isa.js`'s
+  `taxYearBounds()`, clamped to today so a step series never charts into
+  the future. `AccountLedger`/`StockLedger` thread their own
+  `activeTaxYearStart` prop straight through as `taxYearStart`; falls
+  back to earliest-line-date..today when it's `null` (blank ledger,
+  nothing to bound by yet). "Custom" is a plain from/to date pair local
+  to each chart component (`customStart`/`customEnd` state, not lifted
+  to `App.jsx` — there's no reason another view would need it) —
+  `charts.jsx`'s `selectIntervalWithCustomSeed()` pre-fills both fields
+  with the tax year's own bounds the *first* time "Custom" is picked
+  (only while both are still empty), so there's a sensible starting
+  point to tweak from instead of a blank/unbounded default; it never
+  overwrites a value the user's already typed.
 
 ## Stock valuation — three distinct, deliberately different numbers
 

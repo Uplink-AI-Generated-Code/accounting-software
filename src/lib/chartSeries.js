@@ -1,24 +1,36 @@
-import { todayISO, addDays, addMonths, addYears } from "./format";
+import { todayISO } from "./format";
+import { taxYearBounds } from "./isa";
 
+// Just these two: every fixed-lookback preset (30D/3M/6M/1Y/YTD/All) only
+// ever means something relative to *today*, which makes it useless for
+// looking at a past tax year's chart once the calendar's moved on — see
+// CLAUDE.md's "The active tax year". "Custom" covers everything else.
 export const CHART_INTERVALS = [
-  { key: "30d", label: "30D" },
-  { key: "3m", label: "3M" },
-  { key: "6m", label: "6M" },
-  { key: "1y", label: "1Y" },
-  { key: "ytd", label: "YTD" },
-  { key: "all", label: "All" },
+  { key: "taxyear", label: "Tax Year" },
+  { key: "custom", label: "Custom" },
 ];
 
-export function intervalRange(key, earliestISO) {
+// `ctx.taxYearStart` is this ledger's one computed UK tax year (see
+// CLAUDE.md's "The active tax year" — `App.jsx`'s `activeTaxYearStart`,
+// threaded down through AccountLedger/StockLedger); `null` on a blank
+// ledger falls back to `ctx.earliestISO`..today (there's no year to
+// bound by yet). `ctx.customStart`/`ctx.customEnd` back the "Custom"
+// range picker — charts.jsx seeds them from the tax year's own bounds
+// the first time "Custom" is selected, so there's always a sensible
+// starting point to tweak rather than a blank date field.
+export function intervalRange(key, ctx = {}) {
+  const { earliestISO, taxYearStart, customStart, customEnd } = ctx;
   const today = todayISO();
   switch (key) {
-    case "30d": return { start: addDays(today, -29), end: today };
-    case "3m": return { start: addMonths(today, -3), end: today };
-    case "6m": return { start: addMonths(today, -6), end: today };
-    case "1y": return { start: addYears(today, -1), end: today };
-    case "ytd": return { start: today.slice(0, 4) + "-01-01", end: today };
-    case "all": return { start: earliestISO || today, end: today };
-    default: return { start: addMonths(today, -3), end: today };
+    case "taxyear": {
+      if (taxYearStart == null) return { start: earliestISO || today, end: today };
+      const { start, end } = taxYearBounds(taxYearStart);
+      // Never chart into the future — a step series would just carry the
+      // last known value flat across days that haven't happened yet.
+      return { start, end: end < today ? end : today };
+    }
+    case "custom": return { start: customStart || earliestISO || today, end: customEnd || today };
+    default: return { start: earliestISO || today, end: today };
   }
 }
 

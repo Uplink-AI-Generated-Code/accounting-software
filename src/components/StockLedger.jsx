@@ -334,7 +334,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
       </div>
 
       {view === "chart" ? (
-        <UnitsChart account={account} transactions={records} tradingCurrency={tradingCurrency} />
+        <UnitsChart account={account} transactions={records} tradingCurrency={tradingCurrency} activeTaxYearStart={activeTaxYearStart} />
       ) : (
       <div style={{ border: `1px solid ${C.line}`, borderRadius: 6, overflow: "hidden", background: C.card }}>
         <div className="grid" style={{ gridTemplateColumns: gridCols, fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.6, color: C.inkFaint, padding: "10px 16px", borderBottom: `1px solid ${C.line}` }}>

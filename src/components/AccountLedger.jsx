@@ -355,7 +355,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
       </div>
 
       {view === "chart" ? (
-        <BalanceChart account={account} transactions={records} />
+        <BalanceChart account={account} transactions={records} activeTaxYearStart={activeTaxYearStart} />
       ) : (
       <div style={{ border: `1px solid ${C.line}`, borderRadius: 6, overflow: "hidden", background: C.card }}>
         <div className="grid" style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 60px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.6, color: C.inkFaint, padding: "10px 16px", borderBottom: `1px solid ${C.line}` }}>

@@ -3,13 +3,34 @@ import { LineChart, ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Toolt
 import { C } from "../lib/theme";
 import { fmt, fmtUnits, fmtDateShort, todayISO, addYears } from "../lib/format";
 import { CHART_INTERVALS, intervalRange, buildDailySeries } from "../lib/chartSeries";
+import { taxYearBounds } from "../lib/isa";
 import { buildCostBasisSeries, buildPortfolioValueSeries } from "../lib/stockMath";
+import { miniInput } from "./ui";
+
+// Seeds the custom date pair from this ledger's tax year the *first*
+// time "Custom" is picked (customStart/customEnd both still empty) —
+// gives the user a sensible starting point to tweak from instead of a
+// blank field, without stomping on anything they've already typed if
+// they switch away and back. A no-op for any other interval, or once
+// either field has a value.
+function selectIntervalWithCustomSeed(key, activeTaxYearStart, customStart, customEnd, setCustomStart, setCustomEnd) {
+  if (key === "custom" && !customStart && !customEnd && activeTaxYearStart != null) {
+    const { start, end } = taxYearBounds(activeTaxYearStart);
+    const today = todayISO();
+    setCustomStart(start);
+    setCustomEnd(end < today ? end : today);
+  }
+}
 
 /* ---------------------------------------------------------
    Charts — balance/units over a user-selectable interval, with an
-   optional overlay of the same interval one year earlier.
+   optional overlay of the same interval one year earlier. Defaults to
+   this ledger's own tax year (see CLAUDE.md's "The active tax year")
+   rather than a fixed lookback window, since that's the range someone
+   doing their books actually cares about most of the time; "Custom"
+   opens a plain from/to date pair for anything else.
 --------------------------------------------------------- */
-function IntervalControls({ interval, setInterval: setIntervalValue, compareYoY, setCompareYoY, disableCompare }) {
+function IntervalControls({ interval, setInterval: setIntervalValue, compareYoY, setCompareYoY, customStart, setCustomStart, customEnd, setCustomEnd }) {
   return (
     <div className="flex items-center gap-3 flex-wrap">
       <div className="flex rounded overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
@@ -22,8 +43,15 @@ function IntervalControls({ interval, setInterval: setIntervalValue, compareYoY,
           </button>
         ))}
       </div>
-      <label className="flex items-center gap-1.5" style={{ fontSize: 12.5, color: C.inkSoft, opacity: disableCompare ? 0.4 : 1 }}>
-        <input type="checkbox" checked={compareYoY && !disableCompare} disabled={disableCompare} onChange={(e) => setCompareYoY(e.target.checked)} />
+      {interval === "custom" && (
+        <div className="flex items-center gap-1.5">
+          <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} style={{ ...miniInput, width: 130, padding: "5px 6px" }} />
+          <span style={{ color: C.inkFaint, fontSize: 12 }}>to</span>
+          <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} style={{ ...miniInput, width: 130, padding: "5px 6px" }} />
+        </div>
+      )}
+      <label className="flex items-center gap-1.5" style={{ fontSize: 12.5, color: C.inkSoft }}>
+        <input type="checkbox" checked={compareYoY} onChange={(e) => setCompareYoY(e.target.checked)} />
         Compare to last year
       </label>
     </div>
@@ -45,11 +73,11 @@ function ChartTooltip({ active, payload, formatValue, compareYoY }) {
   );
 }
 
-function useChartSeries(opening, lines, interval, compareYoY) {
+function useChartSeries(opening, lines, interval, compareYoY, rangeCtx) {
   const earliest = lines.length ? lines[0].date : todayISO();
-  const { start, end } = intervalRange(interval, earliest);
+  const { start, end } = intervalRange(interval, { earliestISO: earliest, ...rangeCtx });
   const currentSeries = useMemo(() => buildDailySeries(opening, lines, start, end), [opening, lines, start, end]);
-  const prevRange = compareYoY && interval !== "all" ? { start: addYears(start, -1), end: addYears(end, -1) } : null;
+  const prevRange = compareYoY ? { start: addYears(start, -1), end: addYears(end, -1) } : null;
   const previousSeries = useMemo(() => (prevRange ? buildDailySeries(opening, lines, prevRange.start, prevRange.end) : null), [opening, lines, prevRange]);
   return useMemo(
     () =>
@@ -64,11 +92,11 @@ function useChartSeries(opening, lines, interval, compareYoY) {
   );
 }
 
-function useCostBasisSeries(lines, interval, compareYoY) {
+function useCostBasisSeries(lines, interval, compareYoY, rangeCtx) {
   const earliest = lines.length ? lines[0].date : todayISO();
-  const { start, end } = intervalRange(interval, earliest);
+  const { start, end } = intervalRange(interval, { earliestISO: earliest, ...rangeCtx });
   const currentSeries = useMemo(() => buildCostBasisSeries(lines, start, end), [lines, start, end]);
-  const prevRange = compareYoY && interval !== "all" ? { start: addYears(start, -1), end: addYears(end, -1) } : null;
+  const prevRange = compareYoY ? { start: addYears(start, -1), end: addYears(end, -1) } : null;
   const previousSeries = useMemo(() => (prevRange ? buildCostBasisSeries(lines, prevRange.start, prevRange.end) : null), [lines, prevRange]);
   return useMemo(
     () =>
@@ -83,11 +111,11 @@ function useCostBasisSeries(lines, interval, compareYoY) {
   );
 }
 
-function usePortfolioValueSeries(lines, interval, compareYoY) {
+function usePortfolioValueSeries(lines, interval, compareYoY, rangeCtx) {
   const earliest = lines.length ? lines[0].date : todayISO();
-  const { start, end } = intervalRange(interval, earliest);
+  const { start, end } = intervalRange(interval, { earliestISO: earliest, ...rangeCtx });
   const currentSeries = useMemo(() => buildPortfolioValueSeries(lines, start, end), [lines, start, end]);
-  const prevRange = compareYoY && interval !== "all" ? { start: addYears(start, -1), end: addYears(end, -1) } : null;
+  const prevRange = compareYoY ? { start: addYears(start, -1), end: addYears(end, -1) } : null;
   const previousSeries = useMemo(() => (prevRange ? buildPortfolioValueSeries(lines, prevRange.start, prevRange.end) : null), [lines, prevRange]);
   return useMemo(
     () =>
@@ -102,15 +130,18 @@ function usePortfolioValueSeries(lines, interval, compareYoY) {
   );
 }
 
-export function BalanceChart({ account, transactions }) {
-  const [interval, setInterval_] = useState("3m");
+export function BalanceChart({ account, transactions, activeTaxYearStart }) {
+  const [interval, setInterval_] = useState("taxyear");
   const [compareYoY, setCompareYoY] = useState(false);
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
 
   const lines = useMemo(
     () => transactions.map((t) => t.lines.find((l) => l.accountId === account.id)).filter(Boolean).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
     [transactions, account]
   );
-  const merged = useChartSeries(account.openingBalance || 0, lines, interval, compareYoY);
+  const rangeCtx = { taxYearStart: activeTaxYearStart, customStart, customEnd };
+  const merged = useChartSeries(account.openingBalance || 0, lines, interval, compareYoY, rangeCtx);
 
   if (lines.length === 0) {
     return <div style={{ padding: "40px 0", textAlign: "center", color: C.inkFaint, fontSize: 13 }}>Not enough entries yet to chart.</div>;
@@ -118,7 +149,14 @@ export function BalanceChart({ account, transactions }) {
 
   return (
     <div>
-      <div className="mb-4"><IntervalControls interval={interval} setInterval={setInterval_} compareYoY={compareYoY} setCompareYoY={setCompareYoY} disableCompare={interval === "all"} /></div>
+      <div className="mb-4">
+        <IntervalControls
+          interval={interval}
+          setInterval={(key) => { selectIntervalWithCustomSeed(key, activeTaxYearStart, customStart, customEnd, setCustomStart, setCustomEnd); setInterval_(key); }}
+          compareYoY={compareYoY} setCompareYoY={setCompareYoY}
+          customStart={customStart} setCustomStart={setCustomStart} customEnd={customEnd} setCustomEnd={setCustomEnd}
+        />
+      </div>
       <div style={{ height: 320 }}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={merged} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
@@ -165,9 +203,11 @@ function StockChartTooltip({ active, payload, account, tradingCurrency, compareY
   );
 }
 
-export function UnitsChart({ account, transactions, tradingCurrency }) {
-  const [interval, setInterval_] = useState("3m");
+export function UnitsChart({ account, transactions, tradingCurrency, activeTaxYearStart }) {
+  const [interval, setInterval_] = useState("taxyear");
   const [compareYoY, setCompareYoY] = useState(false);
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
 
   const rawLines = useMemo(
     () => transactions.map((t) => t.lines.find((l) => l.accountId === account.id)).filter(Boolean).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
@@ -176,9 +216,10 @@ export function UnitsChart({ account, transactions, tradingCurrency }) {
 
   // All three share the same underlying lines, so they land on identical
   // date/offset grids and can be zipped together into one dataset below.
-  const unitsMerged = useChartSeries(account.openingBalance || 0, rawLines, interval, compareYoY);
-  const costMerged = useCostBasisSeries(rawLines, interval, compareYoY);
-  const valueMerged = usePortfolioValueSeries(rawLines, interval, compareYoY);
+  const rangeCtx = { taxYearStart: activeTaxYearStart, customStart, customEnd };
+  const unitsMerged = useChartSeries(account.openingBalance || 0, rawLines, interval, compareYoY, rangeCtx);
+  const costMerged = useCostBasisSeries(rawLines, interval, compareYoY, rangeCtx);
+  const valueMerged = usePortfolioValueSeries(rawLines, interval, compareYoY, rangeCtx);
 
   const merged = useMemo(
     () =>
@@ -201,7 +242,14 @@ export function UnitsChart({ account, transactions, tradingCurrency }) {
 
   return (
     <div>
-      <div className="mb-4"><IntervalControls interval={interval} setInterval={setInterval_} compareYoY={compareYoY} setCompareYoY={setCompareYoY} disableCompare={interval === "all"} /></div>
+      <div className="mb-4">
+        <IntervalControls
+          interval={interval}
+          setInterval={(key) => { selectIntervalWithCustomSeed(key, activeTaxYearStart, customStart, customEnd, setCustomStart, setCustomEnd); setInterval_(key); }}
+          compareYoY={compareYoY} setCompareYoY={setCompareYoY}
+          customStart={customStart} setCustomStart={setCustomStart} customEnd={customEnd} setCustomEnd={setCustomEnd}
+        />
+      </div>
       <p style={{ fontSize: 11.5, color: C.inkFaint, marginTop: -8, marginBottom: 12 }}>
         Units held shown as bars (left axis); cost basis (solid line) and portfolio value (dotted line) share the right axis. Neither line is a live market value — cost basis is what you've actually put in (average cost), portfolio value marks your holding at your own most recent trade price. They start out equal on a fresh position, so the line style is what tells them apart where they sit on top of each other.
       </p>
