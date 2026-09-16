@@ -3,6 +3,7 @@ import { Plus, AlertTriangle, BookOpen, X, Search } from "lucide-react";
 import { C } from "./lib/theme";
 import { uid, fmt, fmtUnits, setCurrencyScales, setSymbolScales } from "./lib/format";
 import { buildNestedGroups, flattenAllAccounts, leafMatchesQuery } from "./lib/grouping";
+import { taxYearBounds } from "./lib/isa";
 import { accountIdFromHash, setHashForAccount } from "./lib/hash";
 import * as api from "./api";
 import { ModalShell, miniInput } from "./components/ui";
@@ -274,11 +275,33 @@ export default function App() {
   function saveLedgerOperations(operations) {
     return api
       .applyLedgerOperations(operations)
-      .then(() => { setStorageOK(true); return refreshAccounts(); })
+      .then(() => {
+        setStorageOK(true);
+        // This ledger's tax year (and how many lines fall outside it) is
+        // never stored — always recomputed fresh from the actual line
+        // dates (see LedgerStateService::determinedTaxYearStart()) — and
+        // a save can shift either number (a new earliest date moves the
+        // year; any save can change which existing lines now fall
+        // outside it). Refetch settings after every write so the
+        // header's badge stays accurate rather than only updating after
+        // a full reload.
+        api.getSettings().then((s) => setSettings((prev) => ({ ...prev, ...s }))).catch(() => {});
+        return refreshAccounts();
+      })
       .catch(() => setStorageOK(false));
   }
 
   const selected = accounts.find((a) => a.id === selectedId) || null;
+  // This ledger's one UK tax year — see CLAUDE.md's "The active tax
+  // year". Never set by hand: always derived server-side from the
+  // earliest line date in the database (plus whatever's about to be
+  // saved, for the live-write hard-block check) — there is deliberately
+  // no "pick a year" control. `null` means nothing's been saved yet.
+  const activeTaxYearStart = settings.activeTaxYearStart ?? null;
+  // How many already-saved lines fall outside that derived year —
+  // warning-only, never blocks (existing data is never rejected
+  // retroactively, only flagged — see CLAUDE.md).
+  const outOfTaxYearLineCount = settings.outOfTaxYearLineCount || 0;
 
   return (
     <div style={{ background: C.paper, color: C.ink, height: "100%", display: "flex", flexDirection: "column", fontFamily: "'Inter', sans-serif" }} className="w-full">
@@ -299,9 +322,29 @@ export default function App() {
           <h1 className="ll-serif" style={{ fontSize: 22, fontWeight: 600, letterSpacing: 0.2 }}>Ledger</h1>
           <span style={{ color: C.inkFaint, fontSize: 13, marginLeft: 6 }}>double-entry, kept simply</span>
         </div>
-        <button onClick={() => setAccountForm({})} className="flex items-center gap-1.5 px-3 py-1.5 rounded" style={{ background: C.ink, color: C.paper, fontSize: 13, fontWeight: 500 }}>
-          <Plus size={14} /> New account
-        </button>
+        <div className="flex items-center gap-3">
+          {activeTaxYearStart != null && (
+            <div
+              className="flex items-center gap-2 rounded"
+              style={{ border: `1px solid ${C.line}`, padding: "5px 10px" }}
+              title="This ledger's one tax year — always derived from its earliest entry, never chosen by hand. New/edited entries outside it are rejected."
+            >
+              <span className="ll-mono" style={{ fontSize: 12.5, color: C.inkSoft }}>{taxYearBounds(activeTaxYearStart).label} tax year</span>
+              {outOfTaxYearLineCount > 0 && (
+                <span
+                  className="flex items-center gap-1"
+                  style={{ color: C.debit, fontSize: 11.5 }}
+                  title={`${outOfTaxYearLineCount} already-saved line(s) fall outside this tax year — not blocked, just flagged.`}
+                >
+                  <AlertTriangle size={12} /> {outOfTaxYearLineCount} outside
+                </span>
+              )}
+            </div>
+          )}
+          <button onClick={() => setAccountForm({})} className="flex items-center gap-1.5 px-3 py-1.5 rounded" style={{ background: C.ink, color: C.paper, fontSize: 13, fontWeight: 500 }}>
+            <Plus size={14} /> New account
+          </button>
+        </div>
       </header>
 
       {!storageOK && (
@@ -413,6 +456,7 @@ export default function App() {
                 symbols={symbols}
                 currencies={currencies}
                 groupLevels={settings.groupLevels || ["type"]}
+                activeTaxYearStart={activeTaxYearStart}
                 balance={selected.balance || 0}
                 onEditAccount={() => setAccountForm(selected)}
                 onLedgerOperations={saveLedgerOperations}
@@ -425,6 +469,7 @@ export default function App() {
                 symbols={symbols}
                 currencies={currencies}
                 groupLevels={settings.groupLevels || ["type"]}
+                activeTaxYearStart={activeTaxYearStart}
                 balance={selected.balance || 0}
                 onEditAccount={() => setAccountForm(selected)}
                 onLedgerOperations={saveLedgerOperations}

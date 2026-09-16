@@ -558,10 +558,27 @@ class LedgerStateService
         });
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The stored settings plus this ledger's *computed* tax-year facts —
+     * see CLAUDE.md's "The active tax year". `activeTaxYearStart` and
+     * `outOfTaxYearLineCount` are never stored (there's no such column
+     * any more); they're recomputed fresh on every call from the actual
+     * line dates in the database, so they can never drift from reality
+     * the way a cached value could. Not included in readState()'s export
+     * shape (`settingsToArray()` alone) — matching how computed account
+     * stats (`balance`, `costBasis`, ...) live only in
+     * `accountsWithStats()`, not in the plain export.
+     *
+     * @return array<string, mixed>
+     */
     public function getSettings(): array
     {
-        return $this->settingsToArray($this->settingsRepository->getOrCreate());
+        $arr = $this->settingsToArray($this->settingsRepository->getOrCreate());
+        $taxYearStart = $this->determinedTaxYearStart();
+        $arr['activeTaxYearStart'] = $taxYearStart;
+        $arr['outOfTaxYearLineCount'] = null !== $taxYearStart ? $this->outOfTaxYearLineCount($taxYearStart) : 0;
+
+        return $arr;
     }
 
     /** @param array<string, mixed> $data */
@@ -609,6 +626,7 @@ class LedgerStateService
     public function applyLedgerOperations(array $operations): void
     {
         $this->em->wrapInTransaction(function () use ($operations) {
+            $this->assertOperationDatesInActiveTaxYear($operations);
             foreach ($operations as $op) {
                 match ($op['op'] ?? null) {
                     'deleteLine' => $this->opDeleteLine($op),
@@ -961,5 +979,120 @@ class LedgerStateService
             'groupLevels' => $s->getGroupLevels(),
             'savedGroupings' => $s->getSavedGroupings(),
         ];
+    }
+
+    /**
+     * UK tax years run 6 April – 5 April, not the calendar year — mirrors
+     * src/lib/isa.js's taxYearStartYearFor() exactly (same date format).
+     */
+    private function taxYearStartYearFor(string $dateISO): int
+    {
+        $year = (int) substr($dateISO, 0, 4);
+        $boundary = sprintf('%d-04-06', $year);
+
+        return $dateISO < $boundary ? $year - 1 : $year;
+    }
+
+    /** @return array{start: string, end: string, label: string} */
+    private function taxYearBounds(int $startYear): array
+    {
+        return [
+            'start' => sprintf('%d-04-06', $startYear),
+            'end' => sprintf('%d-04-05', $startYear + 1),
+            'label' => sprintf('%d/%s', $startYear, substr((string) ($startYear + 1), 2)),
+        ];
+    }
+
+    /**
+     * This ledger's one UK tax year — see CLAUDE.md's "The active tax
+     * year". **Never stored** — always freshly computed as
+     * `taxYearStartYearFor()` of the earliest date among every line
+     * already saved, plus `$extraDates` (lines about to be saved, for
+     * the live-write path). Returns null only when there is truly
+     * nothing to derive from (no lines saved yet, and no `$extraDates`
+     * either).
+     *
+     * @param string[] $extraDates
+     */
+    private function determinedTaxYearStart(array $extraDates = []): ?int
+    {
+        $existingEarliest = $this->em->getConnection()->fetchOne('SELECT MIN(date) FROM line');
+        $dates = array_filter([...$extraDates, $existingEarliest ?: null]);
+        if (!$dates) {
+            return null;
+        }
+        sort($dates);
+
+        return $this->taxYearStartYearFor($dates[0]);
+    }
+
+    /**
+     * How many already-saved lines fall outside `$startYear`'s bounds —
+     * surfaced as a warning (`GET /api/settings`'s `outOfTaxYearLineCount`,
+     * `App.jsx`'s header badge), never blocked: this ledger's tax year is
+     * derived from the *earliest* date, so by construction nothing can
+     * be earlier than it, but data can still exist *after* it — an
+     * import that happens to span more than one tax year, say. Existing
+     * data is never rejected retroactively, only flagged.
+     */
+    private function outOfTaxYearLineCount(int $startYear): int
+    {
+        $bounds = $this->taxYearBounds($startYear);
+
+        return (int) $this->em->getConnection()->fetchOne(
+            'SELECT COUNT(*) FROM line WHERE date < ? OR date > ?',
+            [$bounds['start'], $bounds['end']]
+        );
+    }
+
+    /**
+     * Hard-blocks saving any *new* line whose date falls outside this
+     * ledger's one tax year — AccountLedger/StockLedger's commit()
+     * already prevents this in normal use, but this is the backend's own
+     * independent guard against the same mistake (a stale tab, a direct
+     * API call, a future bug in the frontend check), the same "don't
+     * just trust the frontend" posture resolveCurrency()/resolveSymbol()
+     * already take. This is the only place tax-year dates are ever
+     * *rejected* — existing data is only ever warned about (see
+     * outOfTaxYearLineCount()), never blocked after the fact.
+     *
+     * @param array<int, array{op: string, line?: array<string, mixed>, lines?: array<int, array<string, mixed>>}> $operations
+     */
+    private function assertOperationDatesInActiveTaxYear(array $operations): void
+    {
+        $dates = [];
+        foreach ($operations as $op) {
+            $lines = match ($op['op'] ?? null) {
+                'upsertLine' => [$op['line'] ?? []],
+                'upsertTransaction' => $op['lines'] ?? [],
+                default => [],
+            };
+            foreach ($lines as $line) {
+                if (\is_array($line) && \is_string($line['date'] ?? null)) {
+                    $dates[] = $line['date'];
+                }
+            }
+        }
+        if (!$dates) {
+            return;
+        }
+
+        // $dates is non-empty, so determinedTaxYearStart() always derives
+        // something from it even on a blank database — never null here.
+        $startYear = $this->determinedTaxYearStart($dates);
+        \assert(null !== $startYear);
+        $bounds = $this->taxYearBounds($startYear);
+
+        foreach ($dates as $date) {
+            if ($date < $bounds['start'] || $date > $bounds['end']) {
+                throw new \InvalidArgumentException(sprintf(
+                    '%s is outside this ledger\'s %s tax year (%s to %s).',
+                    $date,
+                    $bounds['label'],
+                    $bounds['start'],
+                    $bounds['end']
+                ));
+            }
+        }
     }
 }

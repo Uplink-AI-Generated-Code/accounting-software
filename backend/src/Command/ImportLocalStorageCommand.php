@@ -130,7 +130,17 @@ class ImportLocalStorageCommand extends Command
             return Command::SUCCESS;
         }
 
-        $this->state->writeState($accounts, $records, $settings, $currencies);
+        try {
+            $this->state->writeState($accounts, $records, $settings, $currencies);
+        } catch (\InvalidArgumentException $e) {
+            // e.g. an account/line referencing a currency or symbol code
+            // that isn't in this database's Currency/Symbol tables — see
+            // resolveCurrency()/resolveSymbol(). writeState() already
+            // rolled back before returning, so nothing was written.
+            $io->error($e->getMessage());
+
+            return Command::FAILURE;
+        }
 
         $io->success('Import complete.');
 

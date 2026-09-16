@@ -5,6 +5,7 @@ import { fmt, todayISO, fmtDate } from "../lib/format";
 import { toMinorUnits, fromMinorUnits } from "../lib/scale";
 import { reorderSameDate } from "../lib/grouping";
 import { formatCandidateAmount, candidateIsNegative, balanceHint } from "../lib/matching";
+import { dateOutsideTaxYear, taxYearBounds } from "../lib/isa";
 import { buildSaveOperations, buildUnlinkOperations, buildDeleteOperations, buildReorderOperations } from "../lib/ledgerOperations";
 import { blankOtherLine, useOtherLines, OtherLinesEditor } from "./otherLines";
 import { useAccountLedger } from "./useAccountLedger";
@@ -39,7 +40,7 @@ function blankDraft(presetOtherId) {
   };
 }
 
-export function AccountLedger({ account, accounts, currencies, symbols, groupLevels, balance, onEditAccount, onLedgerOperations, guardRef }) {
+export function AccountLedger({ account, accounts, currencies, symbols, groupLevels, activeTaxYearStart, balance, onEditAccount, onLedgerOperations, guardRef }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
   const [view, setView] = useState("ledger");
@@ -272,6 +273,17 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
     const delta = draftDelta(draft);
     if (delta === 0) { setDraftError("Enter an amount in In or Out."); return false; }
     const newLines = draftLines(draft);
+    // Hard-blocked client-side (matching the backend's own independent
+    // check — see LedgerStateService::assertOperationDatesInActiveTaxYear())
+    // before ever hitting the network, so the error is immediate and
+    // specific. Checks every line about to be saved, not just draft.date
+    // — a matched existing line keeps its own original date (see
+    // otherLines.jsx's resolveOtherLine), which can differ from it.
+    const offender = newLines.find((l) => dateOutsideTaxYear(l.date, activeTaxYearStart));
+    if (offender) {
+      setDraftError(`${fmtDate(offender.date)} is outside the ${taxYearBounds(activeTaxYearStart).label} tax year.`);
+      return false;
+    }
     const absorbedLineIds = draft.otherLines.filter((ol) => ol.matchedLineId).map((ol) => ol.matchedLineId);
     const operations = buildSaveOperations({
       oldTransactionId: draft.transactionId,

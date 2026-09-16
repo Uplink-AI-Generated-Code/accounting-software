@@ -32,7 +32,15 @@ class LedgerController
             return new JsonResponse(['error' => 'Expected {"operations": [...]}'], 400);
         }
 
-        $this->state->applyLedgerOperations($operations);
+        try {
+            $this->state->applyLedgerOperations($operations);
+        } catch (\InvalidArgumentException $e) {
+            // Currently only thrown by the active-tax-year date check —
+            // a clear 400 instead of an uncaught 500, since this is a
+            // real, expected rejection path (a stale tab, a fat-fingered
+            // date), not a bug.
+            return new JsonResponse(['error' => $e->getMessage()], 400);
+        }
 
         return new JsonResponse(['ok' => true]);
     }

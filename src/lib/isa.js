@@ -24,6 +24,22 @@ export function taxYearBounds(startYear) {
   const end = `${startYear + 1}-04-05`;
   return { start, end, label: `${startYear}/${String(startYear + 1).slice(2)}` };
 }
+// ISO date strings compare correctly with plain `<`/`>` as long as both
+// sides are the same YYYY-MM-DD shape — no Date parsing needed. Used by
+// AccountLedger/StockLedger's commit() to hard-block a line dated outside
+// this ledger's one tax year (settings.activeTaxYearStart, see App.jsx),
+// mirrored server-side in LedgerStateService. `startYear` is `null` for a
+// ledger with no determined tax year yet — either genuinely blank (its
+// first-ever save determines it server-side, so there's nothing to check
+// against client-side yet either) or "legacy" data that predates this
+// feature and is deliberately left unrestricted forever (see CLAUDE.md's
+// "The active tax year") — either way, nothing is outside a year that
+// doesn't exist yet.
+export function dateOutsideTaxYear(dateISO, startYear) {
+  if (startYear == null) return false;
+  const { start, end } = taxYearBounds(startYear);
+  return dateISO < start || dateISO > end;
+}
 // Rules in effect for a given tax year — falls back to the latest known
 // rule set for any year beyond the table, since allowances don't lapse.
 // Over-65s are exempt from the Cash ISA sub-cap once it exists.

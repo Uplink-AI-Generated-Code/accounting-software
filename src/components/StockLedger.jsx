@@ -6,6 +6,7 @@ import { toMinorUnits, fromMinorUnits, divRoundHalfUp } from "../lib/scale";
 import { reorderSameDate } from "../lib/grouping";
 import { applyCostBasisLine, applyPortfolioValueLine } from "../lib/stockMath";
 import { formatCandidateAmount, candidateIsNegative } from "../lib/matching";
+import { dateOutsideTaxYear, taxYearBounds } from "../lib/isa";
 import { buildSaveOperations, buildUnlinkOperations, buildDeleteOperations, buildReorderOperations } from "../lib/ledgerOperations";
 import { useOtherLines, OtherLinesEditor } from "./otherLines";
 import { useAccountLedger } from "./useAccountLedger";
@@ -43,7 +44,7 @@ function blankStockDraft() {
   };
 }
 
-export function StockLedger({ account, accounts, symbols, currencies, groupLevels, balance, onEditAccount, onLedgerOperations, guardRef }) {
+export function StockLedger({ account, accounts, symbols, currencies, groupLevels, activeTaxYearStart, balance, onEditAccount, onLedgerOperations, guardRef }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
   const [view, setView] = useState("ledger");
@@ -251,6 +252,13 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
     if (!draft) return false;
     if (unitsDeltaOf(draft) === 0) { setDraftError("Enter units in or out."); return false; }
     const newLines = draftLines(draft);
+    // See AccountLedger.jsx's commit() for why every line is checked, not
+    // just draft.date, and why this mirrors the backend's own check.
+    const offender = newLines.find((l) => dateOutsideTaxYear(l.date, activeTaxYearStart));
+    if (offender) {
+      setDraftError(`${fmtDate(offender.date)} is outside the ${taxYearBounds(activeTaxYearStart).label} tax year.`);
+      return false;
+    }
     const absorbedLineIds = draft.otherLines.filter((ol) => ol.matchedLineId).map((ol) => ol.matchedLineId);
     const operations = buildSaveOperations({
       oldTransactionId: draft.transactionId,

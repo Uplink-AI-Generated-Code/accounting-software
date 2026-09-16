@@ -149,12 +149,21 @@ it covers and why); no test suite and no linter on the frontend.
     always navigates the frontend away from the account being viewed, so
     there's no ledger screen left to patch (`LedgerStateService::deleteAccount()`).
   - `GET`/`PUT /api/settings` (`SettingsController`) — plain singleton
-    read/replace.
+    read/replace for the *stored* fields (`over65`, `groupLevels`,
+    `savedGroupings`). `GET`'s response also carries two read-only
+    *computed* fields, `activeTaxYearStart`/`outOfTaxYearLineCount`,
+    added on top by `LedgerStateService::getSettings()` — see "The
+    active tax year" below; there's no column backing either, and `PUT`
+    ignores them if a client sends them back.
   - `POST /api/ledger/batch` (`LedgerController`) — the one endpoint that
     still takes a *list*: `{operations: [...]}`, a 4-primitive vocabulary
     (`upsertLine`, `deleteLine`, `upsertTransaction`, `deleteTransaction`)
     applied atomically in one DB transaction
-    (`LedgerStateService::applyLedgerOperations()`). `upsertLine` always
+    (`LedgerStateService::applyLedgerOperations()`). Every line's `date`
+    in the batch is hard-validated against this ledger's one (freshly
+    computed, never stored) tax year before any operation runs; a
+    rejection is a `400` with a clear message, not the usual uncaught
+    500 — see "The active tax year" below. `upsertLine` always
     creates/updates a standalone line (`transaction: null`);
     `upsertTransaction` replaces a Transaction's whole line set in one go.
     `src/lib/ledgerOperations.js` (`buildSaveOperations`,
@@ -542,6 +551,75 @@ since they're pure and only need the account list, which is loaded anyway.
   prior-year money only being replaceable into the *same* ISA. Extend
   these tests rather than relying on manual verification if you change
   this file — that's exactly the class of regression they exist to catch.
+
+## The active tax year — always computed, never stored
+
+**A single ledger-project database belongs to exactly one UK tax year,
+for its entire lifetime.** This mirrors how the sibling Nucleware/
+Accounts project has always worked (one SQLite file per tax year) —
+unlike that project, this app doesn't manage the multiple files itself
+(there's no in-app database switcher); running a second tax year means
+pointing a separate instance/`DATABASE_URL` at a separate file, entirely
+outside this app's concern.
+
+- **There is no stored setting for this — no column, no migration, no
+  picker.** `LedgerStateService::determinedTaxYearStart()` computes it
+  fresh on every call: `taxYearStartYearFor()` of the earliest date
+  among every line currently in the database (`SELECT MIN(date) FROM
+  line`), plus `$extraDates` when called from the live-write path (the
+  batch about to be saved — so a blank database's very first save
+  determines its own year in the same breath it's validated against).
+  Nothing is ever written to persist this; it's recomputed every time
+  it's needed, from whatever data actually exists right now. A prior
+  design tried storing it in `settings.activeTaxYearStart` and only
+  letting a blank database auto-determine it (to avoid retroactively
+  restricting older, already-multi-year data) — dropped entirely once
+  it turned out the real data was never multi-year to begin with; don't
+  reintroduce that column/migration.
+- **`GET /api/settings` exposes two *computed*, read-only fields**
+  (added by `getSettings()` on top of `settingsToArray()` — the latter
+  stays pure/stored-only, used unchanged by `readState()`/
+  `replaceSettings()`, so a full export/import never carries these):
+  - `activeTaxYearStart` — the year above, or `null` on a genuinely
+    blank database (no lines saved anywhere yet). `App.jsx`'s header
+    only renders the `2024/25 tax year` badge when this is non-null;
+    don't reintroduce a `?? todayISO()`-style fallback for the null
+    case, it means exactly "nothing to derive from yet."
+  - `outOfTaxYearLineCount` — how many *already-saved* lines fall
+    outside that year's bounds (`LedgerStateService::outOfTaxYearLineCount()`).
+    Since the year is derived from the *earliest* date, nothing can be
+    before it by construction — this only ever counts lines *after* the
+    year's end, e.g. an import that itself spanned more than one tax
+    year. **Warning-only, never blocks** — existing data is never
+    rejected retroactively, only flagged (`App.jsx`'s header shows a
+    small "N outside" badge next to the tax-year label when nonzero).
+- **Only *new* lines are ever hard-blocked** — `AccountLedger`/
+  `StockLedger`'s `commit()` (`lib/isa.js`'s `dateOutsideTaxYear()`, a
+  no-op when `activeTaxYearStart` is `null`) rejects client-side before
+  ever calling the API, and
+  `LedgerStateService::assertOperationDatesInActiveTaxYear()`
+  independently rejects server-side with a `400` — the same "don't just
+  trust the frontend" posture `resolveCurrency()`/`resolveSymbol()`
+  already take elsewhere. `writeState()` (import/restore) does **not**
+  block anything — a historical import is exactly the case that can
+  legitimately produce an `outOfTaxYearLineCount` warning rather than a
+  rejection. Since the determined year (and the warning count) can
+  shift with *any* write — a new earliest date moves the year, which
+  can also change which existing lines now count as "outside" —
+  `App.jsx`'s `saveLedgerOperations()` refetches `/api/settings` after
+  every ledger write, not just once. If you touch the UK tax-year math
+  (6 April boundary, the `"YYYY/YY"` label), update `lib/isa.js`'s
+  `taxYearStartYearFor()`/`taxYearBounds()` *and* `LedgerStateService`'s
+  copies of the same together — independent ports of the same rule, not
+  shared code; a drift between them means a line one side accepts the
+  other silently rejects (or vice versa).
+- **Every line about to be saved is checked, not just the draft's own
+  `date` field** — `draftLines()`'s output includes a matched existing
+  line's *own* original date (`otherLines.jsx`'s `resolveOtherLine()`
+  returns `{ ...ol.matchedLine }` verbatim for a matched leg), which can
+  predate the determined tax year even when the row being edited
+  otherwise looks fine. That's intentional, not a bug to "fix" by only
+  checking `draft.date`.
 
 ## Stock valuation — three distinct, deliberately different numbers
 
