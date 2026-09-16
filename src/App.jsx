@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, AlertTriangle, BookOpen, X } from "lucide-react";
+import { Plus, AlertTriangle, BookOpen, X, Search } from "lucide-react";
 import { C } from "./lib/theme";
 import { uid, fmt, fmtUnits, setCurrencyScales, setSymbolScales } from "./lib/format";
-import { buildNestedGroups } from "./lib/grouping";
+import { buildNestedGroups, flattenGroupLeaves, leafMatchesQuery } from "./lib/grouping";
 import { accountIdFromHash, setHashForAccount } from "./lib/hash";
 import * as api from "./api";
-import { ModalShell } from "./components/ui";
+import { ModalShell, miniInput } from "./components/ui";
 import { GroupLevelPicker } from "./components/GroupLevelPicker";
-import { SidebarGroupTree } from "./components/SidebarGroupTree";
+import { SidebarGroupTree, SidebarSearchResults } from "./components/SidebarGroupTree";
 import { Overview } from "./components/Overview";
 import { IsaParentView } from "./components/IsaParentView";
 import { AllowanceView } from "./components/AllowanceView";
@@ -38,6 +38,7 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
   const [storageOK, setStorageOK] = useState(true);
   const [selectedId, setSelectedIdRaw] = useState(null);
+  const [sidebarQuery, setSidebarQuery] = useState("");
   const [showAllowance, setShowAllowance] = useState(false);
   const [accountForm, setAccountForm] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null); // { id, entryCount, name }
@@ -336,17 +337,39 @@ export default function App() {
             />
           </div>
 
+          {accounts.length > 0 && (
+            <div className="flex items-center gap-1.5 mb-3" style={{ ...miniInput, padding: "5px 8px" }}>
+              <Search size={13} color={C.inkFaint} />
+              <input
+                value={sidebarQuery}
+                onChange={(e) => setSidebarQuery(e.target.value)}
+                placeholder="Search accounts…"
+                style={{ flex: 1, border: "none", outline: "none", background: "transparent", fontSize: 12.5, color: C.ink }}
+              />
+              {sidebarQuery && <button onClick={() => setSidebarQuery("")}><X size={12} color={C.inkFaint} /></button>}
+            </div>
+          )}
+
           {loaded && accounts.length === 0 && (
             <p style={{ fontSize: 12.5, color: C.inkFaint, padding: "0 8px", lineHeight: 1.5 }}>No accounts yet. Add one to start keeping books.</p>
           )}
 
-          <SidebarGroupTree
-            groups={buildNestedGroups(accounts, settings.groupLevels || ["type"], accounts, symbols)}
-            depth={0}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            accountDisplay={accountDisplay}
-          />
+          {sidebarQuery.trim() ? (
+            <SidebarSearchResults
+              leaves={flattenGroupLeaves(buildNestedGroups(accounts, settings.groupLevels || ["type"], accounts, symbols)).filter((l) => leafMatchesQuery(l, sidebarQuery))}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              accountDisplay={accountDisplay}
+            />
+          ) : (
+            <SidebarGroupTree
+              groups={buildNestedGroups(accounts, settings.groupLevels || ["type"], accounts, symbols)}
+              depth={0}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              accountDisplay={accountDisplay}
+            />
+          )}
         </aside>
 
 

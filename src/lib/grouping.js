@@ -79,6 +79,35 @@ export function buildNestedGroups(subset, levels, allAccounts, symbols = []) {
   }));
 }
 
+// Flattens a nested group tree (buildNestedGroups' output) into one entry
+// per account, each carrying the labels of every ancestor group it sits
+// under — the "path" free-text account search matches against (the
+// account picker in otherLines.jsx, and the sidebar/Overview searches),
+// so a query can hit any level of the *current* grouping (institution,
+// subtype, currency, ...), not just the account's own name.
+export function flattenGroupLeaves(nodes, path = []) {
+  const out = [];
+  nodes.forEach((node) => {
+    const nextPath = [...path, node.label];
+    if (node.leaf) {
+      node.items.forEach((a) => out.push({ account: a, path: nextPath }));
+    } else {
+      out.push(...flattenGroupLeaves(node.children, nextPath));
+    }
+  });
+  return out;
+}
+
+// Every whitespace-separated search word must appear somewhere in the
+// leaf's path + account name (an AND match, order-independent) — lets
+// "barclays current" find an account named "Current" grouped under
+// institution "Barclays" without the words needing to appear in that
+// order, or all in the same field.
+export function leafMatchesQuery(leaf, query) {
+  const haystack = [...leaf.path, leaf.account.name].join(" ").toLowerCase();
+  return query.trim().toLowerCase().split(/\s+/).every((word) => haystack.includes(word));
+}
+
 export function subtotalsForItems(items) {
   const sub = {};
   items.filter((a) => a.type !== "investment" && a.type !== "isa-parent").forEach((a) => { sub[a.currency] = (sub[a.currency] || 0) + (a.balance || 0); });

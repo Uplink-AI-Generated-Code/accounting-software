@@ -1,39 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, X } from "lucide-react";
 import { C } from "../lib/theme";
-import { buildNestedGroups } from "../lib/grouping";
+import { buildNestedGroups, flattenGroupLeaves, leafMatchesQuery } from "../lib/grouping";
 import { miniInput } from "./ui";
 
 function accountLabel(a) {
   return `${a.name} (${a.type === "investment" ? a.symbol : a.currency})`;
-}
-
-// Flattens a nested group tree (buildNestedGroups' output) into one entry
-// per account, each carrying the labels of every ancestor group it sits
-// under — the "path" free-text search matches against, so a query can hit
-// any level of the *current* grouping (institution, subtype, currency,
-// ...), not just the account's own name.
-function flattenLeaves(nodes, path = []) {
-  const out = [];
-  nodes.forEach((node) => {
-    const nextPath = [...path, node.label];
-    if (node.leaf) {
-      node.items.forEach((a) => out.push({ account: a, path: nextPath }));
-    } else {
-      out.push(...flattenLeaves(node.children, nextPath));
-    }
-  });
-  return out;
-}
-
-// Every whitespace-separated search word must appear somewhere in the
-// leaf's path + account name (an AND match, order-independent) — lets
-// "barclays current" find an account named "Current" grouped under
-// institution "Barclays" without the words needing to appear in that
-// order, or all in the same field.
-function matchesQuery(leaf, query) {
-  const haystack = [...leaf.path, leaf.account.name].join(" ").toLowerCase();
-  return query.trim().toLowerCase().split(/\s+/).every((word) => haystack.includes(word));
 }
 
 // Recursive group renderer for browse mode (no active search) — mirrors
@@ -91,8 +63,8 @@ export function AccountPicker({ accounts, allAccounts, symbols, groupLevels, val
 
   const selected = accounts.find((a) => a.id === value) || allAccounts.find((a) => a.id === value);
   const tree = useMemo(() => buildNestedGroups(accounts, groupLevels, allAccounts, symbols), [accounts, groupLevels, allAccounts, symbols]);
-  const leaves = useMemo(() => (query.trim() ? flattenLeaves(tree) : null), [tree, query]);
-  const filtered = leaves ? leaves.filter((l) => matchesQuery(l, query)) : null;
+  const leaves = useMemo(() => (query.trim() ? flattenGroupLeaves(tree) : null), [tree, query]);
+  const filtered = leaves ? leaves.filter((l) => leafMatchesQuery(l, query)) : null;
 
   function select(id) {
     onChange(id);

@@ -1,14 +1,19 @@
-import { Plus, Wallet } from "lucide-react";
+import { useState } from "react";
+import { Plus, Wallet, Search, X } from "lucide-react";
 import { C } from "../lib/theme";
 import { fmt } from "../lib/format";
-import { buildNestedGroups } from "../lib/grouping";
+import { buildNestedGroups, flattenGroupLeaves, leafMatchesQuery } from "../lib/grouping";
 import { GroupLevelPicker } from "./GroupLevelPicker";
 import { OverviewGroupTree } from "./OverviewGroupTree";
+import { AccountCard } from "./AccountCard";
+import { miniInput } from "./ui";
 
 /* ---------------------------------------------------------
    Overview
 --------------------------------------------------------- */
 export function Overview({ accounts, symbols, settings, onSaveSettings, onSaveGrouping, onRemoveGrouping, onSelect, onNew }) {
+  const [query, setQuery] = useState("");
+
   if (accounts.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center" style={{ marginTop: 100, color: C.inkFaint }}>
@@ -30,7 +35,17 @@ export function Overview({ accounts, symbols, settings, onSaveSettings, onSaveGr
     <div>
       <div className="flex items-center justify-between mb-1">
         <h2 className="ll-serif" style={{ fontSize: 20 }}>Chart of accounts</h2>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5" style={{ ...miniInput, width: 200, padding: "5px 8px" }}>
+            <Search size={13} color={C.inkFaint} />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search accounts…"
+              style={{ flex: 1, border: "none", outline: "none", background: "transparent", fontSize: 12.5, color: C.ink }}
+            />
+            {query && <button onClick={() => setQuery("")}><X size={12} color={C.inkFaint} /></button>}
+          </div>
           <span style={{ fontSize: 11.5, color: C.inkFaint }}>Group by</span>
           <GroupLevelPicker
             levels={groupLevels}
@@ -45,7 +60,37 @@ export function Overview({ accounts, symbols, settings, onSaveSettings, onSaveGr
         Combined balance by currency: {Object.entries(totalsByCurrency).map(([c, v]) => fmt(v, c)).join("  ·  ")}
       </p>
 
-      <OverviewGroupTree groups={buildNestedGroups(accounts, groupLevels, accounts, symbols)} depth={0} accounts={accounts} symbols={symbols} onSelect={onSelect} />
+      {query.trim() ? (
+        <OverviewSearchResults
+          leaves={flattenGroupLeaves(buildNestedGroups(accounts, groupLevels, accounts, symbols)).filter((l) => leafMatchesQuery(l, query))}
+          accounts={accounts}
+          symbols={symbols}
+          onSelect={onSelect}
+        />
+      ) : (
+        <OverviewGroupTree groups={buildNestedGroups(accounts, groupLevels, accounts, symbols)} depth={0} accounts={accounts} symbols={symbols} onSelect={onSelect} />
+      )}
+    </div>
+  );
+}
+
+// The flat equivalent of OverviewGroupTree, shown instead of the grouped
+// grid while a search query is active — each matched account keeps its
+// existing card, just ungrouped, plus a small breadcrumb of the grouping
+// path it matched on (so a hit against an institution/subtype/currency
+// name, not just the account's own name, is still legible).
+function OverviewSearchResults({ leaves, accounts, symbols, onSelect }) {
+  if (leaves.length === 0) {
+    return <p style={{ fontSize: 13, color: C.inkFaint }}>No accounts match.</p>;
+  }
+  return (
+    <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
+      {leaves.map(({ account: a, path }) => (
+        <div key={a.id} className="flex flex-col">
+          <AccountCard a={a} accounts={accounts} symbols={symbols} onSelect={onSelect} />
+          <div style={{ fontSize: 10.5, color: C.inkFaint, marginTop: 4, paddingLeft: 2 }}>{path.join(" › ")}</div>
+        </div>
+      ))}
     </div>
   );
 }
