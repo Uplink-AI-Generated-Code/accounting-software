@@ -13,3 +13,7 @@
 /phpunit.xml
 /.phpunit.cache/
 ###< phpunit/phpunit ###
+
+# Personal financial data migrated from Nucleware/Accounts — never committed.
+/_data/
+/databases/

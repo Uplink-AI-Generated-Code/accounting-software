@@ -345,12 +345,22 @@ class LedgerStateService
      * price, and divides only once, at the end, to avoid compounding
      * rounding error across many trades.
      *
+     * A carried-forward opening position (Account::$openingBalance /
+     * $openingBalanceCashValue — set by app:new-year when rolling an
+     * investment account into a fresh tax year's database, see
+     * CLAUDE.md) seeds both walks instead of starting at zero, so this
+     * total agrees with the account's own ledger view (StockLedger.jsx
+     * seeds its running column the same way) even before any line exists
+     * in the new database.
+     *
      * @return array{cost: int, value: int}
      */
     private function stockStatsFor(Account $a): array
     {
-        $costState = ['units' => 0, 'cost' => 0];
-        $valueState = ['units' => 0, 'lastCashValue' => 0, 'lastUnits' => 0];
+        $openingUnits = $a->getOpeningBalance() ?? 0;
+        $openingCost = $a->getOpeningBalanceCashValue() ?? 0;
+        $costState = ['units' => $openingUnits, 'cost' => $openingCost];
+        $valueState = ['units' => $openingUnits, 'lastCashValue' => $openingCost, 'lastUnits' => $openingUnits];
 
         foreach ($this->orderedLinesFor($a) as $line) {
             $this->applyCostBasisLine($costState, $line);
@@ -758,6 +768,7 @@ class LedgerStateService
         $account->setType((string) $data['type']);
         $account->setCurrency($this->resolveCurrency($data['currency'] ?? null));
         $account->setOpeningBalance(isset($data['openingBalance']) ? (int) $data['openingBalance'] : null);
+        $account->setOpeningBalanceCashValue(isset($data['openingBalanceCashValue']) ? (int) $data['openingBalanceCashValue'] : null);
         $account->setSymbol($this->resolveSymbol($data['symbol'] ?? null));
         $account->setCounterparty($this->resolveCounterparty($data['counterparty'] ?? null));
         $account->setSubtype(isset($data['subtype']) ? (string) $data['subtype'] : null);
@@ -974,6 +985,7 @@ class LedgerStateService
             'type' => $a->getType(),
             'currency' => $a->getCurrency()?->getCode(),
             'openingBalance' => $a->getOpeningBalance(),
+            'openingBalanceCashValue' => $a->getOpeningBalanceCashValue(),
             'symbol' => $a->getSymbol()?->getTicker(),
             'counterparty' => $a->getCounterparty()?->getName(),
             'subtype' => $a->getSubtype(),

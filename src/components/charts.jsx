@@ -92,12 +92,12 @@ function useChartSeries(opening, lines, interval, compareYoY, rangeCtx) {
   );
 }
 
-function useCostBasisSeries(lines, interval, compareYoY, rangeCtx) {
+function useCostBasisSeries(opening, lines, interval, compareYoY, rangeCtx) {
   const earliest = lines.length ? lines[0].date : todayISO();
   const { start, end } = intervalRange(interval, { earliestISO: earliest, ...rangeCtx });
-  const currentSeries = useMemo(() => buildCostBasisSeries(lines, start, end), [lines, start, end]);
+  const currentSeries = useMemo(() => buildCostBasisSeries(lines, start, end, opening), [lines, start, end, opening]);
   const prevRange = compareYoY ? { start: addYears(start, -1), end: addYears(end, -1) } : null;
-  const previousSeries = useMemo(() => (prevRange ? buildCostBasisSeries(lines, prevRange.start, prevRange.end) : null), [lines, prevRange]);
+  const previousSeries = useMemo(() => (prevRange ? buildCostBasisSeries(lines, prevRange.start, prevRange.end, opening) : null), [lines, prevRange, opening]);
   return useMemo(
     () =>
       currentSeries.map((p, i) => ({
@@ -111,12 +111,12 @@ function useCostBasisSeries(lines, interval, compareYoY, rangeCtx) {
   );
 }
 
-function usePortfolioValueSeries(lines, interval, compareYoY, rangeCtx) {
+function usePortfolioValueSeries(opening, lines, interval, compareYoY, rangeCtx) {
   const earliest = lines.length ? lines[0].date : todayISO();
   const { start, end } = intervalRange(interval, { earliestISO: earliest, ...rangeCtx });
-  const currentSeries = useMemo(() => buildPortfolioValueSeries(lines, start, end), [lines, start, end]);
+  const currentSeries = useMemo(() => buildPortfolioValueSeries(lines, start, end, opening), [lines, start, end, opening]);
   const prevRange = compareYoY ? { start: addYears(start, -1), end: addYears(end, -1) } : null;
-  const previousSeries = useMemo(() => (prevRange ? buildPortfolioValueSeries(lines, prevRange.start, prevRange.end) : null), [lines, prevRange]);
+  const previousSeries = useMemo(() => (prevRange ? buildPortfolioValueSeries(lines, prevRange.start, prevRange.end, opening) : null), [lines, prevRange, opening]);
   return useMemo(
     () =>
       currentSeries.map((p, i) => ({
@@ -217,9 +217,13 @@ export function UnitsChart({ account, transactions, tradingCurrency, activeTaxYe
   // All three share the same underlying lines, so they land on identical
   // date/offset grids and can be zipped together into one dataset below.
   const rangeCtx = { taxYearStart: activeTaxYearStart, customStart, customEnd };
+  // Seeded from the account's own carried-forward opening position (see
+  // CLAUDE.md's "The active tax year"/app:new-year) so the chart agrees
+  // with the header's own costBasis/portfolioValue total.
+  const opening = { units: account.openingBalance || 0, cost: account.openingBalanceCashValue || 0 };
   const unitsMerged = useChartSeries(account.openingBalance || 0, rawLines, interval, compareYoY, rangeCtx);
-  const costMerged = useCostBasisSeries(rawLines, interval, compareYoY, rangeCtx);
-  const valueMerged = usePortfolioValueSeries(rawLines, interval, compareYoY, rangeCtx);
+  const costMerged = useCostBasisSeries(opening, rawLines, interval, compareYoY, rangeCtx);
+  const valueMerged = usePortfolioValueSeries(opening, rawLines, interval, compareYoY, rangeCtx);
 
   const merged = useMemo(
     () =>

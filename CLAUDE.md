@@ -112,6 +112,20 @@ SQLite. All commands run from `backend/`.
   a baseline currency list (GBP/USD/EUR/JPY/CHF/CAD/AUD/RON/INR) — see
   `src/Command/SeedCurrenciesCommand.php`. Idempotent, safe to re-run.
   Not the only way a currency gets added — see below.
+- Bootstrap the *next* tax year's database from the current one:
+  `php bin/console app:new-year databases/2025-2026.sqlite3` — see
+  `src/Command/NewYearCommand.php` and "The active tax year" below. Copies
+  the live SQLite file wholesale (so every Currency/Symbol/Counterparty/
+  Tag/Account definition and the settings row carry over exactly, no
+  re-derivation), then, in the copy only, wipes every line/transaction and
+  sets each account's `openingBalance`/`openingBalanceCashValue` to its
+  *current* closing balance/cost basis for asset/liability/equity/
+  investment accounts, or resets both to null for income/isa-income/
+  expense/isa-parent accounts (period-specific flows, not a balance that
+  carries across tax years). Refuses to run if the target path already
+  exists. Point `DATABASE_URL` (`.env.local`) at the new file once you're
+  ready to start using it — this doesn't touch which file the app itself
+  is pointed at.
 - The SQLite file lives at `backend/var/data_dev.db` (gitignored, along with
   the rest of `var/`); a separate `var/data_test.db` is used for the test
   suite (see below).
@@ -648,7 +662,10 @@ Accounts project has always worked (one SQLite file per tax year) —
 unlike that project, this app doesn't manage the multiple files itself
 (there's no in-app database switcher); running a second tax year means
 pointing a separate instance/`DATABASE_URL` at a separate file, entirely
-outside this app's concern.
+outside this app's concern. `app:new-year` (see "Commands" above)
+bootstraps that next file from the current one's closing balances —
+still a separate, manual step (copy the file, then swap `DATABASE_URL`),
+not something the running app triggers itself.
 
 - **There is no stored setting for this — no column, no migration, no
   picker.** `LedgerStateService::determinedTaxYearStart()` computes it
@@ -769,6 +786,19 @@ outside this app's concern.
   in this app. Don't let a future request to "show current value" quietly
   turn into fabricating market prices; surface the distinction to the
   user instead, same as prior turns in this project have done.
+- **`Account.openingBalanceCashValue`** pairs with `openingBalance` the
+  same way a trade's `cashValue` pairs with `amount` — the cost basis
+  tied to that opening unit count, only ever meaningful for an investment
+  account. Nullable, omitted from JSON like every other nullable field,
+  and set only by `app:new-year` (see "Commands" above) when carrying an
+  investment account's closing position into a fresh tax year's file —
+  there's no UI for it. Both `stockStatsFor()` and the frontend
+  equivalents (`StockLedger.jsx`'s running column,
+  `stockMath.js`'s `buildCostBasisSeries`/`buildPortfolioValueSeries` for
+  the chart) seed their cost/value walk from `openingBalance`/
+  `openingBalanceCashValue` instead of starting at zero — keep these in
+  agreement if you touch any of them, or a rolled-over account's header,
+  its own running column, and its chart will silently disagree.
 
 ## UI conventions
 

@@ -28,6 +28,14 @@ use Doctrine\ORM\Mapping as ORM;
  * floating-point drift; see CLAUDE.md. For an investment account (one with
  * a `symbol` set), `currency` is unused/left null: trading currency is
  * derived via `symbol.tradingCurrency` instead of being stored twice.
+ * `openingBalanceCashValue` only ever means something alongside a nonzero
+ * `openingBalance` on an investment account: the cost basis tied to that
+ * opening unit count, the same pairing `Line.cashValue` has with
+ * `Line.amount` on a trade — see LedgerStateService::stockStatsFor(),
+ * which seeds its cost/value walk from these two fields instead of
+ * starting at zero. Unused for every other account type. Populated by
+ * `app:new-year` when carrying an investment account's closing position
+ * into a fresh tax year's database; never surfaced in AccountFormModal.
  *
  * `subtype` is a free-text product-type tag (e.g. "Credit Card", "Loan",
  * "Trading") — a fourth grouping dimension alongside type/counterparty/
@@ -58,6 +66,9 @@ class Account
 
     #[ORM\Column(nullable: true)]
     private ?int $openingBalance = null;
+
+    #[ORM\Column(nullable: true)]
+    private ?int $openingBalanceCashValue = null;
 
     #[ORM\ManyToOne(targetEntity: Symbol::class)]
     #[ORM\JoinColumn(name: 'symbol', referencedColumnName: 'ticker', nullable: true)]
@@ -135,6 +146,18 @@ class Account
     public function setOpeningBalance(?int $openingBalance): static
     {
         $this->openingBalance = $openingBalance;
+
+        return $this;
+    }
+
+    public function getOpeningBalanceCashValue(): ?int
+    {
+        return $this->openingBalanceCashValue;
+    }
+
+    public function setOpeningBalanceCashValue(?int $openingBalanceCashValue): static
+    {
+        $this->openingBalanceCashValue = $openingBalanceCashValue;
 
         return $this;
     }

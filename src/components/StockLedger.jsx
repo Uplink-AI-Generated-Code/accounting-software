@@ -157,8 +157,15 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
       return rowKey(a.record).localeCompare(rowKey(b.record));
     });
     let running = account.openingBalance || 0;
-    const costState = { units: 0, cost: 0 };
-    const valueState = { units: 0, lastPrice: 0, value: 0 };
+    // Seeded from the account's carried-forward opening position (see
+    // CLAUDE.md's "The active tax year"/app:new-year and
+    // LedgerStateService::stockStatsFor(), which this mirrors) rather than
+    // starting at zero, so this running column agrees with the header's
+    // own costBasis/portfolioValue total even before any line exists.
+    const openingUnits = account.openingBalance || 0;
+    const openingCost = account.openingBalanceCashValue || 0;
+    const costState = { units: openingUnits, cost: openingCost };
+    const valueState = { units: openingUnits, lastCashValue: openingCost, lastUnits: openingUnits, value: openingUnits ? openingCost : 0 };
     return sorted.map(({ record, line }) => {
       running += line.amount || 0;
       applyCostBasisLine(costState, line);
@@ -173,8 +180,11 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
   // Current cost basis, portfolio value, and the average price cost basis
   // implies — all read straight off the ledger's own running totals, so
   // the header, each row, and the chart are always telling the same story.
-  const costBasis = rows.length ? rows[rows.length - 1].runningCost : 0;
-  const portfolioValue = rows.length ? rows[rows.length - 1].runningValue : 0;
+  // Falls back to the account's own carried-forward opening position (not
+  // a hardcoded 0) when there are no trades yet, so a freshly rolled-over
+  // investment account's header agrees with the sidebar's costBasis.
+  const costBasis = rows.length ? rows[rows.length - 1].runningCost : account.openingBalanceCashValue || 0;
+  const portfolioValue = rows.length ? rows[rows.length - 1].runningValue : account.openingBalanceCashValue || 0;
   // Cost per *whole* unit, in the trading currency's own minor units —
   // costBasis and balance are integers of two different scales (cash vs
   // units), so the unit scale has to be multiplied back in before

@@ -36,8 +36,14 @@ export function applyCostBasisLine(state, l) {
 // the sale proceeds — so it always settles back to exactly £0 once every
 // unit has been sold, rather than drifting negative on a profitable exit
 // the way a plain running cash-flow total would.
-export function buildCostBasisSeries(sortedLines, startISO, endISO) {
-  const state = { units: 0, cost: 0 };
+//
+// `opening` seeds the walk from an account's carried-forward position
+// (Account.openingBalance/openingBalanceCashValue — see CLAUDE.md's "The
+// active tax year"/app:new-year) instead of starting at zero, mirroring
+// LedgerStateService::stockStatsFor()'s own seeding — otherwise this
+// series would disagree with the account's own current-totals display.
+export function buildCostBasisSeries(sortedLines, startISO, endISO, opening = {}) {
+  const state = { units: opening.units || 0, cost: opening.cost || 0 };
   let idx = 0;
   while (idx < sortedLines.length && sortedLines[idx].date < startISO) {
     applyCostBasisLine(state, sortedLines[idx]);
@@ -80,8 +86,13 @@ export function applyPortfolioValueLine(state, l) {
   }
   state.value = state.lastUnits ? divRoundHalfUp(state.units * state.lastCashValue, state.lastUnits) : 0;
 }
-export function buildPortfolioValueSeries(sortedLines, startISO, endISO) {
-  const state = { units: 0, lastCashValue: 0, lastUnits: 0, value: 0 };
+// `opening` is the same carried-forward seed buildCostBasisSeries() takes
+// — until the first new trade re-marks it, the carried cost basis is the
+// best available stand-in for "last known price" too.
+export function buildPortfolioValueSeries(sortedLines, startISO, endISO, opening = {}) {
+  const openingUnits = opening.units || 0;
+  const openingCost = opening.cost || 0;
+  const state = { units: openingUnits, lastCashValue: openingCost, lastUnits: openingUnits, value: openingUnits ? openingCost : 0 };
   let idx = 0;
   while (idx < sortedLines.length && sortedLines[idx].date < startISO) {
     applyPortfolioValueLine(state, sortedLines[idx]);
