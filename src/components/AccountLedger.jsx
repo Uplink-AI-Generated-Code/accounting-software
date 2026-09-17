@@ -12,7 +12,7 @@ import { useAccountLedger } from "./useAccountLedger";
 import { useMatchCandidates } from "./useMatchCandidates";
 import { useLedgerRowAnimation } from "./useLedgerRowAnimation";
 import { BalanceChart } from "./charts";
-import { iconBtn, miniInput, ImbalanceBadge } from "./ui";
+import { iconBtn, miniInput, ImbalanceBadge, TagChips, TagsEditor } from "./ui";
 
 // A record's stable row identity: its transaction id when linked, or
 // "line-<id>" for a standalone one — used for React keys, row refs, and
@@ -29,6 +29,7 @@ function blankDraft(presetOtherId) {
     lineId: null,
     date: todayISO(),
     description: "",
+    tags: [],
     otherLines: presetOtherId ? [blankOtherLine(presetOtherId)] : [],
     splitOffLines: [],
     inAmountStr: "",
@@ -40,7 +41,7 @@ function blankDraft(presetOtherId) {
   };
 }
 
-export function AccountLedger({ account, accounts, currencies, symbols, groupLevels, activeTaxYearStart, balance, onEditAccount, onLedgerOperations, guardRef }) {
+export function AccountLedger({ account, accounts, currencies, symbols, groupLevels, activeTaxYearStart, balance, knownTags = [], onEditAccount, onLedgerOperations, guardRef }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
   const [view, setView] = useState("ledger");
@@ -88,6 +89,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
   function draftLines(d) {
     const delta = draftDelta(d);
     const line1 = { accountId: account.id, amount: delta, date: d.date || todayISO(), description: (d.description || "").trim() };
+    if (d.tags && d.tags.length) line1.tags = d.tags;
 
     // The exchange tag is kept regardless of whether this leg is linked —
     // it's useful as a record of the rate at entry time even once a real
@@ -206,6 +208,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
       originalRecord: record,
       date: line.date,
       description: line.description || "",
+      tags: line.tags || [],
       inAmountStr: line.amount > 0 ? fromMinorUnits(line.amount, accountScale) : "",
       outAmountStr: line.amount < 0 ? fromMinorUnits(-line.amount, accountScale) : "",
       exchangeChecked: line.exchangeAmount !== undefined,
@@ -408,6 +411,10 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
                   </div>
                 </div>
 
+                <div className="mt-2" style={{ paddingLeft: 128 }}>
+                  <TagsEditor tags={draft.tags} onChange={(tags) => setDraft({ ...draft, tags })} knownTags={knownTags} />
+                </div>
+
                 <OtherLinesEditor
                   draft={draft}
                   account={account}
@@ -518,11 +525,12 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
               }}
             >
               <div style={{ color: C.inkSoft, fontSize: 12.5 }}>{fmtDate(r.line.date)}</div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2" style={{ minWidth: 0 }}>
                 <span style={{ color: unbalanced ? C.debit : C.ink }}>{r.line.description || <span style={{ color: C.inkFaint }}>—</span>}</span>
                 {hint.type !== "balanced" && hint.type !== "empty" && (
                   <span title={hint.message}><AlertTriangle size={12} color={iconColor} /></span>
                 )}
+                <TagChips tags={r.line.tags} />
               </div>
               <div style={{ color: C.inkFaint, fontSize: 12.5, display: "flex", alignItems: "center", gap: 4 }}>
                 {r.others.length > 0 ? (<><ArrowLeftRight size={11} /> {r.others.map((a) => displayAccountName(a)).join(", ")}</>) : <span style={{ fontStyle: "italic" }}>unmatched</span>}

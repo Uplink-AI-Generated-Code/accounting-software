@@ -13,7 +13,7 @@ import { useAccountLedger } from "./useAccountLedger";
 import { useMatchCandidates } from "./useMatchCandidates";
 import { useLedgerRowAnimation } from "./useLedgerRowAnimation";
 import { UnitsChart } from "./charts";
-import { iconBtn, miniInput, ImbalanceBadge } from "./ui";
+import { iconBtn, miniInput, ImbalanceBadge, TagChips, TagsEditor } from "./ui";
 
 /* ---------------------------------------------------------
    Stock Ledger — one account, one security. Trades are units against a
@@ -36,6 +36,7 @@ function blankStockDraft() {
     lineId: null,
     date: todayISO(),
     description: "",
+    tags: [],
     otherLines: [],
     splitOffLines: [],
     unitsInStr: "",
@@ -44,7 +45,7 @@ function blankStockDraft() {
   };
 }
 
-export function StockLedger({ account, accounts, symbols, currencies, groupLevels, activeTaxYearStart, balance, onEditAccount, onLedgerOperations, guardRef }) {
+export function StockLedger({ account, accounts, symbols, currencies, groupLevels, activeTaxYearStart, balance, knownTags = [], onEditAccount, onLedgerOperations, guardRef }) {
   const [draft, setDraft] = useState(null);
   const [draftError, setDraftError] = useState("");
   const [view, setView] = useState("ledger");
@@ -97,6 +98,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
       line1.cashValue = -cashNatural;
       line1.cashCurrency = tradingCurrency;
     }
+    if (d.tags && d.tags.length) line1.tags = d.tags;
 
     const activeOtherLines = d.otherLines.filter((ol) => {
       if (!ol.accountId) return false;
@@ -191,6 +193,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
       splitOffLines: [],
       date: line.date,
       description: line.description || "",
+      tags: line.tags || [],
       unitsInStr: line.amount > 0 ? fromMinorUnits(line.amount, unitScale) : "",
       unitsOutStr: line.amount < 0 ? fromMinorUnits(-line.amount, unitScale) : "",
       valueStr: line.cashValue !== undefined ? fromMinorUnits(Math.abs(naturalCash), cashScale) : "",
@@ -395,6 +398,10 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
                   </div>
                 </div>
 
+                <div className="mt-2" style={{ paddingLeft: 118 }}>
+                  <TagsEditor tags={draft.tags} onChange={(tags) => setDraft({ ...draft, tags })} knownTags={knownTags} />
+                </div>
+
                 <OtherLinesEditor
                   draft={draft}
                   account={account}
@@ -464,9 +471,10 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
             >
               <div className="grid items-center" style={{ gridTemplateColumns: gridCols, fontSize: 13.5 }}>
                 <div style={{ color: C.inkSoft, fontSize: 12.5 }}>{fmtDate(r.line.date)}</div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2" style={{ minWidth: 0 }}>
                   {r.line.description || <span style={{ color: C.inkFaint }}>—</span>}
                   {unmatched && <span title="Value side not yet matched to another account"><AlertTriangle size={12} color={C.gold} /></span>}
+                  <TagChips tags={r.line.tags} />
                 </div>
                 <div className="ll-mono text-right" style={{ color: unitsOut ? C.debit : C.inkFaint }}>{unitsOut ? fmtUnits(unitsOut, account.symbol) : "—"}</div>
                 <div className="ll-mono text-right" style={{ color: unitsIn ? C.credit : C.inkFaint }}>{unitsIn ? fmtUnits(unitsIn, account.symbol) : "—"}</div>

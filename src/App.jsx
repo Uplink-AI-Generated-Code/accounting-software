@@ -35,6 +35,13 @@ export default function App() {
   const [currencies, setCurrencies] = useState([]);
   const [symbols, setSymbols] = useState([]);
   const [counterparties, setCounterparties] = useState([]);
+  // Every distinct tag in use, app-wide — feeds the tag editor's
+  // autocomplete (existing dimensions, then existing values) wherever a
+  // line is being edited. Small (personal-ledger scale), so a single
+  // fetch alongside the other reference data is fine; re-fetched after
+  // ledger writes the same way accounts/settings are, since a save can
+  // introduce a brand-new tag. See CLAUDE.md's "Tags" section.
+  const [knownTags, setKnownTags] = useState([]);
   const [settings, setSettings] = useState({ over65: false, groupLevels: ["type"], savedGroupings: [] });
   const [loaded, setLoaded] = useState(false);
   const [storageOK, setStorageOK] = useState(true);
@@ -128,14 +135,16 @@ export default function App() {
     (async () => {
       try {
         await refreshAccounts();
-        const [cur, sym, cp] = await Promise.all([
+        const [cur, sym, cp, tags] = await Promise.all([
           api.getCurrencies().catch(() => []),
           api.getSymbols().catch(() => []),
           api.getCounterparties().catch(() => []),
+          api.getTags().catch(() => []),
         ]);
         setCurrencies(cur);
         setSymbols(sym);
         setCounterparties(cp);
+        setKnownTags(tags);
         setCurrencyScales(cur);
         setSymbolScales(sym);
         const s = await api.getSettings().catch(() => null);
@@ -286,6 +295,9 @@ export default function App() {
         // header's badge stays accurate rather than only updating after
         // a full reload.
         api.getSettings().then((s) => setSettings((prev) => ({ ...prev, ...s }))).catch(() => {});
+        // A save can introduce a brand-new tag — refetch so it's available
+        // in the tag editor's autocomplete without a full page reload.
+        api.getTags().then(setKnownTags).catch(() => {});
         return refreshAccounts();
       })
       .catch(() => setStorageOK(false));
@@ -458,6 +470,7 @@ export default function App() {
                 groupLevels={settings.groupLevels || ["type"]}
                 activeTaxYearStart={activeTaxYearStart}
                 balance={selected.balance || 0}
+                knownTags={knownTags}
                 onEditAccount={() => setAccountForm(selected)}
                 onLedgerOperations={saveLedgerOperations}
                 guardRef={ledgerGuardRef}
@@ -471,6 +484,7 @@ export default function App() {
                 groupLevels={settings.groupLevels || ["type"]}
                 activeTaxYearStart={activeTaxYearStart}
                 balance={selected.balance || 0}
+                knownTags={knownTags}
                 onEditAccount={() => setAccountForm(selected)}
                 onLedgerOperations={saveLedgerOperations}
                 guardRef={ledgerGuardRef}

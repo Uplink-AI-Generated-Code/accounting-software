@@ -1,4 +1,5 @@
-import { X, AlertTriangle } from "lucide-react";
+import { useState } from "react";
+import { X, AlertTriangle, Plus } from "lucide-react";
 import { C } from "../lib/theme";
 import { fmt } from "../lib/format";
 
@@ -35,6 +36,73 @@ export function ImbalanceBadge({ account, currency }) {
       {account.imbalanceOut > 0 && <span>· Out {fmt(account.imbalanceOut, currency)}</span>}
       {account.imbalanceIn > 0 && <span>· In {fmt(account.imbalanceIn, currency)}</span>}
     </span>
+  );
+}
+
+// Read-only chip display for a line's tags — see CLAUDE.md's "Tags"
+// section. A bare (value-less) tag shows just its dimension; a "Car" tag
+// with value "AB12CDE" shows "Car: AB12CDE".
+export function TagChips({ tags }) {
+  if (!tags || !tags.length) return null;
+  return (
+    <span className="flex flex-wrap items-center" style={{ gap: 4 }}>
+      {tags.map((t, i) => (
+        <span key={`${t.dimension}:${t.value}:${i}`} style={{ fontSize: 10, color: C.inkFaint, background: C.paperDim, border: `1px solid ${C.lineSoft}`, borderRadius: 3, padding: "1px 5px", whiteSpace: "nowrap" }}>
+          {t.dimension}{t.value ? `: ${t.value}` : ""}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+// Editable tag list for a line being edited — chips with a remove button,
+// plus a small dimension/value add form. `knownTags` (the app-wide list
+// from GET /api/tags) feeds the two datalists: existing dimensions first,
+// then existing values once a dimension's chosen — the guardrail against
+// "Refunded"/"refund" silently becoming two different tags (see
+// CLAUDE.md). Value is optional — a bare tag like "Car" with no value is
+// a legitimate flag, not an incomplete entry.
+export function TagsEditor({ tags, onChange, knownTags = [] }) {
+  const [dimension, setDimension] = useState("");
+  const [value, setValue] = useState("");
+  const knownDimensions = Array.from(new Set(knownTags.map((t) => t.dimension))).sort();
+  const knownValues = Array.from(new Set(knownTags.filter((t) => t.dimension === dimension.trim()).map((t) => t.value).filter(Boolean))).sort();
+
+  function add() {
+    const d = dimension.trim();
+    if (!d) return;
+    const v = value.trim();
+    if (!tags.some((t) => t.dimension === d && t.value === v)) onChange([...tags, { dimension: d, value: v }]);
+    setDimension("");
+    setValue("");
+  }
+  function remove(i) {
+    onChange(tags.filter((_, idx) => idx !== i));
+  }
+  function onKeyDown(e) {
+    if (e.key === "Enter") { e.preventDefault(); add(); }
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      {tags.length > 0 && (
+        <div className="flex flex-wrap" style={{ gap: 4 }}>
+          {tags.map((t, i) => (
+            <span key={`${t.dimension}:${t.value}:${i}`} className="flex items-center" style={{ gap: 3, fontSize: 11.5, color: C.inkSoft, background: C.paperDim, border: `1px solid ${C.line}`, borderRadius: 4, padding: "2px 5px 2px 7px" }}>
+              {t.dimension}{t.value ? `: ${t.value}` : ""}
+              <button type="button" onClick={() => remove(i)} style={{ display: "flex", padding: 1 }}><X size={10} color={C.inkFaint} /></button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex" style={{ gap: 5 }}>
+        <input value={dimension} onChange={(e) => setDimension(e.target.value)} onKeyDown={onKeyDown} placeholder="Tag" style={{ ...miniInput, width: 100 }} list="ll-tag-dimensions" />
+        <datalist id="ll-tag-dimensions">{knownDimensions.map((d) => <option key={d} value={d} />)}</datalist>
+        <input value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={onKeyDown} placeholder="Value (optional)" style={{ ...miniInput, width: 130 }} list="ll-tag-values" />
+        <datalist id="ll-tag-values">{knownValues.map((v) => <option key={v} value={v} />)}</datalist>
+        <button type="button" onClick={add} style={iconBtn(C.inkSoft)}><Plus size={12} /></button>
+      </div>
+    </div>
   );
 }
 

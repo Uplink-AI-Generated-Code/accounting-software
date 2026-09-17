@@ -104,3 +104,29 @@ export function getSymbols() {
 export function getCounterparties() {
   return request("/api/counterparties");
 }
+
+// Line-level tags — see CLAUDE.md's "Tags" section. Deliberately narrow:
+// most account-level reporting questions are already answered by the
+// account-grouping tree (Counterparty/Subtype/Type); these three cover
+// only the genuinely cross-cutting facts (which car, which trip, refund
+// status, ...) grouping can't reach.
+export function getTags(dimension) {
+  const params = dimension ? `?dimension=${encodeURIComponent(dimension)}` : "";
+  return request(`/api/tags${params}`);
+}
+
+// Every line carrying this exact tag, each with its account context — the
+// drill-down behind a tag-totals figure.
+export function getTaggedLines(dimension, value) {
+  const params = new URLSearchParams({ dimension, value: value || "" });
+  return request(`/api/lines?${params.toString()}`);
+}
+
+// Server-side SUM grouped by (value, currency). excludeTag is a single
+// "Dimension:Value" filter (e.g. "Status:Refunded"), not a general query
+// language. Never includes investment lines — see TagService's docblock.
+export function getTagTotals(dimension, { excludeTag } = {}) {
+  const params = new URLSearchParams({ dimension });
+  if (excludeTag) params.set("excludeTag", excludeTag);
+  return request(`/api/tag-totals?${params.toString()}`);
+}
