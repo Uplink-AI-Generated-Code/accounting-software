@@ -9,7 +9,7 @@ import { fmt, fmtUnits } from "../lib/format";
 // subaccount count, investment's units+value, everything else's plain
 // balance), just laid out on one row instead of stacked across a card.
 // `subtitle` is only passed by the search-results view — the matched
-// group path (institution/subtype/currency/...), shown faint beneath the
+// group path (counterparty/subtype/currency/...), shown faint beneath the
 // name since the search flattens away the grouping headers that would
 // otherwise make that context visible.
 export function AccountRow({ a, accounts, symbols, onSelect, subtitle }) {

@@ -3,8 +3,8 @@
 namespace App\Service;
 
 use App\Entity\Account;
+use App\Entity\Counterparty;
 use App\Entity\Currency;
-use App\Entity\Institution;
 use App\Entity\Line;
 use App\Entity\Settings;
 use App\Entity\Symbol;
@@ -735,7 +735,7 @@ class LedgerStateService
         $account->setCurrency($this->resolveCurrency($data['currency'] ?? null));
         $account->setOpeningBalance(isset($data['openingBalance']) ? (int) $data['openingBalance'] : null);
         $account->setSymbol($this->resolveSymbol($data['symbol'] ?? null));
-        $account->setInstitution($this->resolveInstitution($data['institution'] ?? null));
+        $account->setCounterparty($this->resolveCounterparty($data['counterparty'] ?? null));
         $account->setSubtype(isset($data['subtype']) ? (string) $data['subtype'] : null);
         $account->setIsaKind($data['isaKind'] ?? null);
         $account->setIsaParentId($data['isaParentId'] ?? null);
@@ -745,7 +745,7 @@ class LedgerStateService
     }
 
     /**
-     * Looks up a Currency/Symbol/Institution by its natural key. Throws a
+     * Looks up a Currency/Symbol/Counterparty by its natural key. Throws a
      * clear error naming the missing code rather than silently
      * fabricating a row with a guessed scale — these are reference data,
      * not something a ledger write should be allowed to invent on the
@@ -756,11 +756,11 @@ class LedgerStateService
      * Currency and Symbol are deliberately curated, closed sets (a new
      * one needs a real scale decided — see CLAUDE.md's plan for a future
      * "add symbol" admin flow that actually asks for that), so an
-     * unknown code/ticker is always an error. Institution is different:
-     * free-text institution names were always fine before this schema
-     * existed (any bank the user hasn't used yet), and there's no
-     * meaningful extra data a first use needs to supply — so
-     * resolveInstitution() find-or-creates instead of find-or-throws.
+     * unknown code/ticker is always an error. Counterparty is different:
+     * free-text institution/payee names were always fine before this
+     * schema existed (any bank, or any payee, the user hasn't used yet),
+     * and there's no meaningful extra data a first use needs to supply —
+     * so resolveCounterparty() find-or-creates instead of find-or-throws.
      */
     private function resolveCurrency(mixed $code): ?Currency
     {
@@ -788,18 +788,18 @@ class LedgerStateService
         return $symbol;
     }
 
-    private function resolveInstitution(mixed $name): ?Institution
+    private function resolveCounterparty(mixed $name): ?Counterparty
     {
         if (null === $name || '' === $name) {
             return null;
         }
-        $institution = $this->em->getRepository(Institution::class)->find((string) $name);
-        if (!$institution) {
-            $institution = (new Institution())->setName((string) $name);
-            $this->em->persist($institution);
+        $counterparty = $this->em->getRepository(Counterparty::class)->find((string) $name);
+        if (!$counterparty) {
+            $counterparty = (new Counterparty())->setName((string) $name);
+            $this->em->persist($counterparty);
         }
 
-        return $institution;
+        return $counterparty;
     }
 
     /**
@@ -919,7 +919,7 @@ class LedgerStateService
             'currency' => $a->getCurrency()?->getCode(),
             'openingBalance' => $a->getOpeningBalance(),
             'symbol' => $a->getSymbol()?->getTicker(),
-            'institution' => $a->getInstitution()?->getName(),
+            'counterparty' => $a->getCounterparty()?->getName(),
             'subtype' => $a->getSubtype(),
             'isaKind' => $a->getIsaKind(),
             'isaParentId' => $a->getIsaParentId(),

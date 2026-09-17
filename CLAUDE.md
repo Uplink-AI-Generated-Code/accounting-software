@@ -193,8 +193,8 @@ it covers and why); no test suite and no linter on the frontend.
   - `GET /api/isa-allowance?taxYearStart=YYYY` (`IsaAllowanceController` /
     `IsaAllowanceService::computeUsage()`) — see "ISA allowance engine"
     below.
-  - `GET /api/currencies` / `GET /api/symbols` / `GET /api/institutions`
-    (`CurrencyController`/`SymbolController`/`InstitutionController`) —
+  - `GET /api/currencies` / `GET /api/symbols` / `GET /api/counterparties`
+    (`CurrencyController`/`SymbolController`/`CounterpartyController`) —
     read-only lists of the three reference entities, fetched once by
     `App.jsx` alongside the account list (see "Amounts, currencies, and
     reference data" below). No write endpoints exist yet — deliberately
@@ -346,20 +346,25 @@ representation crosses the API boundary too — the backend never emits a
 decimal string for an amount, and the frontend never receives one; it's
 integers in both directions, JSON like `"amount": 2000`.
 
-- **`Currency`, `Symbol`, `Institution` are natural-key reference
+- **`Currency`, `Symbol`, `Counterparty` are natural-key reference
   entities** (`backend/src/Entity/`), each with the business key itself
   as primary key — `Currency.code` (`"GBP"`), `Symbol.ticker`
-  (`"AAPL"`), `Institution.name` (`"Barclays"`) — no surrogate id,
+  (`"AAPL"`), `Counterparty.name` (`"Barclays"`) — no surrogate id,
   deliberately, so raw DB records stay human-readable. `Account.currency`
-  / `Account.symbol` / `Account.institution` and `Line.cashCurrency` /
+  / `Account.symbol` / `Account.counterparty` and `Line.cashCurrency` /
   `Line.exchangeCurrency` are FKs to these, not free strings anymore.
+  `Counterparty` covers both meanings `Account.counterparty` can have —
+  "where this account is held" for a real account, "who was paid/who
+  paid" for an income/expense/isa-income one; `AccountFormModal` labels
+  the field "Institution" or "Counterparty" depending on `account.type`,
+  but it's one column, one entity, either way.
   `Currency` also carries an optional `name` (e.g. "British Pound
   Sterling"). `Symbol` additionally carries `name`, `scale` (unit
   precision — *not* a currency scale), and `tradingCurrency` (FK to
   `Currency`). `Account.subtype`, by contrast, is a **plain string
   column, not a reference entity** — nothing else references it, so
   there's no half-normalization benefit to a table for it the way there
-  is for Currency/Symbol/Institution; see "UI conventions" below for what
+  is for Currency/Symbol/Counterparty; see "UI conventions" below for what
   it's for.
 - **A currency is part of the imported *data*, not a fixed app-wide
   list** — `LedgerStateService::writeState()` (so `app:import-local-storage`
@@ -387,21 +392,23 @@ integers in both directions, JSON like `"amount": 2000`.
   (`"currency": "GBP"`, `"symbol": "AAPL"`), consistent with how
   `Account`/`Transaction` ids already work — never a nested object.
 - **`LedgerStateService::resolveCurrency()`/`resolveSymbol()`/
-  `resolveInstitution()`** are where a JSON payload's currency
-  code/ticker/institution name gets turned into the actual entity on
-  write. `resolveCurrency`/`resolveSymbol` **hard-error** (`InvalidArgumentException`)
-  on an unknown code/ticker — Currency and Symbol are deliberately
-  curated, closed sets; a new one needs a real `scale` decided, which is
-  exactly what a future "add symbol" admin flow (asking for name +
-  scale) would exist to do. `resolveInstitution` **find-or-creates**
-  instead — institution names were always free text before this schema
-  existed (any bank not used yet is fine to type in `AccountFormModal`),
-  and there's no meaningful extra data a first use needs to supply, so it
-  stays that way rather than regressing into a closed picker.
-- **`GET /api/currencies`/`/api/symbols`/`/api/institutions`** are
+  `resolveCounterparty()`** are where a JSON payload's currency
+  code/ticker/counterparty name gets turned into the actual entity on
+  write. `resolveCurrency`/`resolveSymbol`
+  **hard-error** (`InvalidArgumentException`) on an unknown code/ticker —
+  Currency and Symbol are deliberately curated, closed sets; a new one
+  needs a real `scale` decided, which is exactly what a future "add
+  symbol" admin flow (asking for name + scale) would exist to do.
+  `resolveCounterparty` **find-or-creates** instead — institution/
+  counterparty names were always free text before this schema existed
+  (any bank, or any payee, not used yet is fine to type in
+  `AccountFormModal`), and there's no meaningful extra data a first use
+  needs to supply, so it stays that way rather than regressing into a
+  closed picker.
+- **`GET /api/currencies`/`/api/symbols`/`/api/counterparties`** are
   read-only for now (see "Backend" above) — `App.jsx` fetches all three
   once alongside the account list and passes them down as props
-  (`currencies`, `symbols`, `institutions`) to whatever needs them
+  (`currencies`, `symbols`, `counterparties`) to whatever needs them
   (`AccountFormModal`'s pickers, `AccountLedger`/`StockLedger`/
   `otherLines.jsx`'s scale lookups, `lib/grouping.js`'s currency-dimension
   bucketing). There's no context/global store — this app prop-drills
@@ -700,28 +707,31 @@ outside this app's concern.
   rather than calling `setSelectedId`/state setters directly, or it will
   silently bypass the guard.
 - Grouping (sidebar + Overview) is a cascading 1–4 level picker over
-  {Type, Institution, Subtype, Currency} with savable presets in
+  {Type, Counterparty, Subtype, Currency} with savable presets in
   `settings.savedGroupings`. `buildNestedGroups` / `bucketBy` are generic
   over the dimension — extend those rather than writing a new grouping
-  path for a new dimension. `account.subtype` (a free-text product-type
-  tag like "Credit Card"/"Loan"/"Trading", not a reference entity — see
-  "Data model" below) exists specifically as a fourth dimension for when
-  institution alone doesn't split a crowded chart of accounts finely
-  enough (e.g. several credit products at one bank, or several accounts
-  with no real institution at all). Unlike institution, an ISA
-  subaccount does **not** inherit `subtype` from its wrapper — it's a
-  property of the individual product, not something a wrapper has one of
-  on its subaccounts' behalf.
+  path for a new dimension. `account.counterparty` (an FK to `Counterparty`
+  — see "Amounts, currencies, and reference data" above) is labelled
+  "Institution" or "Counterparty" in the UI depending on `account.type`,
+  but it's a single grouping dimension either way — the tree doesn't split
+  by label. `account.subtype` (a free-text product-type tag like "Credit
+  Card"/"Loan"/"Trading", not a reference entity — see "Data model" below)
+  exists specifically as a fourth dimension for when counterparty alone
+  doesn't split a crowded chart of accounts finely enough (e.g. several
+  credit products at one bank, or several accounts with no real
+  institution at all). Unlike counterparty, an ISA subaccount does **not**
+  inherit `subtype` from its wrapper — it's a property of the individual
+  product, not something a wrapper has one of on its subaccounts' behalf.
 - Every account search (the sidebar, Overview, and the linked-account
   picker in `otherLines.jsx`) is free text over all four grouping
   dimensions **plus the account name**, matched independently of
   whatever grouping is currently active — `lib/grouping.js`'s
-  `flattenAllAccounts()` always builds the full {Type, Institution,
+  `flattenAllAccounts()` always builds the full {Type, Counterparty,
   Subtype, Currency} path for every account, and `leafMatchesQuery()`
   does a whitespace-split, order-independent AND match against
   `path + name`. This is deliberately decoupled from `buildNestedGroups`
   (which only nests by the levels actually selected) — searching by
-  institution has to work even when the tree on screen is grouped by
+  counterparty has to work even when the tree on screen is grouped by
   Type alone.
 - The sidebar and Overview keep their normal nested-tree/grid layout
   while searching, rather than flattening to a plain result list: a
@@ -731,7 +741,7 @@ outside this app's concern.
   `groupLevels` and rendered with the same `SidebarGroupTree`/
   `OverviewGroupTree` used for normal browsing — empty groups just drop
   out on their own. A match on a dimension the active grouping doesn't
-  nest by (e.g. institution while grouped by Type alone) still surfaces
+  nest by (e.g. counterparty while grouped by Type alone) still surfaces
   the right account, just nested under whatever levels are actually
   active, not annotated with the dimension it matched on. The account
   picker (`AccountPicker.jsx`) is the one exception — it's a compact
@@ -743,8 +753,8 @@ outside this app's concern.
 - No live market price feed / real "current value".
 - No multi-currency conversion beyond the per-line exchange tag.
 - No JISA, no LISA bonus modeling, no flexible-ISA partial-year handling.
-- No admin UI/write endpoints for currencies, symbols, or institutions —
-  `GET /api/currencies`/`/api/symbols`/`/api/institutions` are read-only
+- No admin UI/write endpoints for currencies, symbols, or counterparties —
+  `GET /api/currencies`/`/api/symbols`/`/api/counterparties` are read-only
   by design (see "Amounts, currencies, and reference data"). A future
   admin area, including a modal to define a new stock symbol's name and
   scale, is planned but not started — don't build ahead of that

@@ -7,7 +7,7 @@ import { ModalShell, Field, inputStyle } from "./ui";
 /* ---------------------------------------------------------
    Account form modal
 --------------------------------------------------------- */
-export function AccountFormModal({ initial, accounts, currencies, symbols, institutions, onCancel, onSave, onDelete }) {
+export function AccountFormModal({ initial, accounts, currencies, symbols, counterparties, onCancel, onSave, onDelete }) {
   const wrappers = accounts.filter((a) => a.type === "isa-parent");
 
   const [name, setName] = useState(initial.name || "");
@@ -17,15 +17,19 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, insti
   const currencyScale = currencies.find((c) => c.code === currency)?.scale ?? 2;
   const [opening, setOpening] = useState(initial.openingBalance ? fromMinorUnits(initial.openingBalance, currencyScale) : "0");
   const [flexible, setFlexible] = useState(!!initial.flexible);
-  // Institution names were always free text (any bank not used yet is
-  // fine to type) — the backend find-or-creates one on save (see
-  // LedgerStateService::resolveInstitution()), so this stays a text
-  // input with a datalist rather than becoming a closed picker.
-  const [institution, setInstitution] = useState(initial.institution || "");
-  // Same free-text-with-datalist treatment as institution — a product-type
-  // tag ("Credit Card", "Loan", "Trading") for further grouping when
-  // institution alone doesn't distinguish enough accounts apart. Plain
-  // string on the account itself, no backing entity — see CLAUDE.md.
+  // Counterparty names were always free text (any institution/payee not
+  // used yet is fine to type) — the backend find-or-creates one on save
+  // (see LedgerStateService::resolveCounterparty()), so this stays a text
+  // input with a datalist rather than becoming a closed picker. Same
+  // underlying field for every account type — "where this account is
+  // held" for a real account, "who was paid/who paid" for an
+  // income/expense one — just labelled differently below.
+  const [counterparty, setCounterparty] = useState(initial.counterparty || "");
+  // Same free-text-with-datalist treatment as counterparty — a
+  // product-type tag ("Credit Card", "Loan", "Trading") for further
+  // grouping when counterparty alone doesn't distinguish enough accounts
+  // apart. Plain string on the account itself, no backing entity — see
+  // CLAUDE.md.
   const [subtype, setSubtype] = useState(initial.subtype || "");
   // "" = not an ISA, "cash-isa"/"lifetime-isa"/"innovative-finance-isa" = a
   // standalone flat ISA, or an isa-parent account id = "this is a
@@ -36,10 +40,16 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, insti
   const isSubaccount = wrappers.some((w) => w.id === isaChoice);
   // Flexibility is a property of the ISA product itself (the wrapper, for
   // a Stocks & Shares ISA), not of each subaccount — so the toggle only
-  // appears where it actually applies. Institution works the same way.
+  // appears where it actually applies. Counterparty works the same way.
   const showFlexible = isWrapper || (!isSubaccount && !!isaChoice);
-  const showInstitution = !isSubaccount;
-  const knownInstitutions = institutions.map((i) => i.name).sort();
+  const showCounterparty = !isSubaccount;
+  // Nominal (income/expense) accounts use this same field for "who was
+  // paid/who paid" rather than "where this account is held" — see
+  // CLAUDE.md's real-vs-nominal-account distinction. Only the label and
+  // placeholder change; it's the same free-text/datalist input either way.
+  const isNominalType = type === "income" || type === "isa-income" || type === "expense";
+  const counterpartyLabel = isNominalType ? "Counterparty" : "Institution";
+  const knownCounterparties = counterparties.map((c) => c.name).sort();
   const knownSubtypes = Array.from(new Set(accounts.map((a) => a.subtype).filter(Boolean))).sort();
   const tradingCurrency = symbols.find((s) => s.ticker === symbol)?.tradingCurrency;
 
@@ -52,7 +62,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, insti
       type,
       openingBalance: toMinorUnits(opening, currencyScale) || 0,
       ...(type === "investment" ? { symbol: symbol.trim().toUpperCase() } : { currency }),
-      ...(showInstitution && institution.trim() ? { institution: institution.trim() } : {}),
+      ...(showCounterparty && counterparty.trim() ? { counterparty: counterparty.trim() } : {}),
       ...(!isWrapper && subtype.trim() ? { subtype: subtype.trim() } : {}),
     };
     const isaEligible = type === "asset" || type === "investment";
@@ -75,11 +85,11 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, insti
     <ModalShell onCancel={onCancel} title={initial.id ? "Edit account" : "New account"}>
       <div className="flex flex-col gap-3" onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}>
         <Field label="Name"><input autoFocus value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} placeholder="e.g. Barclays Current Account" /></Field>
-        {showInstitution && (
-          <Field label="Institution">
-            <input value={institution} onChange={(e) => setInstitution(e.target.value)} style={inputStyle} placeholder="e.g. Barclays" list="ll-institutions" />
-            <datalist id="ll-institutions">
-              {knownInstitutions.map((i) => <option key={i} value={i} />)}
+        {showCounterparty && (
+          <Field label={counterpartyLabel}>
+            <input value={counterparty} onChange={(e) => setCounterparty(e.target.value)} style={inputStyle} placeholder={isNominalType ? "e.g. Tesco" : "e.g. Barclays"} list="ll-counterparties" />
+            <datalist id="ll-counterparties">
+              {knownCounterparties.map((i) => <option key={i} value={i} />)}
             </datalist>
           </Field>
         )}

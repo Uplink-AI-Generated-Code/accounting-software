@@ -13,27 +13,31 @@ use Doctrine\ORM\Mapping as ORM;
  *
  * `isaParentId` is kept as a plain string, not a mapped association: the
  * frontend already resolves the parent by scanning the account list itself
- * (see institutionOf() in lib/grouping.js), and a bulk replace-on-save
+ * (see counterpartyOf() in lib/grouping.js), and a bulk replace-on-save
  * doesn't need relational integrity here.
  *
- * `currency`/`symbol`/`institution` are FKs to natural-key reference
- * entities (Currency/Symbol/Institution) rather than free strings — see
- * CLAUDE.md's "half-normalization" note. `openingBalance` is stored as an
- * integer scaled by the account's currency's `scale` (or, for an
+ * `currency`/`symbol`/`counterparty` are FKs to natural-key reference
+ * entities (Currency/Symbol/Counterparty) rather than free strings — see
+ * CLAUDE.md's "half-normalization" note. `Counterparty` covers both
+ * meanings this field can have — "where this account is held" for a real
+ * account, "who was paid/who paid" for an income/expense one — the UI
+ * labels the field "Institution" or "Counterparty" depending on `type`,
+ * but it's one column, one entity, either way. `openingBalance` is stored
+ * as an integer scaled by the account's currency's `scale` (or, for an
  * investment account, its symbol's `scale`) — never a float, to avoid
  * floating-point drift; see CLAUDE.md. For an investment account (one with
  * a `symbol` set), `currency` is unused/left null: trading currency is
  * derived via `symbol.tradingCurrency` instead of being stored twice.
  *
  * `subtype` is a free-text product-type tag (e.g. "Credit Card", "Loan",
- * "Trading") — a fourth grouping dimension alongside type/institution/
- * currency, for when institution alone doesn't distinguish enough
+ * "Trading") — a fourth grouping dimension alongside type/counterparty/
+ * currency, for when counterparty alone doesn't distinguish enough
  * accounts apart (e.g. several credit products at the same bank, or
- * several loan accounts with no real institution at all). Deliberately a
+ * several loan accounts with no real counterparty at all). Deliberately a
  * plain string column, not a reference entity like Currency/Symbol/
- * Institution — nothing else references it, so there's no half-
+ * Counterparty — nothing else references it, so there's no half-
  * normalization benefit to a separate table, just a free-text field with
- * the same UX as institution's datalist-backed input.
+ * the same UX as counterparty's datalist-backed input.
  */
 #[ORM\Entity(repositoryClass: AccountRepository::class)]
 class Account
@@ -59,9 +63,9 @@ class Account
     #[ORM\JoinColumn(name: 'symbol', referencedColumnName: 'ticker', nullable: true)]
     private ?Symbol $symbol = null;
 
-    #[ORM\ManyToOne(targetEntity: Institution::class)]
-    #[ORM\JoinColumn(name: 'institution', referencedColumnName: 'name', nullable: true)]
-    private ?Institution $institution = null;
+    #[ORM\ManyToOne(targetEntity: Counterparty::class)]
+    #[ORM\JoinColumn(name: 'counterparty', referencedColumnName: 'name', nullable: true)]
+    private ?Counterparty $counterparty = null;
 
     #[ORM\Column(length: 255, nullable: true)]
     private ?string $subtype = null;
@@ -147,14 +151,14 @@ class Account
         return $this;
     }
 
-    public function getInstitution(): ?Institution
+    public function getCounterparty(): ?Counterparty
     {
-        return $this->institution;
+        return $this->counterparty;
     }
 
-    public function setInstitution(?Institution $institution): static
+    public function setCounterparty(?Counterparty $counterparty): static
     {
-        $this->institution = $institution;
+        $this->counterparty = $counterparty;
 
         return $this;
     }

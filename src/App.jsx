@@ -26,7 +26,7 @@ export default function App() {
   // fetched per account view by AccountLedger/StockLedger and discarded
   // on navigating away — see CLAUDE.md's "Backend" section.
   const [accounts, setAccounts] = useState([]);
-  // Reference data — currency/symbol/institution are lookup entities
+  // Reference data — currency/symbol/counterparty are lookup entities
   // server-side (see CLAUDE.md), fetched once here alongside accounts and
   // passed down to AccountFormModal's pickers. currencies/symbols also
   // feed lib/format.js's setCurrencyScales()/setSymbolScales() so every
@@ -34,7 +34,7 @@ export default function App() {
   // integer to a decimal without each one needing its own scale lookup.
   const [currencies, setCurrencies] = useState([]);
   const [symbols, setSymbols] = useState([]);
-  const [institutions, setInstitutions] = useState([]);
+  const [counterparties, setCounterparties] = useState([]);
   const [settings, setSettings] = useState({ over65: false, groupLevels: ["type"], savedGroupings: [] });
   const [loaded, setLoaded] = useState(false);
   const [storageOK, setStorageOK] = useState(true);
@@ -128,14 +128,14 @@ export default function App() {
     (async () => {
       try {
         await refreshAccounts();
-        const [cur, sym, inst] = await Promise.all([
+        const [cur, sym, cp] = await Promise.all([
           api.getCurrencies().catch(() => []),
           api.getSymbols().catch(() => []),
-          api.getInstitutions().catch(() => []),
+          api.getCounterparties().catch(() => []),
         ]);
         setCurrencies(cur);
         setSymbols(sym);
-        setInstitutions(inst);
+        setCounterparties(cp);
         setCurrencyScales(cur);
         setSymbolScales(sym);
         const s = await api.getSettings().catch(() => null);
@@ -488,7 +488,7 @@ export default function App() {
           accounts={accounts}
           currencies={currencies}
           symbols={symbols}
-          institutions={institutions}
+          counterparties={counterparties}
           onCancel={() => setAccountForm(null)}
           onSave={saveAccount}
           onDelete={accountForm.id ? () => requestDeleteAccount(accountForm.id) : null}

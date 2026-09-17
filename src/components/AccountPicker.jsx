@@ -39,11 +39,11 @@ function GroupNodeList({ nodes, depth, onSelect }) {
 // idle, browses the *same* nested tree the sidebar/Overview currently show
 // (via `groupLevels` + `buildNestedGroups` — see CLAUDE.md's "UI
 // conventions"), and when the user types, searches across all four
-// dimensions (Type, Institution, Subtype, Currency) at once regardless of
+// dimensions (Type, Counterparty, Subtype, Currency) at once regardless of
 // which ones the active grouping actually nests by — see
 // `flattenAllAccounts`. `accounts` is the already-filtered candidate list
 // (e.g. minus the ledger's own account); `allAccounts` is the full list,
-// needed to resolve an ISA subaccount's inherited institution correctly.
+// needed to resolve an ISA subaccount's inherited counterparty correctly.
 export function AccountPicker({ accounts, allAccounts, symbols, groupLevels, value, onChange, placeholder = "Select account…" }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");

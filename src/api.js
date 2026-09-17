@@ -91,7 +91,7 @@ export function getIsaAllowance(taxYearStart) {
   return request(`/api/isa-allowance?taxYearStart=${encodeURIComponent(taxYearStart)}`);
 }
 
-// Reference-data lists — currency/symbol/institution are lookup entities
+// Reference-data lists — currency/symbol/counterparty are lookup entities
 // server-side now, not free text (see CLAUDE.md). Fetched once by
 // App.jsx alongside the account list, not per-component. Read-only for
 // now; a future admin area is where write endpoints would go.
@@ -101,6 +101,6 @@ export function getCurrencies() {
 export function getSymbols() {
   return request("/api/symbols");
 }
-export function getInstitutions() {
-  return request("/api/institutions");
+export function getCounterparties() {
+  return request("/api/counterparties");
 }

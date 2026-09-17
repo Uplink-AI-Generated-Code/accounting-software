@@ -1,21 +1,21 @@
 import { TYPES, GROUP_DIMENSIONS } from "./theme";
 
-// An ISA subaccount doesn't set its own institution — it inherits its
+// An ISA subaccount doesn't set its own counterparty — it inherits its
 // wrapper's, the same way it inherits flexibility. Always resolved
 // against the *full* account list, since a nested grouping level may be
 // working with a subset that doesn't include the wrapper itself.
-export function institutionOf(account, allAccounts) {
-  if (account.institution) return account.institution;
+export function counterpartyOf(account, allAccounts) {
+  if (account.counterparty) return account.counterparty;
   if (account.isaParentId) {
     const parent = allAccounts.find((a) => a.id === account.isaParentId);
-    if (parent && parent.institution) return parent.institution;
+    if (parent && parent.counterparty) return parent.counterparty;
   }
   return "";
 }
 
 // Splits one set of accounts into labelled buckets along a single
 // dimension. `allAccounts` is only needed to resolve inherited
-// institutions correctly inside a nested/filtered subset. `symbols` is
+// counterparties correctly inside a nested/filtered subset. `symbols` is
 // only needed to resolve an investment account's trading currency (which
 // lives on its Symbol, not the account itself — see CLAUDE.md) for the
 // "currency" dimension.
@@ -38,7 +38,7 @@ export function bucketBy(subset, dim, allAccounts, symbols = []) {
     return groups;
   }
   if (dim === "subtype") {
-    // No inheritance from an ISA wrapper (unlike institution) — subtype is
+    // No inheritance from an ISA wrapper (unlike counterparty) — subtype is
     // a property of the individual account/product, not something a
     // wrapper meaningfully has one of on behalf of its subaccounts.
     const bySub = {};
@@ -50,22 +50,22 @@ export function bucketBy(subset, dim, allAccounts, symbols = []) {
     const keys = Object.keys(bySub).sort((a, b) => (a === "No subtype" ? 1 : b === "No subtype" ? -1 : a.localeCompare(b)));
     return keys.map((k) => ({ key: k, label: k, items: bySub[k] }));
   }
-  // institution
-  const byInst = {};
+  // counterparty
+  const byCounterparty = {};
   subset.forEach((a) => {
-    const inst = institutionOf(a, allAccounts) || "No institution";
-    byInst[inst] = byInst[inst] || [];
-    byInst[inst].push(a);
+    const cp = counterpartyOf(a, allAccounts) || "No counterparty";
+    byCounterparty[cp] = byCounterparty[cp] || [];
+    byCounterparty[cp].push(a);
   });
-  const keys = Object.keys(byInst).sort((a, b) => (a === "No institution" ? 1 : b === "No institution" ? -1 : a.localeCompare(b)));
-  return keys.map((k) => ({ key: k, label: k, items: byInst[k] }));
+  const keys = Object.keys(byCounterparty).sort((a, b) => (a === "No counterparty" ? 1 : b === "No counterparty" ? -1 : a.localeCompare(b)));
+  return keys.map((k) => ({ key: k, label: k, items: byCounterparty[k] }));
 }
 
 // Recursively buckets accounts through up to four chosen dimensions —
-// levels like ["institution", "currency"] produce one institution section
-// per top level, each split into currency sub-sections underneath. Every
-// node (leaf or not) keeps its full flattened `items` list, so a subtotal
-// can be shown at any level, not just the deepest one.
+// levels like ["counterparty", "currency"] produce one counterparty
+// section per top level, each split into currency sub-sections underneath.
+// Every node (leaf or not) keeps its full flattened `items` list, so a
+// subtotal can be shown at any level, not just the deepest one.
 export function buildNestedGroups(subset, levels, allAccounts, symbols = []) {
   const [dim, ...rest] = levels;
   const buckets = bucketBy(subset, dim, allAccounts, symbols);
@@ -80,20 +80,20 @@ export function buildNestedGroups(subset, levels, allAccounts, symbols = []) {
 }
 
 // Flattens the account list into one search entry per account, each
-// carrying all four grouping dimensions (Type, Institution, Subtype,
+// carrying all four grouping dimensions (Type, Counterparty, Subtype,
 // Currency) as its "path", regardless of which ones the currently active
 // grouping actually nests by — so a free-text query (the account picker
 // in otherLines.jsx, and the sidebar/Overview searches) can match on e.g.
-// institution even when the tree on screen is grouped by Type alone.
+// counterparty even when the tree on screen is grouped by Type alone.
 // Browsing the tree itself still follows the active grouping
 // (buildNestedGroups) — this is only for the free-text match.
 export function flattenAllAccounts(accounts, allAccounts, symbols = []) {
   return accounts.map((a) => {
     const typeLabel = TYPES.find((t) => t.key === a.type)?.label || a.type;
-    const institution = institutionOf(a, allAccounts) || "No institution";
+    const counterparty = counterpartyOf(a, allAccounts) || "No counterparty";
     const subtype = a.subtype || "No subtype";
     const currency = (a.type === "investment" ? symbols.find((s) => s.ticker === a.symbol)?.tradingCurrency : a.currency) || "—";
-    return { account: a, path: [typeLabel, institution, subtype, currency] };
+    return { account: a, path: [typeLabel, counterparty, subtype, currency] };
   });
 }
 

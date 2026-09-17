@@ -40,7 +40,7 @@ export const ISA_KINDS = [
 
 export const GROUP_DIMENSIONS = [
   { key: "type", label: "Type" },
-  { key: "institution", label: "Institution" },
+  { key: "counterparty", label: "Counterparty" },
   { key: "subtype", label: "Subtype" },
   { key: "currency", label: "Currency" },
 ];

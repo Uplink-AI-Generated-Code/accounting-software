@@ -2,7 +2,7 @@
 
 namespace App\Controller;
 
-use App\Entity\Institution;
+use App\Entity\Counterparty;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\Routing\Attribute\Route;
@@ -10,8 +10,8 @@ use Symfony\Component\Routing\Attribute\Route;
 /**
  * Read-only for now — see CurrencyController's docblock; same reasoning.
  */
-#[Route('/api/institutions')]
-class InstitutionController
+#[Route('/api/counterparties')]
+class CounterpartyController
 {
     public function __construct(private readonly EntityManagerInterface $em)
     {
@@ -20,11 +20,11 @@ class InstitutionController
     #[Route('', methods: ['GET'])]
     public function list(): JsonResponse
     {
-        $institutions = $this->em->getRepository(Institution::class)->findAll();
+        $counterparties = $this->em->getRepository(Counterparty::class)->findAll();
 
         return new JsonResponse(array_map(
-            static fn (Institution $i) => ['name' => $i->getName()],
-            $institutions
+            static fn (Counterparty $c) => ['name' => $c->getName()],
+            $counterparties
         ));
     }
 }
