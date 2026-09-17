@@ -458,6 +458,10 @@ class LedgerStateService
             $this->em->flush();
 
             $connection = $this->em->getConnection();
+            // line_tag first — same reason as deleteTransactionLines():
+            // this app never enables SQLite's foreign_keys pragma, so
+            // ON DELETE CASCADE on line_tag never fires on its own.
+            $connection->executeStatement('DELETE FROM line_tag');
             $connection->executeStatement('DELETE FROM line');
             $connection->executeStatement('DELETE FROM transactions');
             $connection->executeStatement('DELETE FROM account');
@@ -707,12 +711,37 @@ class LedgerStateService
      * (possibly not yet loaded, possibly stale) in-memory collection —
      * every caller here only cares that the rows are gone, not about
      * touching loaded entities.
+     *
+     * A bulk DQL DELETE bypasses the UnitOfWork entirely, so it does
+     * *not* clean up `line_tag` the way removing a Line entity normally
+     * would (see opDeleteLine(), which uses `$em->remove()` and gets this
+     * for free) — and SQLite's `ON DELETE CASCADE` on `line_tag` can't
+     * cover it either, since this app never enables SQLite's
+     * `foreign_keys` pragma, making those clauses declarative only. Every
+     * linked-transaction edit goes through opUpsertTransaction(), which
+     * calls this before recreating the lines, so without this explicit
+     * cleanup `line_tag` would accumulate an orphaned row on every single
+     * edit of a tagged linked entry.
      */
     private function deleteTransactionLines(string $transactionId): void
     {
+        $this->deleteLineTagsForLines($this->em->getConnection()->fetchFirstColumn(
+            'SELECT id FROM line WHERE transaction_id = ?',
+            [$transactionId]
+        ));
         $this->em->createQuery('DELETE FROM App\Entity\Line l WHERE IDENTITY(l.transaction) = :id')
             ->setParameter('id', $transactionId)
             ->execute();
+    }
+
+    /** @param array<int, int|string> $lineIds */
+    private function deleteLineTagsForLines(array $lineIds): void
+    {
+        if (!$lineIds) {
+            return;
+        }
+        $placeholders = implode(',', array_fill(0, \count($lineIds), '?'));
+        $this->em->getConnection()->executeStatement("DELETE FROM line_tag WHERE line_id IN ($placeholders)", $lineIds);
     }
 
     private function deleteTransactionIfEmpty(string $transactionId): void
