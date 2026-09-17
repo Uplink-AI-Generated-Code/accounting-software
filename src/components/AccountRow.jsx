@@ -1,6 +1,6 @@
 import { AlertTriangle } from "lucide-react";
 import { C, TYPES, ISA_KINDS } from "../lib/theme";
-import { fmt, fmtUnits } from "../lib/format";
+import { fmt, fmtUnits, displayAccountName } from "../lib/format";
 
 // One line per account in the chart of accounts — replaces the earlier
 // card grid (AccountCard) specifically to fit far more accounts in the
@@ -40,7 +40,7 @@ export function AccountRow({ a, accounts, symbols, onSelect, subtitle }) {
           <span style={{ fontSize: 10, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.6, whiteSpace: "nowrap", flexShrink: 0 }}>
             {TYPES.find((t) => t.key === a.type)?.label}{a.type === "investment" ? ` · ${a.symbol}` : ""}
           </span>
-          <span style={{ fontSize: 13.5, fontWeight: 500, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
+          <span style={{ fontSize: 13.5, fontWeight: 500, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayAccountName(a)}</span>
           {a.isaKind && (
             <span title={ISA_KINDS.find((k) => k.key === a.isaKind)?.label} style={{ fontSize: 9.5, fontWeight: 700, color: C.gold, border: `1px solid ${C.goldDim}`, borderRadius: 3, padding: "1px 3px", letterSpacing: 0.3, flexShrink: 0 }}>
               ISA

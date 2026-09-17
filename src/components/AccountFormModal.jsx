@@ -54,7 +54,8 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
   const tradingCurrency = symbols.find((s) => s.ticker === symbol)?.tradingCurrency;
 
   function submit() {
-    if (!name.trim()) return;
+    // Name is optional — see displayAccountName() in lib/format.js for
+    // the Subtype/Counterparty-based fallback shown when it's blank.
     if (type === "investment" && !symbol.trim()) return;
     const data = {
       id: initial.id,
@@ -84,7 +85,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
   return (
     <ModalShell onCancel={onCancel} title={initial.id ? "Edit account" : "New account"}>
       <div className="flex flex-col gap-3" onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}>
-        <Field label="Name"><input autoFocus value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} placeholder="e.g. Barclays Current Account" /></Field>
+        <Field label="Name"><input autoFocus value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} placeholder={`Optional — auto: ${subtype.trim() || "Subtype"} · ${counterparty.trim() || counterpartyLabel}`} /></Field>
         {showCounterparty && (
           <Field label={counterpartyLabel}>
             <input value={counterparty} onChange={(e) => setCounterparty(e.target.value)} style={inputStyle} placeholder={isNominalType ? "e.g. Tesco" : "e.g. Barclays"} list="ll-counterparties" />

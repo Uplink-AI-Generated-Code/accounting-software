@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, Check, X, AlertTriangle, Pencil, Unlink2, TrendingUp, TableProperties, ChevronUp, ChevronDown } from "lucide-react";
 import { C } from "../lib/theme";
-import { fmt, fmtUnits, todayISO, fmtDate } from "../lib/format";
+import { fmt, fmtUnits, todayISO, fmtDate, displayAccountName } from "../lib/format";
 import { toMinorUnits, fromMinorUnits, divRoundHalfUp } from "../lib/scale";
 import { reorderSameDate } from "../lib/grouping";
 import { applyCostBasisLine, applyPortfolioValueLine } from "../lib/stockMath";
@@ -303,7 +303,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
       <div className="flex items-start justify-between mb-5">
         <div>
           <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>Stocks & Shares · {tradingCurrency}</div>
-          <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{account.name} <span style={{ color: C.gold }}>{account.symbol}</span></h2>
+          <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{displayAccountName(account)} <span style={{ color: C.gold }}>{account.symbol}</span></h2>
           <div className="ll-mono" style={{ fontSize: 22, marginTop: 6 }}>
             {fmtUnits(balance, account.symbol)} <span style={{ fontSize: 14, color: C.inkFaint }}>units</span>
             <span style={{ fontSize: 15, color: C.ink, marginLeft: 10 }}>{fmt(portfolioValue, tradingCurrency)}</span>
@@ -428,7 +428,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
                           style={{ border: `1px solid ${C.line}`, background: C.card }}
                         >
                           <span style={{ fontSize: 12.5 }}>
-                            <strong>{c.account.name}</strong> · {fmtDate(c.line.date)}{c.line.description ? ` · ${c.line.description}` : ""}
+                            <strong>{displayAccountName(c.account)}</strong> · {fmtDate(c.line.date)}{c.line.description ? ` · ${c.line.description}` : ""}
                           </span>
                           <span className="ll-mono" style={{ fontSize: 12.5, color: candidateIsNegative(c) ? C.debit : C.credit }}>{formatCandidateAmount(c)}</span>
                         </button>
@@ -488,7 +488,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
               <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 3, paddingLeft: 118 }}>
                 {natural !== null && <>Value {fmt(natural, r.line.cashCurrency)} · </>}
                 Cost {fmt(r.runningCost, tradingCurrency)} · Worth {fmt(r.runningValue, tradingCurrency)}
-                {r.others.length > 0 ? ` · ${r.others.map((a) => a.name).join(", ")}` : " · unmatched"}
+                {r.others.length > 0 ? ` · ${r.others.map((a) => displayAccountName(a)).join(", ")}` : " · unmatched"}
               </div>
             </div>
           );

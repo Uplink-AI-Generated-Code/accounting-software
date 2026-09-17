@@ -1,6 +1,6 @@
 import { AlertTriangle } from "lucide-react";
 import { C, ISA_KINDS } from "../lib/theme";
-import { fmt } from "../lib/format";
+import { fmt, displayAccountName } from "../lib/format";
 
 // Renders nested groups in the sidebar — indented headers down to
 // whichever level is a leaf, where actual clickable account rows appear.
@@ -28,7 +28,7 @@ export function SidebarGroupTree({ groups, depth, selectedId, onSelect, accountD
             >
               <span style={{ fontSize: 13.5, color: C.ink, display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}>
                 {imbalanced && <AlertTriangle size={11} color={C.debit} title={imbalanceTitle} style={{ flexShrink: 0 }} />}
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayAccountName(a)}</span>
                 {a.isaKind && <span title={ISA_KINDS.find((k) => k.key === a.isaKind)?.label} style={{ fontSize: 9.5, fontWeight: 700, color: C.gold, border: `1px solid ${C.goldDim}`, borderRadius: 3, padding: "1px 3px", letterSpacing: 0.3, flexShrink: 0 }}>ISA</span>}
               </span>
               <span className="ll-mono" style={{ fontSize: a.type === "investment" ? 11 : 12, color: (a.balance || 0) < 0 ? C.debit : C.inkSoft, flexShrink: 0 }}>{accountDisplay(a)}</span>

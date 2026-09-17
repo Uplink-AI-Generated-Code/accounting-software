@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, AlertTriangle, BookOpen, X, Search } from "lucide-react";
 import { C } from "./lib/theme";
-import { uid, fmt, fmtUnits, setCurrencyScales, setSymbolScales } from "./lib/format";
+import { uid, fmt, fmtUnits, setCurrencyScales, setSymbolScales, displayAccountName } from "./lib/format";
 import { buildNestedGroups, flattenAllAccounts, leafMatchesQuery } from "./lib/grouping";
 import { taxYearBounds } from "./lib/isa";
 import { accountIdFromHash, setHashForAccount } from "./lib/hash";
@@ -245,7 +245,7 @@ export default function App() {
       performDeleteAccount(id);
       return;
     }
-    setDeleteConfirm({ id, entryCount, name: acc ? acc.name : "" });
+    setDeleteConfirm({ id, entryCount, name: acc ? displayAccountName(acc) : "" });
   }
 
   // Removing an account never destroys the other side of a linked entry —

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { C, ISA_KINDS } from "../lib/theme";
-import { fmt, todayISO } from "../lib/format";
+import { fmt, todayISO, displayAccountName } from "../lib/format";
 import { taxYearStartYearFor, taxYearBounds, isaRulesFor, isaProducts } from "../lib/isa";
 import { getIsaAllowance } from "../api";
 
@@ -99,7 +99,7 @@ export function AllowanceView({ accounts, settings, onSaveSettings, onSelect }) 
                 <div className="flex flex-wrap gap-2 mt-2">
                   {holders.map((p) => (
                     <button key={p.account.id} onClick={() => onSelect(p.account.id)} className="flex items-center gap-1.5" style={{ fontSize: 11.5, color: C.inkFaint, border: `1px solid ${C.line}`, borderRadius: 4, padding: "2px 6px" }}>
-                      <span className="ll-mono">{p.account.name}</span>
+                      <span className="ll-mono">{displayAccountName(p.account)}</span>
                       {p.flexible && <span style={{ color: C.gold, fontWeight: 700, fontSize: 10 }}>FLEX</span>}
                     </button>
                   ))}

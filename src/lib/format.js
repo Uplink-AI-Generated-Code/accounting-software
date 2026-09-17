@@ -1,4 +1,5 @@
 import { fromMinorUnits } from "./scale";
+import { TYPES } from "./theme";
 
 // Amounts are scaled integers now (e.g. 2000 = £20.00 at GBP's scale of
 // 2 — see CLAUDE.md), not floats. fmt()/fmtUnits() need each currency's/
@@ -38,6 +39,21 @@ export function fmt(amount, currency) {
   } catch (e) {
     return `${v.toFixed(scale)} ${currency}`;
   }
+}
+// An account's `name` can be blank (see CLAUDE.md's "Account model") — a
+// credit card or an income/expense account often has nothing to add
+// beyond its own Subtype/Counterparty. Falls back to those, joined; if
+// even those are both missing, falls back to the account's Type label
+// rather than showing nothing. Computed for display only, never stored —
+// doesn't resolve an ISA subaccount's *inherited* counterparty (see
+// lib/grouping.js's counterpartyOf()), since a blank-named subaccount is
+// an edge case the original motivating problem (Income/Expense, credit
+// cards) doesn't actually hit.
+export function displayAccountName(account) {
+  if (account.name && account.name.trim()) return account.name;
+  const parts = [account.subtype, account.counterparty].filter(Boolean);
+  if (parts.length) return parts.join(" · ");
+  return TYPES.find((t) => t.key === account.type)?.label || "Account";
 }
 export function uid() {
   return Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);

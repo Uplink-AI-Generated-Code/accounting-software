@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, Check, X, ArrowLeftRight, AlertTriangle, Pencil, Unlink2, TrendingUp, TableProperties, ChevronUp, ChevronDown } from "lucide-react";
 import { C, TYPES } from "../lib/theme";
-import { fmt, todayISO, fmtDate } from "../lib/format";
+import { fmt, todayISO, fmtDate, displayAccountName } from "../lib/format";
 import { toMinorUnits, fromMinorUnits } from "../lib/scale";
 import { reorderSameDate } from "../lib/grouping";
 import { formatCandidateAmount, candidateIsNegative, balanceHint } from "../lib/matching";
@@ -329,7 +329,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
       <div className="flex items-start justify-between mb-5">
         <div>
           <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>{TYPES.find((t) => t.key === account.type)?.label} · {account.currency}</div>
-          <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{account.name}</h2>
+          <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{displayAccountName(account)}</h2>
           <div className="ll-mono" style={{ fontSize: 22, marginTop: 6, color: balance < 0 ? C.debit : C.ink }}>{fmt(balance, account.currency)}</div>
           <ImbalanceBadge account={account} currency={account.currency} />
         </div>
@@ -469,7 +469,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
                           style={{ border: `1px solid ${C.line}`, background: C.card }}
                         >
                           <span style={{ fontSize: 12.5 }}>
-                            <strong>{c.account.name}</strong> · {fmtDate(c.line.date)}{c.line.description ? ` · ${c.line.description}` : ""}
+                            <strong>{displayAccountName(c.account)}</strong> · {fmtDate(c.line.date)}{c.line.description ? ` · ${c.line.description}` : ""}
                           </span>
                           <span className="ll-mono" style={{ fontSize: 12.5, color: candidateIsNegative(c) ? C.debit : C.credit }}>{formatCandidateAmount(c)}</span>
                         </button>
@@ -525,7 +525,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
                 )}
               </div>
               <div style={{ color: C.inkFaint, fontSize: 12.5, display: "flex", alignItems: "center", gap: 4 }}>
-                {r.others.length > 0 ? (<><ArrowLeftRight size={11} /> {r.others.map((a) => a.name).join(", ")}</>) : <span style={{ fontStyle: "italic" }}>unmatched</span>}
+                {r.others.length > 0 ? (<><ArrowLeftRight size={11} /> {r.others.map((a) => displayAccountName(a)).join(", ")}</>) : <span style={{ fontStyle: "italic" }}>unmatched</span>}
               </div>
               <div className="ll-mono text-right" style={{ color: out ? C.debit : C.inkFaint }}>{out ? fmt(out, account.currency) : "—"}</div>
               <div className="ll-mono text-right" style={{ color: inn ? C.credit : C.inkFaint }}>{inn ? fmt(inn, account.currency) : "—"}</div>

@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, X } from "lucide-react";
 import { C } from "../lib/theme";
 import { buildNestedGroups, flattenAllAccounts, leafMatchesQuery } from "../lib/grouping";
+import { displayAccountName } from "../lib/format";
 import { miniInput } from "./ui";
 
 function accountLabel(a) {
-  return `${a.name} (${a.type === "investment" ? a.symbol : a.currency})`;
+  return `${displayAccountName(a)} (${a.type === "investment" ? a.symbol : a.currency})`;
 }
 
 // Recursive group renderer for browse mode (no active search) — mirrors

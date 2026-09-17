@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Plus, X, Check } from "lucide-react";
 import { C } from "../lib/theme";
-import { uid, todayISO, fmtDate } from "../lib/format";
+import { uid, todayISO, fmtDate, displayAccountName } from "../lib/format";
 import { toMinorUnits, fromMinorUnits } from "../lib/scale";
 import { getMatchCandidates } from "../api";
 import { formatCandidateAmount, candidateIsNegative } from "../lib/matching";
@@ -315,7 +315,7 @@ export function OtherLinesEditor({ draft, account, accounts, symbols, groupLevel
                         style={{ border: `1px solid ${C.line}`, background: C.card }}
                       >
                         <span style={{ fontSize: 12.5 }}>
-                          <strong>{c.account.name}</strong> · {fmtDate(c.line.date)}{c.line.description ? ` · ${c.line.description}` : ""}
+                          <strong>{displayAccountName(c.account)}</strong> · {fmtDate(c.line.date)}{c.line.description ? ` · ${c.line.description}` : ""}
                         </span>
                         <span className="ll-mono" style={{ fontSize: 12.5, color: candidateIsNegative(c) ? C.debit : C.credit }}>{formatCandidateAmount(c)}</span>
                       </button>
