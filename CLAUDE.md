@@ -51,19 +51,25 @@ because they're small or tightly coupled:
 - `src/components/` — UI: `AccountLedger.jsx` and `StockLedger.jsx` are the
   two ledger views; both depend on `otherLines.jsx`, which holds the
   `useOtherLines` hook and `OtherLinesEditor` component **shared between
-  them** (see below — do not fork this per-ledger), and on two small fetch
-  hooks: `useAccountLedger.js` (loads/reloads one account's transactions)
-  and `useMatchCandidates.js` (debounced match search for the row currently
-  being edited). `charts.jsx` holds all the Recharts wrappers together
-  since they share tooltip/series-hook plumbing. `Overview.jsx`,
-  `OverviewGroupTree.jsx`, `SidebarGroupTree.jsx`, `AccountRow.jsx`,
-  `GroupLevelPicker.jsx` are the grouping/browsing UI — all read
-  `balance`/`costBasis`/`portfolioValue` straight off each account object
-  rather than from a separately-computed lookup map. `IsaParentView.jsx`,
-  `AllowanceView.jsx`, `AccountFormModal.jsx` are the remaining top-level
-  views/modals. `ui.jsx` holds tiny shared primitives (`ModalShell`,
-  `Field`, `miniInput`/`inputStyle`, `iconBtn`). `useLedgerRowAnimation.js`
-  is the FLIP/autoscroll hook shared by both ledgers' row lists.
+  them** (see below — do not fork this per-ledger), and on three small
+  fetch hooks: `useAccountLedger.js` (loads/reloads one account's
+  transactions), `useMatchCandidates.js` (debounced match search for the
+  row currently being edited), and `useTagTotals.js` (fetches
+  `GET /api/tag-totals` for one dimension, used by `TagsView.jsx`).
+  `charts.jsx` holds all the Recharts wrappers together since they share
+  tooltip/series-hook plumbing. `Overview.jsx`, `OverviewGroupTree.jsx`,
+  `SidebarGroupTree.jsx`, `AccountRow.jsx`, `GroupLevelPicker.jsx` are the
+  grouping/browsing UI — all read `balance`/`costBasis`/`portfolioValue`
+  straight off each account object rather than from a separately-computed
+  lookup map. `IsaParentView.jsx`, `AllowanceView.jsx`, `TagsView.jsx`,
+  `AccountFormModal.jsx` are the remaining top-level views/modals —
+  `TagsView.jsx` is deliberately separate from `Overview.jsx` rather than
+  a mode of it, since it browses by tag dimension/value, not by account.
+  `ui.jsx` holds tiny shared primitives (`ModalShell`, `Field`,
+  `miniInput`/`inputStyle`, `iconBtn`, and the tag-editing pair
+  `TagChips`/`TagsEditor` used by both ledgers' row editors).
+  `useLedgerRowAnimation.js` is the FLIP/autoscroll hook shared by both
+  ledgers' row lists.
 
 When adding a helper, put it in the `lib/` module that already owns that
 domain rather than inlining it into a component or creating a new module for

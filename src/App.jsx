@@ -10,6 +10,7 @@ import { ModalShell, miniInput } from "./components/ui";
 import { GroupLevelPicker } from "./components/GroupLevelPicker";
 import { SidebarGroupTree } from "./components/SidebarGroupTree";
 import { Overview } from "./components/Overview";
+import { TagsView } from "./components/TagsView";
 import { IsaParentView } from "./components/IsaParentView";
 import { AllowanceView } from "./components/AllowanceView";
 import { AccountLedger } from "./components/AccountLedger";
@@ -49,6 +50,7 @@ export default function App() {
   const [sidebarQuery, setSidebarQuery] = useState("");
   const [sidebarImbalancedOnly, setSidebarImbalancedOnly] = useState(false);
   const [showAllowance, setShowAllowance] = useState(false);
+  const [showTags, setShowTags] = useState(false);
   const [accountForm, setAccountForm] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null); // { id, entryCount, name }
   const [error, setError] = useState("");
@@ -110,6 +112,7 @@ export default function App() {
   function selectAccount(id) {
     setSelectedIdRaw(id);
     setShowAllowance(false);
+    setShowTags(false);
     setHashForAccount(id);
     try {
       if (id) localStorage.setItem("ledger-selected-account", id);
@@ -122,7 +125,10 @@ export default function App() {
     attemptNavigation(() => selectAccount(id));
   }
   function goToAllowance() {
-    attemptNavigation(() => { setSelectedIdRaw(null); setShowAllowance(true); });
+    attemptNavigation(() => { setSelectedIdRaw(null); setShowAllowance(true); setShowTags(false); });
+  }
+  function goToTags() {
+    attemptNavigation(() => { setSelectedIdRaw(null); setShowAllowance(false); setShowTags(true); });
   }
 
   async function refreshAccounts() {
@@ -373,15 +379,22 @@ export default function App() {
 
       <div className="flex" style={{ flex: 1, minHeight: 0 }}>
         <aside className="shrink-0" style={{ width: 260, borderRight: `1px solid ${C.line}`, padding: "18px 12px", overflowY: "auto" }}>
-          <button onClick={() => setSelectedId(null)} className="w-full text-left px-2 py-1.5 rounded mb-1" style={{ background: selectedId === null && !showAllowance ? C.paperDim : "transparent", fontSize: 13, fontWeight: 600, color: C.inkSoft }}>
+          <button onClick={() => setSelectedId(null)} className="w-full text-left px-2 py-1.5 rounded mb-1" style={{ background: selectedId === null && !showAllowance && !showTags ? C.paperDim : "transparent", fontSize: 13, fontWeight: 600, color: C.inkSoft }}>
             Overview
           </button>
           <button
             onClick={goToAllowance}
-            className="w-full text-left px-2 py-1.5 rounded mb-3"
+            className="w-full text-left px-2 py-1.5 rounded mb-1"
             style={{ background: showAllowance ? C.paperDim : "transparent", fontSize: 13, fontWeight: 600, color: C.inkSoft }}
           >
             ISA Allowance
+          </button>
+          <button
+            onClick={goToTags}
+            className="w-full text-left px-2 py-1.5 rounded mb-3"
+            style={{ background: showTags ? C.paperDim : "transparent", fontSize: 13, fontWeight: 600, color: C.inkSoft }}
+          >
+            Tags
           </button>
 
           <div className="mb-3">
@@ -449,7 +462,9 @@ export default function App() {
 
 
         <main className="flex-1 p-6" style={{ overflowY: "auto" }}>
-          {showAllowance ? (
+          {showTags ? (
+            <TagsView knownTags={knownTags} onSelect={setSelectedId} />
+          ) : showAllowance ? (
             <AllowanceView accounts={accounts} settings={settings} onSaveSettings={saveSettings} onSelect={setSelectedId} />
           ) : selected ? (
             selected.type === "isa-parent" ? (
