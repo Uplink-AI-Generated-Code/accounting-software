@@ -367,6 +367,21 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
 
         {!loaded && <div style={{ padding: "24px 16px", fontSize: 13, color: C.inkFaint }}>Loading…</div>}
 
+        {loaded && !!account.openingBalance && (
+          <div
+            className="grid"
+            style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 60px", fontSize: 13.5, padding: "10px 16px", borderBottom: `1px solid ${C.lineSoft}`, alignItems: "center", color: C.inkFaint }}
+          >
+            <div style={{ fontSize: 12.5 }}>—</div>
+            <div style={{ fontStyle: "italic" }}>Opening balance</div>
+            <div />
+            <div className="ll-mono text-right">{account.openingBalance < 0 ? fmt(-account.openingBalance, account.currency) : "—"}</div>
+            <div className="ll-mono text-right">{account.openingBalance > 0 ? fmt(account.openingBalance, account.currency) : "—"}</div>
+            <div className="ll-mono text-right" style={{ fontWeight: 600 }}>{fmt(account.openingBalance, account.currency)}</div>
+            <div />
+          </div>
+        )}
+
         {loaded && rows.length === 0 && !draft && <div style={{ padding: "24px 16px", fontSize: 13, color: C.inkFaint }}>No entries yet in this account.</div>}
 
         {rows.map((r, idx) => {

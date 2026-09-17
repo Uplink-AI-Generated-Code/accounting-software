@@ -355,6 +355,23 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
         </div>
 
         {!loaded && <div style={{ padding: "24px 16px", fontSize: 13, color: C.inkFaint }}>Loading…</div>}
+
+        {loaded && !!account.openingBalance && (
+          <div style={{ padding: "10px 16px", borderBottom: `1px solid ${C.lineSoft}` }}>
+            <div className="grid items-center" style={{ gridTemplateColumns: gridCols, fontSize: 13.5, color: C.inkFaint }}>
+              <div style={{ fontSize: 12.5 }}>—</div>
+              <div style={{ fontStyle: "italic" }}>Opening balance</div>
+              <div className="ll-mono text-right">{account.openingBalance < 0 ? fmtUnits(-account.openingBalance, account.symbol) : "—"}</div>
+              <div className="ll-mono text-right">{account.openingBalance > 0 ? fmtUnits(account.openingBalance, account.symbol) : "—"}</div>
+              <div className="ll-mono text-right" style={{ fontWeight: 600 }}>{fmtUnits(account.openingBalance, account.symbol)}</div>
+              <div />
+            </div>
+            <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 3, paddingLeft: 118 }}>
+              Cost {fmt(account.openingBalanceCashValue || 0, tradingCurrency)} · Worth {fmt(account.openingBalanceCashValue || 0, tradingCurrency)}
+            </div>
+          </div>
+        )}
+
         {loaded && rows.length === 0 && !draft && <div style={{ padding: "24px 16px", fontSize: 13, color: C.inkFaint }}>No trades yet in this account.</div>}
 
         {rows.map((r, idx) => {
