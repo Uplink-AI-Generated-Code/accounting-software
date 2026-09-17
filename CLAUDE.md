@@ -217,9 +217,22 @@ it covers and why); no test suite and no linter on the frontend.
     (`CurrencyController`/`SymbolController`/`CounterpartyController`) —
     read-only lists of the three reference entities, fetched once by
     `App.jsx` alongside the account list (see "Amounts, currencies, and
-    reference data" below). No write endpoints exist yet — deliberately
-    out of scope until an admin area is built; don't add `POST`/`PUT`
+    reference data" below). `POST /api/symbols` is the one exception —
+    see below — everything else here is still deliberately out of scope
+    until a real admin area is built; don't add another `POST`/`PUT`
     here without discussing scope first.
+  - `POST /api/symbols` (`SymbolController::create`) — the one write
+    endpoint among these three, added specifically because Symbol
+    (unlike Counterparty) is a closed set with no find-or-create and no
+    seed command like `app:currencies:seed`: a blank database starts
+    with zero symbols, which made it impossible to create the *first*
+    investment/Stocks & Shares ISA account at all. Body
+    `{ticker, name, scale, tradingCurrency}`; 400 on a missing/invalid
+    field or unknown `tradingCurrency`, 409 if the ticker already exists
+    (never silently overwrites an existing symbol's scale). Used by
+    `AccountFormModal.jsx`'s inline "+ Add a new symbol" flow, which
+    opens automatically wherever the Symbol picker would otherwise be a
+    dead end.
 - **None of the write handlers are optimistic on the frontend** except
   `saveAccount`/`saveSettings` in `App.jsx` (plain replaces with no
   cascading effect elsewhere). Account deletion and every transaction
@@ -864,9 +877,10 @@ not something the running app triggers itself.
 - No live market price feed / real "current value".
 - No multi-currency conversion beyond the per-line exchange tag.
 - No JISA, no LISA bonus modeling, no flexible-ISA partial-year handling.
-- No admin UI/write endpoints for currencies, symbols, or counterparties —
-  `GET /api/currencies`/`/api/symbols`/`/api/counterparties` are read-only
-  by design (see "Amounts, currencies, and reference data"). A future
-  admin area, including a modal to define a new stock symbol's name and
-  scale, is planned but not started — don't build ahead of that
-  conversation.
+- No general admin UI/write endpoints for currencies, symbols, or
+  counterparties — `GET /api/currencies`/`/api/counterparties` stay
+  read-only by design, and `/api/symbols` gains only the one narrow
+  `POST` described under "Backend" (creating a symbol from scratch, not
+  editing or deleting one). A future real admin area — editing/deleting
+  any of the three, not just adding a symbol — is planned but not
+  started; don't build further ahead of that conversation.

@@ -139,31 +139,36 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      try {
-        await refreshAccounts();
-        const [cur, sym, cp, tags] = await Promise.all([
-          api.getCurrencies().catch(() => []),
-          api.getSymbols().catch(() => []),
-          api.getCounterparties().catch(() => []),
-          api.getTags().catch(() => []),
-        ]);
-        setCurrencies(cur);
-        setSymbols(sym);
-        setCounterparties(cp);
-        setKnownTags(tags);
-        setCurrencyScales(cur);
-        setSymbolScales(sym);
-        const s = await api.getSettings().catch(() => null);
-        if (s) {
-          setSettings({ over65: false, groupLevels: ["type"], savedGroupings: [], ...s });
-        }
-      } catch (e) {
+      // Each of these is fetched independently — accounts failing (e.g. a
+      // migration that hasn't been run against this database yet) must
+      // not also blank out currencies/symbols/counterparties/tags, which
+      // are unrelated endpoints that might otherwise have loaded fine.
+      // This shipped as a real bug once: an accounts-only 500 silently
+      // left the currency picker looking broken, when the actual problem
+      // was one missing migration.
+      const [accountsResult, cur, sym, cp, tags, s] = await Promise.all([
+        refreshAccounts().catch(() => null),
+        api.getCurrencies().catch(() => []),
+        api.getSymbols().catch(() => []),
+        api.getCounterparties().catch(() => []),
+        api.getTags().catch(() => []),
+        api.getSettings().catch(() => null),
+      ]);
+      setCurrencies(cur);
+      setSymbols(sym);
+      setCounterparties(cp);
+      setKnownTags(tags);
+      setCurrencyScales(cur);
+      setSymbolScales(sym);
+      if (s) {
+        setSettings({ over65: false, groupLevels: ["type"], savedGroupings: [], ...s });
+      }
+      if (null === accountsResult) {
         // Can't reach the backend — start from an empty ledger rather than
         // leaving the app stuck loading; the banner below explains why.
         setStorageOK(false);
-      } finally {
-        setLoaded(true);
       }
+      setLoaded(true);
       try {
         const sel = localStorage.getItem("ledger-selected-account");
         if (sel) storedSelectedIdRef.current = sel;
@@ -521,6 +526,7 @@ export default function App() {
           onCancel={() => setAccountForm(null)}
           onSave={saveAccount}
           onDelete={accountForm.id ? () => requestDeleteAccount(accountForm.id) : null}
+          onSymbolCreated={(symbol) => setSymbols((prev) => [...prev, symbol])}
         />
       )}
 

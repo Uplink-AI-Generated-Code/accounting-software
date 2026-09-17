@@ -23,7 +23,13 @@
 async function request(path, options) {
   const res = await fetch(path, options);
   if (!res.ok) {
-    throw new Error(`${options?.method || "GET"} ${path} failed: ${res.status}`);
+    // A handful of endpoints (the ledger batch write, symbol creation)
+    // return a deliberate 400/409 with {"error": "..."} for an expected
+    // rejection rather than a bug — surface that message when present so
+    // a caller can show it directly, instead of always falling back to
+    // the generic "<method> <path> failed: <status>".
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error || `${options?.method || "GET"} ${path} failed: ${res.status}`);
   }
   return res.json();
 }
@@ -100,6 +106,12 @@ export function getCurrencies() {
 }
 export function getSymbols() {
   return request("/api/symbols");
+}
+// The one write endpoint among these three — see SymbolController's
+// docblock for why: a blank database has no symbols at all, so without
+// this there'd be no way to create the very first investment account.
+export function createSymbol(symbol) {
+  return request("/api/symbols", { method: "POST", ...jsonBody(symbol) });
 }
 export function getCounterparties() {
   return request("/api/counterparties");

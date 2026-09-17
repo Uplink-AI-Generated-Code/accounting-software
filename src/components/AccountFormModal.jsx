@@ -3,11 +3,12 @@ import { Trash2 } from "lucide-react";
 import { C, TYPES, ISA_KINDS } from "../lib/theme";
 import { toMinorUnits, fromMinorUnits } from "../lib/scale";
 import { ModalShell, Field, inputStyle } from "./ui";
+import { createSymbol } from "../api";
 
 /* ---------------------------------------------------------
    Account form modal
 --------------------------------------------------------- */
-export function AccountFormModal({ initial, accounts, currencies, symbols, counterparties, onCancel, onSave, onDelete }) {
+export function AccountFormModal({ initial, accounts, currencies, symbols, counterparties, onCancel, onSave, onDelete, onSymbolCreated }) {
   const wrappers = accounts.filter((a) => a.type === "isa-parent");
 
   const [name, setName] = useState(initial.name || "");
@@ -53,6 +54,39 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
   const knownSubtypes = Array.from(new Set(accounts.map((a) => a.subtype).filter(Boolean))).sort();
   const tradingCurrency = symbols.find((s) => s.ticker === symbol)?.tradingCurrency;
 
+  // Symbol is a curated, closed set (LedgerStateService::resolveSymbol()
+  // hard-errors on an unknown ticker) — a blank database starts with zero
+  // symbols, so without this inline flow there'd be no way to create the
+  // very first investment account. See SymbolController::create().
+  const [addingSymbol, setAddingSymbol] = useState(false);
+  const [newTicker, setNewTicker] = useState("");
+  const [newSymbolName, setNewSymbolName] = useState("");
+  const [newSymbolScale, setNewSymbolScale] = useState("6");
+  const [newSymbolCurrency, setNewSymbolCurrency] = useState(currencies[0]?.code || "GBP");
+  const [symbolError, setSymbolError] = useState("");
+  const [creatingSymbol, setCreatingSymbol] = useState(false);
+
+  function submitNewSymbol() {
+    const ticker = newTicker.trim().toUpperCase();
+    const scale = parseInt(newSymbolScale, 10);
+    if (!ticker) { setSymbolError("Ticker is required"); return; }
+    if (!newSymbolName.trim()) { setSymbolError("Name is required"); return; }
+    if (!Number.isInteger(scale) || scale < 0) { setSymbolError("Scale must be a non-negative integer"); return; }
+
+    setSymbolError("");
+    setCreatingSymbol(true);
+    createSymbol({ ticker, name: newSymbolName.trim(), scale, tradingCurrency: newSymbolCurrency })
+      .then((created) => {
+        onSymbolCreated(created);
+        setSymbol(created.ticker);
+        setAddingSymbol(false);
+        setNewTicker("");
+        setNewSymbolName("");
+      })
+      .catch((e) => setSymbolError(e.message))
+      .finally(() => setCreatingSymbol(false));
+  }
+
   function submit() {
     // Name is optional — see displayAccountName() in lib/format.js for
     // the Subtype/Counterparty-based fallback shown when it's blank.
@@ -84,7 +118,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
 
   return (
     <ModalShell onCancel={onCancel} title={initial.id ? "Edit account" : "New account"}>
-      <div className="flex flex-col gap-3" onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}>
+      <div className="flex flex-col gap-3" onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addingSymbol ? submitNewSymbol() : submit(); } }}>
         <Field label="Name"><input autoFocus value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} placeholder={`Optional — auto: ${subtype.trim() || "Subtype"} · ${counterparty.trim() || counterpartyLabel}`} /></Field>
         {showCounterparty && (
           <Field label={counterpartyLabel}>
@@ -110,12 +144,46 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
 
         {!isWrapper && type === "investment" && (
           <Field label="Symbol">
-            <select value={symbol} onChange={(e) => setSymbol(e.target.value)} style={inputStyle}>
-              <option value="">Select symbol…</option>
-              {symbols.map((s) => <option key={s.ticker} value={s.ticker}>{s.ticker} — {s.name}</option>)}
-            </select>
-            {symbols.length === 0 && (
-              <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 4 }}>No symbols set up yet — adding a new one isn't supported here yet.</div>
+            {!addingSymbol && (
+              <>
+                <select value={symbol} onChange={(e) => setSymbol(e.target.value)} style={inputStyle}>
+                  <option value="">Select symbol…</option>
+                  {symbols.map((s) => <option key={s.ticker} value={s.ticker}>{s.ticker} — {s.name}</option>)}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => { setAddingSymbol(true); setSymbolError(""); }}
+                  style={{ fontSize: 11.5, color: C.inkSoft, marginTop: 4, background: "none", border: "none", padding: 0, cursor: "pointer", textDecoration: "underline" }}
+                >
+                  + Add a new symbol
+                </button>
+              </>
+            )}
+            {addingSymbol && (
+              <div style={{ border: `1px solid ${C.line}`, borderRadius: 6, padding: 10, marginTop: 2 }}>
+                <div className="flex flex-col gap-2">
+                  <input autoFocus value={newTicker} onChange={(e) => setNewTicker(e.target.value)} style={inputStyle} placeholder="Ticker, e.g. AAPL" />
+                  <input value={newSymbolName} onChange={(e) => setNewSymbolName(e.target.value)} style={inputStyle} placeholder="Name, e.g. Apple Inc" />
+                  <div className="flex gap-2">
+                    <input type="number" min="0" step="1" value={newSymbolScale} onChange={(e) => setNewSymbolScale(e.target.value)} style={{ ...inputStyle, flex: 1 }} placeholder="Unit scale, e.g. 6" />
+                    <select value={newSymbolCurrency} onChange={(e) => setNewSymbolCurrency(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
+                      {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
+                    </select>
+                  </div>
+                  {symbolError && <div style={{ fontSize: 12, color: C.debit }}>{symbolError}</div>}
+                  <div className="flex gap-2 items-center">
+                    <button type="button" disabled={creatingSymbol} onClick={submitNewSymbol} className="px-3 py-1.5 rounded" style={{ background: C.ink, color: C.paper, fontSize: 12.5 }}>
+                      {creatingSymbol ? "Creating…" : "Create symbol"}
+                    </button>
+                    <button type="button" onClick={() => { setAddingSymbol(false); setSymbolError(""); }} style={{ fontSize: 12.5, color: C.inkFaint, background: "none", border: "none", cursor: "pointer" }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+            {!addingSymbol && symbols.length === 0 && (
+              <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 4 }}>No symbols set up yet — add one above to create your first Stocks &amp; Shares account.</div>
             )}
           </Field>
         )}
