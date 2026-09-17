@@ -8,6 +8,7 @@ use App\Entity\Currency;
 use App\Entity\Line;
 use App\Entity\Settings;
 use App\Entity\Symbol;
+use App\Entity\Tag;
 use App\Entity\Transaction;
 use App\Repository\SettingsRepository;
 use Doctrine\ORM\EntityManagerInterface;
@@ -803,6 +804,37 @@ class LedgerStateService
     }
 
     /**
+     * Find-or-creates each `{dimension, value}` pair as a Tag — same open,
+     * find-or-create posture as resolveCounterparty(), never a closed set.
+     * A pair with a blank/missing `dimension` is skipped rather than
+     * erroring, since that's not a meaningful tag to begin with; a blank
+     * `value` is kept (a bare, flag-style tag — see Tag's docblock).
+     *
+     * @param array<int, array{dimension?: mixed, value?: mixed}> $tagPairs
+     *
+     * @return array<int, Tag>
+     */
+    private function resolveTags(array $tagPairs): array
+    {
+        $tags = [];
+        foreach ($tagPairs as $pair) {
+            $dimension = trim((string) ($pair['dimension'] ?? ''));
+            if ('' === $dimension) {
+                continue;
+            }
+            $value = trim((string) ($pair['value'] ?? ''));
+            $tag = $this->em->getRepository(Tag::class)->find(['dimension' => $dimension, 'value' => $value]);
+            if (!$tag) {
+                $tag = (new Tag())->setDimension($dimension)->setValue($value);
+                $this->em->persist($tag);
+            }
+            $tags[] = $tag;
+        }
+
+        return $tags;
+    }
+
+    /**
      * `$transaction` null means this line is (or is becoming) standalone.
      * addLine(), not setTransaction() directly, when there *is* a
      * transaction — it also keeps the Transaction's own in-memory $lines
@@ -831,6 +863,7 @@ class LedgerStateService
         $line->setCashCurrency($this->resolveCurrency($data['cashCurrency'] ?? null));
         $line->setExchangeAmount(isset($data['exchangeAmount']) ? (int) $data['exchangeAmount'] : null);
         $line->setExchangeCurrency($this->resolveCurrency($data['exchangeCurrency'] ?? null));
+        $line->setTags($this->resolveTags($data['tags'] ?? []));
 
         return $line;
     }
@@ -948,6 +981,11 @@ class LedgerStateService
     /** @return array<string, mixed> */
     public function lineToArray(Line $l): array
     {
+        $tags = array_map(
+            static fn (Tag $t) => ['dimension' => $t->getDimension(), 'value' => $t->getValue()],
+            $l->getTags()->toArray()
+        );
+
         return array_filter([
             'id' => $l->getId(),
             'accountId' => $l->getAccount()->getId(),
@@ -959,6 +997,9 @@ class LedgerStateService
             'cashCurrency' => $l->getCashCurrency()?->getCode(),
             'exchangeAmount' => $l->getExchangeAmount(),
             'exchangeCurrency' => $l->getExchangeCurrency()?->getCode(),
+            // Omitted (not []) when empty, same null-omission convention as
+            // every other optional field here — see CLAUDE.md.
+            'tags' => $tags ?: null,
         ], static fn ($v) => null !== $v);
     }
 

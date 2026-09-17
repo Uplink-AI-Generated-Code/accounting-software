@@ -3,6 +3,8 @@
 namespace App\Entity;
 
 use App\Repository\LineRepository;
+use Doctrine\Common\Collections\ArrayCollection;
+use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
 
 /**
@@ -33,6 +35,14 @@ use Doctrine\ORM\Mapping as ORM;
  * strings), Line ids are backend-assigned integers, since a line is never
  * created client-side without a round trip anyway (writes aren't
  * optimistic here — see "Backend" in CLAUDE.md).
+ *
+ * `tags` is a many-to-many to `Tag`, deliberately per-line rather than
+ * per-transaction — the same reasoning as `date`/`description` living on
+ * the line: two lines of one transaction can carry different tags (a
+ * fuel purchase's expense leg gets `Car:AB12CDE`, its bank-withdrawal leg
+ * doesn't need to). `LedgerStateService::resolveTags()` does a full
+ * replace of this collection on every save, never an incremental
+ * add/remove — see CLAUDE.md's "Tags" section.
  */
 #[ORM\Entity(repositoryClass: LineRepository::class)]
 class Line
@@ -75,6 +85,19 @@ class Line
     #[ORM\ManyToOne(targetEntity: Currency::class)]
     #[ORM\JoinColumn(name: 'exchange_currency', referencedColumnName: 'code', nullable: true)]
     private ?Currency $exchangeCurrency = null;
+
+    /** @var Collection<int, Tag> */
+    #[ORM\ManyToMany(targetEntity: Tag::class)]
+    #[ORM\JoinTable(name: 'line_tag')]
+    #[ORM\JoinColumn(name: 'line_id', referencedColumnName: 'id', onDelete: 'CASCADE')]
+    #[ORM\InverseJoinColumn(name: 'tag_dimension', referencedColumnName: 'dimension')]
+    #[ORM\InverseJoinColumn(name: 'tag_value', referencedColumnName: 'value')]
+    private Collection $tags;
+
+    public function __construct()
+    {
+        $this->tags = new ArrayCollection();
+    }
 
     public function getId(): ?int
     {
@@ -197,6 +220,29 @@ class Line
     public function setExchangeCurrency(?Currency $exchangeCurrency): static
     {
         $this->exchangeCurrency = $exchangeCurrency;
+
+        return $this;
+    }
+
+    /** @return Collection<int, Tag> */
+    public function getTags(): Collection
+    {
+        return $this->tags;
+    }
+
+    /**
+     * Full replace, not incremental add/remove — matches how every other
+     * field on a line is just overwritten wholesale on save (see
+     * LedgerStateService::resolveTags()).
+     *
+     * @param iterable<Tag> $tags
+     */
+    public function setTags(iterable $tags): static
+    {
+        $this->tags->clear();
+        foreach ($tags as $tag) {
+            $this->tags->add($tag);
+        }
 
         return $this;
     }

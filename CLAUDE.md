@@ -528,6 +528,81 @@ line's value against a target, and where each is used.
   PHP port and `lib/matching.js`'s `balanceHint()`/`lineBalanceValue()`
   in agreement if you touch either.
 
+## Tags — cross-cutting facts that don't fit the account model
+
+Some facts about a line cut across whatever Type/Subtype/Counterparty it
+sits under — which car, which trip, whether something is tax-deductible,
+its refund status — and don't fit a single-parent hierarchy. Tags cover
+only these; **most of the "how much did I spend/earn on X" questions this
+was originally motivated by are already answered by the account-grouping
+tree** (Counterparty/Subtype/Type — see "UI conventions" below) once
+nominal accounts adopted Counterparty. "Client" and "merchant" were
+considered as tag dimensions during design but turned out redundant with
+Counterparty and were dropped — don't reintroduce them as tags.
+
+- **`Tag`** (`backend/src/Entity/Tag.php`) is a natural-key reference
+  entity like `Currency`/`Symbol`/`Counterparty`, but with a **composite**
+  key: `(dimension, value)` — e.g. `("Car", "AB12CDE")`,
+  `("Status", "Refunded")`. Both `dimension` and `value` are open,
+  find-or-create strings (`LedgerStateService::resolveTags()`), never a
+  closed/curated set like Currency/Symbol. **`value` may be an empty
+  string** — a bare, flag-style tag (`{"Car", ""}` for someone with
+  exactly one car, `{"Tax-deductible", ""}` for a plain yes/no fact)
+  rather than a fake value invented to satisfy the composite key; empty
+  string, not null, same reasoning as `Account.name`. If a second
+  instance of a previously-bare dimension shows up later (e.g. a second
+  car), the fix is a one-time bulk edit of the existing `{dimension, ""}`
+  tags to real values — an accepted trade-off, not something designed
+  around up front.
+- **`Line`↔`Tag` is a plain many-to-many** (`line_tag` join table,
+  composite FK into `tag(dimension, value)`) — **tags live on the line,
+  not the transaction**, mirroring the existing, deliberate choice to keep
+  `date`/`description` per-line (two lines of one transaction can already
+  have different dates/descriptions — see "Data model" above). A fuel
+  purchase's expense leg gets `Car:AB12CDE`; its bank-withdrawal leg
+  doesn't need to inherit or "borrow" it — there's no tag-ownership
+  concept, and no dummy-transaction workaround for standalone lines,
+  because tags never needed a transaction to attach to. If you want both
+  legs of a transaction visibly tagged, tag both lines explicitly.
+- **No uniqueness rule beyond exact `(dimension, value)` duplication on
+  one line** — a line can carry two different values of the same
+  dimension (e.g. both `Status:Refunded` and `Status:Cancelled`, or two
+  different `Car` tags) — left unconstrained by design decision, not
+  disallowed.
+- **A refund is always its own real line**, dated whenever it actually
+  happened, never a same-line void — `Refunded` is purely an annotation
+  on the *original* line. Tags never affect `balance`/`costBasis`/any
+  stored computation; they're metadata for filtering/searching after the
+  fact only.
+- **`LedgerStateService::resolveTags()`** does a full replace of a line's
+  Tag set on every save (`Line::setTags()`), not incremental add/remove —
+  called from `hydrateLine()`, so every write path (`upsertLine`,
+  `upsertTransaction`, `writeState()`) carries tags the same way as every
+  other line field.
+- **Query endpoints** (`TagController`/`TagService`), deliberately narrow:
+  - `GET /api/tags[?dimension=Car]` — distinct `(dimension, value)` pairs
+    in use, optionally scoped to one dimension. Powers autocomplete
+    (existing dimensions first, then existing values once one's chosen) —
+    the guardrail against "Refunded" vs "refund" silently fragmenting a
+    report, since nothing at the schema level prevents that.
+  - `GET /api/lines?dimension=Car&value=AB12CDE` — every line carrying
+    that exact tag, each with its account context
+    (`{lineId, line, account}`, shaped like `GET /api/match-candidates`'s
+    own candidates) — the drill-down behind a tag total.
+  - `GET /api/tag-totals?dimension=Car[&excludeTag=Status:Refunded]` —
+    server-side `SUM` grouped by `(value, currency)`, same
+    "never sum bulk line data client-side" posture as
+    `accountsWithStats()`'s own balance `SUM`. A line carrying more than
+    one value of the requested dimension contributes to each value's
+    total, not just one. **Scope cut: never sums investment lines** — an
+    investment line's `amount` is units, not cash, so mixing it into a
+    cash total under one `(value, currency)` bucket would silently
+    combine incompatible quantities; an investment line can still be
+    tagged and drilled into via `GET /api/lines`, just not summed here.
+- **Not merged into the existing account search** — `flattenAllAccounts`/
+  `leafMatchesQuery` (see "UI conventions" below) stays account-attribute
+  search only; tags are line-level and get their own search surface.
+
 ## ISA allowance engine
 
 Ported to PHP (`backend/src/Service/IsaAllowanceService.php`,
