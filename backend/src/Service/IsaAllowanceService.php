@@ -116,7 +116,17 @@ class IsaAllowanceService
                         continue;
                     }
                     if ($this->isExternalLine($t, $line, $accounts)) {
-                        $events[] = ['date' => $line['date'], 'amount' => $amount, 'product' => $product];
+                        $events[] = ['date' => $line['date'], 'type' => 'external', 'amount' => $amount, 'product' => $product];
+                    } elseif ($this->isIsaTransferLine($t, $line, $accounts)) {
+                        // A transfer of already-subscribed capital between
+                        // two of the user's own ISA products — not a new
+                        // subscription (isExternalLine() already says so),
+                        // but the money still needs to be tracked into the
+                        // receiving product, or a later withdrawal-and-
+                        // replacement of this same money would wrongly look
+                        // like a fresh subscription (it did once, for real
+                        // data — see CLAUDE.md's ISA allowance engine notes).
+                        $events[] = ['date' => $line['date'], 'type' => 'transfer', 'amount' => $amount, 'product' => $product];
                     }
                 }
             }
@@ -125,7 +135,34 @@ class IsaAllowanceService
             foreach ($events as $ev) {
                 $key = $ev['product']['accountId'];
                 $s = $state[$key];
-                if ($ev['amount'] < 0) {
+                if ('transfer' === $ev['type']) {
+                    if ($ev['amount'] < 0) {
+                        // Money leaving this flexible product for another
+                        // of the user's own ISAs — draw down whatever's
+                        // tracked here so it doesn't linger as phantom
+                        // replaceable capacity in this product.
+                        $w = -$ev['amount'];
+                        $fromThisYear = min($w, $s['thisYearBalance']);
+                        $s['thisYearBalance'] -= $fromThisYear;
+                        $w -= $fromThisYear;
+                        $fromPrior = min($w, $s['priorBalance']);
+                        $s['priorBalance'] -= $fromPrior;
+                    } else {
+                        // Money arriving from another of the user's own
+                        // ISAs. Its this-year/prior split at the sending
+                        // side isn't tracked through the transfer (see
+                        // CLAUDE.md's "no flexible-ISA partial-year
+                        // handling" scope note) — credited conservatively
+                        // as this product's own older money, replaceable
+                        // only back into this same account, never toward
+                        // another flexible ISA's headroom. That's enough to
+                        // fix the common case (money transferred in, later
+                        // withdrawn and put back into the same account)
+                        // without claiming cross-ISA replaceability the
+                        // data can't actually verify.
+                        $s['priorBalance'] += $ev['amount'];
+                    }
+                } elseif ($ev['amount'] < 0) {
                     // Withdrawal: this year's own money goes first, freeing
                     // capacity usable anywhere; anything beyond that draws
                     // on older money, freeing capacity usable only back
@@ -228,6 +265,32 @@ class IsaAllowanceService
         }
 
         return true;
+    }
+
+    /**
+     * True when this line's other leg sits on a real ISA product account
+     * (`isaKind`) — a transfer of already-subscribed capital between two
+     * of the user's own ISAs, as opposed to an `isa-income` counterpart
+     * (interest/dividends generated inside the ISA, never subscribed
+     * money, deliberately left untracked by the flexible pool simulation).
+     * Only meaningful for a line `isExternalLine()` has already said is
+     * *not* external.
+     *
+     * @param array<string, mixed>             $t
+     * @param array<string, mixed>             $line
+     * @param array<int, array<string, mixed>> $accounts
+     */
+    private function isIsaTransferLine(array $t, array $line, array $accounts): bool
+    {
+        $others = array_filter($t['lines'], static fn ($l) => $l['accountId'] !== $line['accountId']);
+        foreach ($others as $l) {
+            $oAcc = $this->findAccount($accounts, $l['accountId']);
+            if ($oAcc && !empty($oAcc['isaKind'])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

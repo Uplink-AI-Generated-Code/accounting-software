@@ -266,6 +266,46 @@ class IsaAllowanceServiceTest extends KernelTestCase
         self::assertSame(0, $usage2['byKind']['cash-isa']);
     }
 
+    public function testTransferIntoFlexibleIsaThenWithdrawnAndReplacedDoesNotDoubleCount(): void
+    {
+        $isaC = $this->makeAccount('isaC', ['isaKind' => 'cash-isa', 'flexible' => false]);
+        $isaA = $this->makeAccount('isaA', ['isaKind' => 'innovative-finance-isa', 'flexible' => true]);
+        $external = $this->makeAccount('bank', ['type' => 'asset']);
+
+        // Subscribe 20000 into a non-flexible ISA...
+        $this->makeTransaction('t1', [
+            ['account' => $isaC, 'amount' => 2000000, 'date' => '2026-05-01'],
+            ['account' => $external, 'amount' => -2000000, 'date' => '2026-05-01'],
+        ]);
+        // ...then transfer the whole balance into a *flexible* ISA. This
+        // is not a new subscription, but the money's replacement rights
+        // must travel with it, or the withdraw/redeposit below would
+        // wrongly look like a fresh subscription — this exact scenario
+        // shipped as a real bug (an ISA-to-ISA transfer's money vanished
+        // from the flexible pool tracking entirely).
+        $this->makeTransaction('t2', [
+            ['account' => $isaC, 'amount' => -2000000, 'date' => '2026-06-01'],
+            ['account' => $isaA, 'amount' => 2000000, 'date' => '2026-06-01'],
+        ]);
+        // Withdraw part of it back out to the bank...
+        $this->makeTransaction('t3', [
+            ['account' => $isaA, 'amount' => -800000, 'date' => '2026-07-01'],
+            ['account' => $external, 'amount' => 800000, 'date' => '2026-07-01'],
+        ]);
+        // ...then put it straight back into the same flexible ISA.
+        $this->makeTransaction('t4', [
+            ['account' => $isaA, 'amount' => 800000, 'date' => '2026-08-01'],
+            ['account' => $external, 'amount' => -800000, 'date' => '2026-08-01'],
+        ]);
+        $this->em->flush();
+
+        $usage = $this->isa->computeUsage(2026);
+
+        self::assertSame(2000000, $usage['byKind']['cash-isa']);
+        self::assertSame(0, $usage['byKind']['innovative-finance-isa']);
+        self::assertSame(2000000, $usage['total']);
+    }
+
     protected function tearDown(): void
     {
         parent::tearDown();
