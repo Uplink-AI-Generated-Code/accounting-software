@@ -293,13 +293,7 @@ class LedgerStateService
             return ($a['value'] > 0) !== ($b['value'] > 0);
         }
 
-        foreach ($curs as $c) {
-            if (0 !== $byCur[$c]) {
-                return false;
-            }
-        }
-
-        return true;
+        return array_all($curs, static fn ($c) => 0 === $byCur[$c]);
     }
 
     /**

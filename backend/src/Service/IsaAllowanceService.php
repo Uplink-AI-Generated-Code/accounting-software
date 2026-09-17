@@ -257,14 +257,12 @@ class IsaAllowanceService
         if (!$others) {
             return true;
         }
-        foreach ($others as $l) {
-            $oAcc = $this->findAccount($accounts, $l['accountId']);
-            if ($oAcc && (!empty($oAcc['isaKind']) || 'isa-income' === $oAcc['type'])) {
-                return false;
-            }
-        }
 
-        return true;
+        return !array_any($others, function ($l) use ($accounts) {
+            $oAcc = $this->findAccount($accounts, $l['accountId']);
+
+            return $oAcc && (!empty($oAcc['isaKind']) || 'isa-income' === $oAcc['type']);
+        });
     }
 
     /**
@@ -283,14 +281,12 @@ class IsaAllowanceService
     private function isIsaTransferLine(array $t, array $line, array $accounts): bool
     {
         $others = array_filter($t['lines'], static fn ($l) => $l['accountId'] !== $line['accountId']);
-        foreach ($others as $l) {
-            $oAcc = $this->findAccount($accounts, $l['accountId']);
-            if ($oAcc && !empty($oAcc['isaKind'])) {
-                return true;
-            }
-        }
 
-        return false;
+        return array_any($others, function ($l) use ($accounts) {
+            $oAcc = $this->findAccount($accounts, $l['accountId']);
+
+            return $oAcc && !empty($oAcc['isaKind']);
+        });
     }
 
     /**
@@ -354,13 +350,7 @@ class IsaAllowanceService
     /** @param array<int, array<string, mixed>> $accounts */
     private function findAccount(array $accounts, string $id): ?array
     {
-        foreach ($accounts as $a) {
-            if ($a['id'] === $id) {
-                return $a;
-            }
-        }
-
-        return null;
+        return array_find($accounts, static fn ($a) => $a['id'] === $id);
     }
 
     /**

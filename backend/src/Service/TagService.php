@@ -135,12 +135,8 @@ class TagService
 
     private function lineHasTag(Line $line, string $dimension, string $value): bool
     {
-        foreach ($line->getTags() as $tag) {
-            if ($tag->getDimension() === $dimension && $tag->getValue() === $value) {
-                return true;
-            }
-        }
-
-        return false;
+        return $line->getTags()->exists(
+            static fn (int $i, Tag $tag) => $tag->getDimension() === $dimension && $tag->getValue() === $value
+        );
     }
 }
