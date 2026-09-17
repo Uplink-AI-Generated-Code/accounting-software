@@ -91,6 +91,19 @@ once nominal accounts adopted it — they aren't part of this design.)
   values once a dimension is chosen, since nothing at the schema level
   prevents "Refunded" and "refund" from silently becoming two different
   tags.
+- **`value` is optional — an empty string, never null**, same convention
+  as `Account.name` and for the same reason (null and `""` would mean the
+  same thing here). This makes a bare, flag-style tag a first-class case
+  rather than a workaround: `{dimension: "Car", value: ""}` for someone
+  with exactly one car, `{dimension: "Tax-deductible", value: ""}` for a
+  plain yes/no fact — no need to invent a fake value just to satisfy a
+  composite key. A flat tag isn't a different mechanism from a structured
+  one, it's a structured tag with a blank value. If a second car (or a
+  second anything) shows up later, the fix is a one-time bulk edit — find
+  every `{Car, ""}` tag and set its value to the first car's actual
+  identifier, then start using real values going forward. This is an
+  accepted, deliberate trade-off rather than something designed around
+  up front.
 - **`Line`↔`Tag` is a plain many-to-many** via a `line_tag` join table
   (`line_id`, `tag_dimension`, `tag_value`, composite PK on all three).
   This needs a composite-key FK mapping in Doctrine, slightly more
