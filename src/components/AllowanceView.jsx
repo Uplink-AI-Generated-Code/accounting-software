@@ -15,8 +15,8 @@ import { getIsaAllowance } from "../api";
    page otherwise has. isaProducts()/isaRulesFor() stay client-side: pure,
    and only need the account list already loaded.
 --------------------------------------------------------- */
-export function AllowanceView({ accounts, settings, onSaveSettings, onSelect }) {
-  const currentStartYear = taxYearStartYearFor(todayISO());
+export function AllowanceView({ accounts, settings, onSaveSettings, onSelect, activeTaxYearStart }) {
+  const currentStartYear = activeTaxYearStart ?? taxYearStartYearFor(todayISO());
   const [startYear, setStartYear] = useState(currentStartYear);
 
   const { label } = taxYearBounds(startYear);

@@ -465,7 +465,7 @@ export default function App() {
           {showTags ? (
             <TagsView knownTags={knownTags} onSelect={setSelectedId} />
           ) : showAllowance ? (
-            <AllowanceView accounts={accounts} settings={settings} onSaveSettings={saveSettings} onSelect={setSelectedId} />
+            <AllowanceView accounts={accounts} settings={settings} onSaveSettings={saveSettings} onSelect={setSelectedId} activeTaxYearStart={activeTaxYearStart} />
           ) : selected ? (
             selected.type === "isa-parent" ? (
               <IsaParentView
