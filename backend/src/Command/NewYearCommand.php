@@ -2,11 +2,7 @@
 
 namespace App\Command;
 
-use App\Entity\Currency;
-use App\Entity\Symbol;
-use App\Service\LedgerStateService;
-use Doctrine\DBAL\DriverManager;
-use Doctrine\ORM\EntityManagerInterface;
+use App\Service\NewYearService;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
@@ -22,23 +18,10 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  * itself. This is the "one file per tax year" convention documented in
  * .env.local, ported from the sibling Nucleware/Accounts project.
  *
- * Copies the live SQLite file wholesale to the given path (so every
- * Currency/Symbol/Counterparty/Tag/Account definition, and the settings
- * row, come along exactly as they are — no re-derivation), then, in the
- * copy only: wipes every line/transaction, and sets each account's
- * `openingBalance`/`openingBalanceCashValue` to its *current* closing
- * balance/cost basis for asset/liability/equity/investment accounts
- * (real, balance-carrying accounts), or resets them to null for
- * income/isa-income/expense/isa-parent accounts (period-specific flows
- * that don't carry a balance across tax years — an isa-parent never held
- * one anyway).
- *
- * Operates on whatever's live in the database right now — there's no
- * "as of" cutoff date; run it once the current year's data entry is
- * done. The new file's own tax year isn't set here either — with zero
- * lines, LedgerStateService::determinedTaxYearStart() naturally computes
- * null until the first real entry is saved into it, same as any other
- * blank database (see CLAUDE.md) — nothing special to do.
+ * A thin wrapper — see NewYearService::createNextYear() for the actual
+ * copy/wipe/carry-forward logic, shared with the in-app "start a new tax
+ * year" action (DatabaseController::newYear(), POST
+ * /api/databases/new-year) so both call exactly the same code.
  */
 #[AsCommand(
     name: 'app:new-year',
@@ -46,12 +29,8 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 )]
 class NewYearCommand extends Command
 {
-    private const CARRY_FORWARD_TYPES = ['asset', 'liability', 'equity', 'investment'];
-
-    public function __construct(
-        private readonly EntityManagerInterface $em,
-        private readonly LedgerStateService $state,
-    ) {
+    public function __construct(private readonly NewYearService $newYearService)
+    {
         parent::__construct();
     }
 
@@ -76,85 +55,22 @@ class NewYearCommand extends Command
         $io = new SymfonyStyle($input, $output);
         $newDbPath = (string) $input->getArgument('newDbPath');
 
-        $sourcePath = $this->em->getConnection()->getParams()['path'] ?? null;
-        if (!\is_string($sourcePath) || '' === $sourcePath) {
-            $io->error('Could not determine the current database\'s file path — app:new-year only supports SQLite.');
-
-            return Command::FAILURE;
-        }
-
-        if (file_exists($newDbPath)) {
-            $io->error(\sprintf('%s already exists — remove or rename it first.', $newDbPath));
-
-            return Command::FAILURE;
-        }
-
-        // Read every account's current closing balance/cost basis before
-        // touching anything — accountsWithStats() is the same computation
-        // GET /api/accounts uses, so this can never drift from what the
-        // live app itself shows.
-        $stats = $this->state->accountsWithStats();
-
-        $currencyScales = [];
-        foreach ($this->em->getRepository(Currency::class)->findAll() as $c) {
-            $currencyScales[$c->getCode()] = $c->getScale();
-        }
-        $symbolScales = [];
-        $symbolTradingCurrency = [];
-        foreach ($this->em->getRepository(Symbol::class)->findAll() as $s) {
-            $symbolScales[$s->getTicker()] = $s->getScale();
-            $symbolTradingCurrency[$s->getTicker()] = $s->getTradingCurrency()->getCode();
-            $currencyScales[$s->getTradingCurrency()->getCode()] ??= $s->getTradingCurrency()->getScale();
-        }
-
-        if (!copy($sourcePath, $newDbPath)) {
-            $io->error(\sprintf('Could not copy %s to %s.', $sourcePath, $newDbPath));
-
-            return Command::FAILURE;
-        }
-
-        $target = DriverManager::getConnection(['driver' => 'pdo_sqlite', 'path' => $newDbPath]);
-
-        $target->beginTransaction();
         try {
-            $target->executeStatement('DELETE FROM line_tag');
-            $target->executeStatement('DELETE FROM line');
-            $target->executeStatement('DELETE FROM transactions');
-
-            $rows = [];
-            foreach ($stats as $a) {
-                $carry = \in_array($a['type'], self::CARRY_FORWARD_TYPES, true);
-                $openingBalance = $carry ? $a['balance'] : null;
-                $openingBalanceCashValue = $carry && 'investment' === $a['type'] ? ($a['costBasis'] ?? 0) : null;
-
-                $target->executeStatement(
-                    'UPDATE account SET opening_balance = ?, opening_balance_cash_value = ? WHERE id = ?',
-                    [$openingBalance, $openingBalanceCashValue, $a['id']]
-                );
-
-                if ($carry && 0 !== $openingBalance) {
-                    $rows[] = [$a, $openingBalance, $openingBalanceCashValue];
-                }
-            }
-
-            $target->commit();
+            $result = $this->newYearService->createNextYear($newDbPath);
         } catch (\Throwable $e) {
-            $target->rollBack();
-            $io->error(\sprintf('Failed to write %s: %s', $newDbPath, $e->getMessage()));
+            $io->error($e->getMessage());
 
             return Command::FAILURE;
-        } finally {
-            $target->close();
         }
 
-        $io->success(\sprintf('Created %s from %s.', $newDbPath, $sourcePath));
+        $io->success(\sprintf('Created %s from %s.', $newDbPath, $result['sourcePath']));
 
         $table = [];
-        foreach ($rows as [$a, $openingBalance, $openingBalanceCashValue]) {
+        foreach ($result['rows'] as [$a, $openingBalance, $openingBalanceCashValue]) {
             if ('investment' === $a['type']) {
-                $unitsScale = $symbolScales[$a['symbol'] ?? ''] ?? 6;
-                $tradingCurrency = $symbolTradingCurrency[$a['symbol'] ?? ''] ?? null;
-                $costScale = $currencyScales[$tradingCurrency] ?? 2;
+                $unitsScale = $result['symbolScales'][$a['symbol'] ?? ''] ?? 6;
+                $tradingCurrency = $result['symbolTradingCurrency'][$a['symbol'] ?? ''] ?? null;
+                $costScale = $result['currencyScales'][$tradingCurrency] ?? 2;
                 $table[] = [
                     $a['name'],
                     $a['type'],
@@ -162,7 +78,7 @@ class NewYearCommand extends Command
                     $this->formatScaled($openingBalanceCashValue, $costScale).' cost',
                 ];
             } else {
-                $scale = $currencyScales[$a['currency'] ?? ''] ?? 2;
+                $scale = $result['currencyScales'][$a['currency'] ?? ''] ?? 2;
                 $table[] = [$a['name'], $a['type'], $this->formatScaled($openingBalance, $scale), '—'];
             }
         }
@@ -171,7 +87,7 @@ class NewYearCommand extends Command
             $io->table(['Account', 'Type', 'Opening balance', 'Opening cost basis'], $table);
         }
 
-        $investmentCount = \count(array_filter($rows, static fn ($r) => 'investment' === $r[0]['type']));
+        $investmentCount = \count(array_filter($result['rows'], static fn ($r) => 'investment' === $r[0]['type']));
         if ($investmentCount > 0) {
             $io->note(\sprintf(
                 '%d investment account(s) carried forward: portfolio value will read as the carried cost basis until the first new trade re-marks it — there\'s no live price feed (see CLAUDE.md\'s "Stock valuation").',
