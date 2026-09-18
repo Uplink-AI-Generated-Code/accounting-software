@@ -16,6 +16,7 @@ import { AllowanceView } from "./components/AllowanceView";
 import { AccountLedger } from "./components/AccountLedger";
 import { StockLedger } from "./components/StockLedger";
 import { AccountFormModal } from "./components/AccountFormModal";
+import { DatabaseSwitcher, DatabaseSwitcherBlocking } from "./components/DatabaseSwitcher";
 
 /* ---------------------------------------------------------
    App
@@ -51,6 +52,12 @@ export default function App() {
   // network failure, so the banner below can show that specific reason
   // instead of always falling back to "check that the server is running".
   const [backendErrorReason, setBackendErrorReason] = useState("");
+  // True specifically when the backend reported "no_active_database" —
+  // see MigrationStatusListener — distinct from a generic backend
+  // failure: this renders a full-screen, non-dismissible database picker
+  // instead of the normal app shell (see the early return below), rather
+  // than just a banner.
+  const [noActiveDatabase, setNoActiveDatabase] = useState(false);
   const [selectedId, setSelectedIdRaw] = useState(null);
   const [sidebarQuery, setSidebarQuery] = useState("");
   const [sidebarImbalancedOnly, setSidebarImbalancedOnly] = useState(false);
@@ -157,6 +164,7 @@ export default function App() {
           // fetch() itself with a TypeError before any response exists —
           // only trust e.message as a specific reason when it didn't.
           setBackendErrorReason(e instanceof TypeError ? "" : e.message);
+          if (e && e.reason === "no_active_database") setNoActiveDatabase(true);
           return null;
         }),
         api.getCurrencies().catch(() => []),
@@ -337,6 +345,10 @@ export default function App() {
   // retroactively, only flagged — see CLAUDE.md).
   const outOfTaxYearLineCount = settings.outOfTaxYearLineCount || 0;
 
+  if (noActiveDatabase) {
+    return <DatabaseSwitcherBlocking onSwitched={() => window.location.reload()} />;
+  }
+
   return (
     <div style={{ background: C.paper, color: C.ink, height: "100%", display: "flex", flexDirection: "column", fontFamily: "'Inter', sans-serif" }} className="w-full">
       <style>{`
@@ -357,6 +369,7 @@ export default function App() {
           <span style={{ color: C.inkFaint, fontSize: 13, marginLeft: 6 }}>double-entry, kept simply</span>
         </div>
         <div className="flex items-center gap-3">
+          <DatabaseSwitcher attemptNavigation={attemptNavigation} onSwitched={() => window.location.reload()} />
           {activeTaxYearStart != null && (
             <div
               className="flex items-center gap-2 rounded"
