@@ -12,10 +12,23 @@ import { fmt, fmtUnits, displayAccountName } from "../lib/format";
 // group path (counterparty/subtype/currency/...), shown faint beneath the
 // name since the search flattens away the grouping headers that would
 // otherwise make that context visible.
-export function AccountRow({ a, accounts, symbols, onSelect, subtitle }) {
+export function AccountRow({ a, accounts, symbols, onSelect, subtitle, groupLevels = [] }) {
   // Trading currency lives on the Symbol now, not the account — see
   // CLAUDE.md.
   const tradingCurrency = symbols.find((s) => s.ticker === a.symbol)?.tradingCurrency;
+  // Whichever of Type/Currency/Counterparty/Subtype the active grouping
+  // (settings.groupLevels) doesn't already nest by — showing one that's
+  // already the group header above would just repeat it on every row.
+  // The investment account's own ticker isn't one of the four grouping
+  // dimensions (currency there means *trading* currency, a separate
+  // thing — see lib/grouping.js's bucketBy()), so it's always shown.
+  const badgeParts = [
+    !groupLevels.includes("type") && TYPES.find((t) => t.key === a.type)?.label,
+    "investment" === a.type ? a.symbol : null,
+    !groupLevels.includes("currency") && ("investment" === a.type ? tradingCurrency : a.currency),
+    !groupLevels.includes("counterparty") && a.counterparty,
+    !groupLevels.includes("subtype") && a.subtype,
+  ].filter(Boolean);
   // `imbalancedLineCount`/`imbalanceIn`/`imbalanceOut` come from the
   // backend's GET /api/accounts
   // (LedgerStateService::imbalanceStatsByAccount()) — a global,
@@ -37,9 +50,11 @@ export function AccountRow({ a, accounts, symbols, onSelect, subtitle }) {
     >
       <span className="flex flex-col" style={{ minWidth: 0 }}>
         <span className="flex items-center gap-2" style={{ minWidth: 0 }}>
-          <span style={{ fontSize: 10, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.6, whiteSpace: "nowrap", flexShrink: 0 }}>
-            {TYPES.find((t) => t.key === a.type)?.label}{a.type === "investment" ? ` · ${a.symbol}` : ""}
-          </span>
+          {badgeParts.length > 0 && (
+            <span style={{ fontSize: 10, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.6, whiteSpace: "nowrap", flexShrink: 0 }}>
+              {badgeParts.join(" · ")}
+            </span>
+          )}
           <span style={{ fontSize: 13.5, fontWeight: 500, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayAccountName(a)}</span>
           {a.isaKind && (
             <span title={ISA_KINDS.find((k) => k.key === a.isaKind)?.label} style={{ fontSize: 9.5, fontWeight: 700, color: C.gold, border: `1px solid ${C.goldDim}`, borderRadius: 3, padding: "1px 3px", letterSpacing: 0.3, flexShrink: 0 }}>

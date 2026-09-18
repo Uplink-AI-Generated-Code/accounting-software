@@ -331,7 +331,9 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
     <div>
       <div className="flex items-start justify-between mb-5">
         <div>
-          <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>{TYPES.find((t) => t.key === account.type)?.label} · {account.currency}</div>
+          <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>
+            {[TYPES.find((t) => t.key === account.type)?.label, account.currency, account.counterparty, account.subtype].filter(Boolean).join(" · ")}
+          </div>
           <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{displayAccountName(account)}</h2>
           <div className="ll-mono" style={{ fontSize: 22, marginTop: 6, color: balance < 0 ? C.debit : C.ink }}>{fmt(balance, account.currency)}</div>
           <ImbalanceBadge account={account} currency={account.currency} />

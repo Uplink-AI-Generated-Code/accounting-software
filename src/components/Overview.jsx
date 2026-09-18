@@ -82,7 +82,7 @@ export function Overview({ accounts, symbols, settings, onSaveSettings, onSaveGr
         if ((query.trim() || imbalancedOnly) && matched.length === 0) {
           return <p style={{ fontSize: 13, color: C.inkFaint }}>No accounts match.</p>;
         }
-        return <OverviewGroupTree groups={buildNestedGroups(matched, groupLevels, accounts, symbols)} depth={0} accounts={accounts} symbols={symbols} onSelect={onSelect} />;
+        return <OverviewGroupTree groups={buildNestedGroups(matched, groupLevels, accounts, symbols)} depth={0} accounts={accounts} symbols={symbols} onSelect={onSelect} groupLevels={groupLevels} />;
       })()}
     </div>
   );

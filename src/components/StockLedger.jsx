@@ -315,7 +315,9 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
     <div>
       <div className="flex items-start justify-between mb-5">
         <div>
-          <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>Stocks & Shares · {tradingCurrency}</div>
+          <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>
+            {["Stocks & Shares", tradingCurrency, account.counterparty, account.subtype].filter(Boolean).join(" · ")}
+          </div>
           <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{displayAccountName(account)} <span style={{ color: C.gold }}>{account.symbol}</span></h2>
           <div className="ll-mono" style={{ fontSize: 22, marginTop: 6 }}>
             {fmtUnits(balance, account.symbol)} <span style={{ fontSize: 14, color: C.inkFaint }}>units</span>
