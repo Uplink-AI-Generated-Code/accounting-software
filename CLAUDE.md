@@ -143,6 +143,22 @@ it covers and why); no test suite and no linter on the frontend.
   entity and no login. If that ever changes, every controller and every
   service's write path need an ownership check added, not just a login
   screen bolted on.
+- **`MigrationStatusListener`** (`src/EventListener/`, `kernel.request`,
+  priority 300) refuses every `/api/*` request with a `503` and a clear
+  `{"error": "Database schema is out of date (N migration(s) pending) —
+  run: php bin/console doctrine:migrations:migrate"}` whenever the
+  database hasn't caught up with the latest migration — checked via
+  `DependencyFactory::getMigrationStatusCalculator()`, not by parsing
+  whatever SQL exception happens to surface first. Runs before routing so
+  no controller/service ever touches a stale schema. `App.jsx` surfaces
+  this exact message in its "can't reach backend" banner instead of the
+  generic fallback text — see its `backendErrorReason` state. This exists
+  because it bit for real once: copying a database for a new tax year
+  (`app:new-year`) before running a later migration against it made
+  `GET /api/accounts` 500, which — because `App.jsx` used to gate its
+  whole startup fetch on accounts succeeding — cascaded into the currency
+  picker looking broken too, with no clue the actual problem was one
+  unrun migration.
 - **Endpoints, grouped by what the frontend uses them for:**
   - `GET /api/accounts` (`AccountController::list`) — the lightweight,
     app-wide list. `LedgerStateService::accountsWithStats()` computes each

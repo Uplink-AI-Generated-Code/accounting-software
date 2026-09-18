@@ -46,6 +46,11 @@ export default function App() {
   const [settings, setSettings] = useState({ over65: false, groupLevels: ["type"], savedGroupings: [] });
   const [loaded, setLoaded] = useState(false);
   const [storageOK, setStorageOK] = useState(true);
+  // Set only when the backend itself told us why (e.g. a database missing
+  // a migration — see MigrationStatusListener) rather than a generic
+  // network failure, so the banner below can show that specific reason
+  // instead of always falling back to "check that the server is running".
+  const [backendErrorReason, setBackendErrorReason] = useState("");
   const [selectedId, setSelectedIdRaw] = useState(null);
   const [sidebarQuery, setSidebarQuery] = useState("");
   const [sidebarImbalancedOnly, setSidebarImbalancedOnly] = useState(false);
@@ -147,7 +152,13 @@ export default function App() {
       // left the currency picker looking broken, when the actual problem
       // was one missing migration.
       const [accountsResult, cur, sym, cp, tags, s] = await Promise.all([
-        refreshAccounts().catch(() => null),
+        refreshAccounts().catch((e) => {
+          // A real network failure (server not running at all) rejects
+          // fetch() itself with a TypeError before any response exists —
+          // only trust e.message as a specific reason when it didn't.
+          setBackendErrorReason(e instanceof TypeError ? "" : e.message);
+          return null;
+        }),
         api.getCurrencies().catch(() => []),
         api.getSymbols().catch(() => []),
         api.getCounterparties().catch(() => []),
@@ -372,7 +383,7 @@ export default function App() {
 
       {!storageOK && (
         <div className="mx-6 mt-4 px-3 py-2 rounded flex items-center gap-2" style={{ background: C.paperDim, color: C.inkSoft, fontSize: 12.5 }}>
-          <AlertTriangle size={14} color={C.gold} /> Can't reach the backend — check that the Symfony server is running. Changes won't be saved until it's back.
+          <AlertTriangle size={14} color={C.gold} /> {backendErrorReason || "Can't reach the backend — check that the Symfony server is running. Changes won't be saved until it's back."}
         </div>
       )}
       {error && (
