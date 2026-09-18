@@ -2,6 +2,7 @@
 
 namespace App\Controller;
 
+use App\Service\NewYearService;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -34,6 +35,7 @@ class DatabaseController
     public function __construct(
         #[Autowire('%kernel.project_dir%')]
         private readonly string $projectDir,
+        private readonly NewYearService $newYearService,
     ) {
     }
 
@@ -128,6 +130,32 @@ class DatabaseController
         }
 
         return new JsonResponse($this->entryFor($filename, $this->activeTarget($dir)), 201);
+    }
+
+    #[Route('/new-year', methods: ['POST'])]
+    public function newYear(): JsonResponse
+    {
+        $dir = $this->databasesDir();
+        $activeTarget = $this->activeTarget($dir);
+        if (null === $activeTarget) {
+            return new JsonResponse(['error' => 'No active database to start a new tax year from'], 400);
+        }
+
+        if (!preg_match(self::TAX_YEAR_PATTERN, $activeTarget, $m)) {
+            return new JsonResponse(['error' => \sprintf('"%s" isn\'t a recognized tax-year filename — can\'t compute the next year', $activeTarget)], 400);
+        }
+
+        $nextStart = ((int) $m[1]) + 1;
+        $newFilename = \sprintf('%d-%d.sqlite3', $nextStart, $nextStart + 1);
+        $newPath = $dir.'/'.$newFilename;
+
+        try {
+            $this->newYearService->createNextYear($newPath);
+        } catch (\InvalidArgumentException $e) {
+            return new JsonResponse(['error' => $e->getMessage()], 400);
+        }
+
+        return new JsonResponse($this->entryFor($newFilename, $activeTarget), 201);
     }
 
     private function validateFilename(string $filename): ?string
