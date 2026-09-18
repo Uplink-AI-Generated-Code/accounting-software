@@ -211,11 +211,20 @@ class DatabaseController
      * or broken symlink. Returns false (leaving active.sqlite3 untouched)
      * if either filesystem operation fails, e.g. a permissions problem
      * or a cross-filesystem rename.
+     *
+     * The symlink target is deliberately the bare filename, not an
+     * absolute path: active.sqlite3 and every file it can point to live
+     * in the same directory, so a relative target is all that's needed,
+     * and it keeps working if this whole project directory is ever
+     * moved or copied somewhere else — an absolute target baked in at
+     * switch time wouldn't. activeTarget()/hasActiveDatabase() (see
+     * MigrationStatusListener) both resolve via realpath(), which
+     * handles a relative target correctly regardless.
      */
     private function activateSymlink(string $filename): bool
     {
         $dir = $this->databasesDir();
-        $target = $dir.'/'.$filename;
+        $target = $filename;
         $active = $dir.'/active.sqlite3';
         $tmp = $dir.'/.active.sqlite3.tmp-'.bin2hex(random_bytes(4));
 
@@ -306,14 +315,14 @@ class DatabaseController
         }
         // realpath() (not readlink()+file_exists()) so a relative symlink
         // target resolves against the symlink's own directory rather than
-        // the PHP process's CWD — activateSymlink() itself always writes
-        // an absolute target, but a hand-created symlink (e.g. `ln -s
-        // 2024-2025.sqlite3 active.sqlite3`, exactly what a user typing
-        // this by hand would write) is relative, and readlink()+
-        // file_exists() would then check for that filename relative to
-        // CWD and wrongly report no active database. Keep this in
-        // agreement with MigrationStatusListener::hasActiveDatabase(),
-        // which does the same check independently.
+        // the PHP process's CWD — activateSymlink() itself always writes a
+        // relative target (see its own docblock), and a hand-created
+        // symlink (e.g. `ln -s 2024-2025.sqlite3 active.sqlite3`) is
+        // relative too, so this has to handle it regardless; readlink()+
+        // file_exists() would check for that filename relative to CWD
+        // and wrongly report no active database. Keep this in agreement
+        // with MigrationStatusListener::hasActiveDatabase(), which does
+        // the same check independently.
         $target = realpath($active);
 
         return false === $target ? null : basename($target);
