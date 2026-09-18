@@ -5,6 +5,8 @@ namespace App\Controller;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Process\PhpExecutableFinder;
+use Symfony\Component\Process\Process;
 use Symfony\Component\Routing\Attribute\Route;
 
 /**
@@ -69,6 +71,63 @@ class DatabaseController
         $this->activateSymlink($filename);
 
         return new JsonResponse($this->entryFor($filename, $filename));
+    }
+
+    #[Route('', methods: ['POST'])]
+    public function create(Request $request): JsonResponse
+    {
+        $body = json_decode($request->getContent(), true);
+        $startYearRaw = \is_array($body) ? ($body['startYear'] ?? null) : null;
+
+        if (!\is_int($startYearRaw) && !(\is_string($startYearRaw) && ctype_digit($startYearRaw))) {
+            return new JsonResponse(['error' => 'startYear must be a whole number'], 400);
+        }
+        $startYear = (int) $startYearRaw;
+        if ($startYear < 1900 || $startYear > 2200) {
+            return new JsonResponse(['error' => 'startYear is not a plausible year'], 400);
+        }
+
+        $filename = \sprintf('%d-%d.sqlite3', $startYear, $startYear + 1);
+        $dir = $this->databasesDir();
+        $path = $dir.'/'.$filename;
+        if (file_exists($path)) {
+            return new JsonResponse(['error' => \sprintf('%s already exists', $filename)], 409);
+        }
+
+        if (false === touch($path)) {
+            return new JsonResponse(['error' => \sprintf('Could not create %s', $filename)], 500);
+        }
+
+        $phpBinary = (new PhpExecutableFinder())->find();
+        if (false === $phpBinary) {
+            @unlink($path);
+
+            return new JsonResponse(['error' => 'Could not locate the PHP binary to run migrations'], 500);
+        }
+        $consolePath = $this->projectDir.'/bin/console';
+        $env = ['DATABASE_URL' => \sprintf('sqlite:///%s', $path)];
+
+        // Exactly the two commands CLAUDE.md already documents as the
+        // correct way to bootstrap a fresh database — reused as
+        // subprocesses rather than reimplemented, so there's no second,
+        // less-tested code path for "build a database's schema."
+        $migrate = new Process([$phpBinary, $consolePath, 'doctrine:migrations:migrate', '--no-interaction'], $this->projectDir, $env);
+        $migrate->run();
+        if (!$migrate->isSuccessful()) {
+            @unlink($path);
+
+            return new JsonResponse(['error' => 'Failed to migrate the new database: '.$migrate->getErrorOutput()], 500);
+        }
+
+        $seed = new Process([$phpBinary, $consolePath, 'app:currencies:seed'], $this->projectDir, $env);
+        $seed->run();
+        if (!$seed->isSuccessful()) {
+            @unlink($path);
+
+            return new JsonResponse(['error' => 'Failed to seed currencies for the new database: '.$seed->getErrorOutput()], 500);
+        }
+
+        return new JsonResponse($this->entryFor($filename, $this->activeTarget($dir)), 201);
     }
 
     private function validateFilename(string $filename): ?string
