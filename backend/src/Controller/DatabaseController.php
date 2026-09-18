@@ -192,6 +192,46 @@ class DatabaseController
 
         symlink($target, $tmp);
         rename($tmp, $active);
+
+        $this->reloadPhpFpmWorkers();
+    }
+
+    /**
+     * Under php-fpm, each worker process can keep its own already-open
+     * DBAL connection to the *old* active.sqlite3 alive across requests —
+     * confirmed empirically: idle_connection_ttl (config/packages/
+     * doctrine.yaml) closes an expired connection on that worker's own
+     * next request, but which worker handles the next request is random,
+     * so some workers kept serving the old file's data indefinitely.
+     * Sending SIGUSR2 to the php-fpm master (this worker's parent
+     * process) makes it gracefully respawn every worker — each one
+     * finishes its current request first, so this never drops the
+     * in-flight response — guaranteeing no worker can still hold a
+     * connection to the file that was just switched away from. A no-op
+     * outside php-fpm (e.g. `php bin/console`, or a future non-php-fpm
+     * prod SAPI).
+     *
+     * The signal is deferred to a shutdown function, and
+     * fastcgi_finish_request() is called first: sending SIGUSR2 while
+     * this request's own response is still buffered raced the reload
+     * against the response reaching the client (observed directly as
+     * an "unexpected EOF" from the local dev proxy) — flushing the
+     * response and closing this worker's client connection first, then
+     * signaling, avoids that race.
+     */
+    private function reloadPhpFpmWorkers(): void
+    {
+        if ('fpm-fcgi' !== \PHP_SAPI || !\function_exists('posix_kill')) {
+            return;
+        }
+
+        $ppid = posix_getppid();
+        register_shutdown_function(static function () use ($ppid): void {
+            if (\function_exists('fastcgi_finish_request')) {
+                fastcgi_finish_request();
+            }
+            posix_kill($ppid, \SIGUSR2);
+        });
     }
 
     /**
