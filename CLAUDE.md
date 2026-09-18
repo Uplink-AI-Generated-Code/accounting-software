@@ -114,21 +114,28 @@ SQLite. All commands run from `backend/`.
   Not the only way a currency gets added — see below.
 - Bootstrap the *next* tax year's database from the current one:
   `php bin/console app:new-year databases/2025-2026.sqlite3` — see
-  `src/Command/NewYearCommand.php` and "The active tax year" below. Copies
-  the live SQLite file wholesale (so every Currency/Symbol/Counterparty/
-  Tag/Account definition and the settings row carry over exactly, no
-  re-derivation), then, in the copy only, wipes every line/transaction and
-  sets each account's `openingBalance`/`openingBalanceCashValue` to its
-  *current* closing balance/cost basis for asset/liability/equity/
-  investment accounts, or resets both to null for income/isa-income/
-  expense/isa-parent accounts (period-specific flows, not a balance that
-  carries across tax years). Refuses to run if the target path already
-  exists. Point `DATABASE_URL` (`.env.local`) at the new file once you're
-  ready to start using it — this doesn't touch which file the app itself
-  is pointed at.
-- The SQLite file lives at `backend/var/data_dev.db` (gitignored, along with
-  the rest of `var/`); a separate `var/data_test.db` is used for the test
-  suite (see below).
+  `src/Command/NewYearCommand.php` and "The active tax year" below. The
+  actual copy/wipe/carry-forward logic lives in `NewYearService::
+  createNextYear()`, shared with `DatabaseController::newYear()`'s
+  in-app "Start a new tax year" action (see "Backend" below) — this
+  command is now a thin wrapper around it, kept for scripting/backup
+  use. Copies the live SQLite file wholesale (so every Currency/Symbol/
+  Counterparty/Tag/Account definition and the settings row carry over
+  exactly, no re-derivation), then, in the copy only, wipes every
+  line/transaction and sets each account's `openingBalance`/
+  `openingBalanceCashValue` to its *current* closing balance/cost basis
+  for asset/liability/equity/investment accounts, or resets both to
+  null for income/isa-income/expense/isa-parent accounts (period-specific
+  flows, not a balance that carries across tax years). Refuses to run if
+  the target path already exists. This CLI path never touches which
+  file the running app is pointed at — use the in-app switcher, or
+  `POST /api/databases/active`, for that.
+- `backend/databases/` holds one `.sqlite3` file per tax year (plus any
+  other files present), and `databases/active.sqlite3` is a symlink to
+  whichever one is currently active — see `DatabaseController` under
+  "Backend" below for how it's switched. Both are gitignored, along
+  with the rest of `var/`; a separate `var/data_test.db` is used for the
+  test suite (see below).
 - Run the backend test suite: `php bin/phpunit` (from `backend/`). Uses the
   `test` environment's own SQLite file — run `php bin/console
   doctrine:migrations:migrate --env=test` once after a fresh clone or a new
@@ -144,21 +151,55 @@ it covers and why); no test suite and no linter on the frontend.
   service's write path need an ownership check added, not just a login
   screen bolted on.
 - **`MigrationStatusListener`** (`src/EventListener/`, `kernel.request`,
-  priority 300) refuses every `/api/*` request with a `503` and a clear
+  priority 300) checks, in order: is there an active database at all
+  (`databases/active.sqlite3` must exist as a symlink to a real file —
+  see `DatabaseController` below), then is its schema caught up with the
+  latest migration. It refuses every `/api/*` request except
+  `/api/databases*` (which needs to work *without* an active database,
+  to power the picker) with a `503` and a `reason` field —
+  `no_active_database`, or `migrations_pending` with a clear
   `{"error": "Database schema is out of date (N migration(s) pending) —
-  run: php bin/console doctrine:migrations:migrate"}` whenever the
-  database hasn't caught up with the latest migration — checked via
+  run: php bin/console doctrine:migrations:migrate"}` — checked via
   `DependencyFactory::getMigrationStatusCalculator()`, not by parsing
   whatever SQL exception happens to surface first. Runs before routing so
-  no controller/service ever touches a stale schema. `App.jsx` surfaces
-  this exact message in its "can't reach backend" banner instead of the
-  generic fallback text — see its `backendErrorReason` state. This exists
-  because it bit for real once: copying a database for a new tax year
-  (`app:new-year`) before running a later migration against it made
+  no controller/service ever touches a missing or stale schema.
+  `App.jsx` surfaces `no_active_database` as the full-screen
+  `DatabaseSwitcherBlocking` picker, and the migrations-pending message
+  in its "can't reach backend" banner otherwise — see its
+  `backendErrorReason`/`noActiveDatabase` state. The migrations-pending
+  half of this existed because it bit for real once: copying a database
+  for a new tax year before running a later migration against it made
   `GET /api/accounts` 500, which — because `App.jsx` used to gate its
   whole startup fetch on accounts succeeding — cascaded into the currency
   picker looking broken too, with no clue the actual problem was one
   unrun migration.
+- **`DatabaseController`** (`/api/databases*`) is what the in-app
+  switcher (`src/components/DatabaseSwitcher.jsx`) talks to, and the only
+  place `databases/active.sqlite3`'s symlink target ever changes at
+  runtime: `GET /api/databases` lists every `.sqlite3` file present
+  (excluding `active.sqlite3` itself) with `{filename, label, isTaxYear,
+  active}`; `POST /api/databases/active` (body `{filename}`) atomically
+  repoints the symlink (`symlink()` to a temp name, then `rename()` over
+  `active.sqlite3` — atomic on the same filesystem); `POST /api/databases`
+  (body `{startYear}`) creates a brand-new `<year>-<year+1>.sqlite3`,
+  running `doctrine:migrations:migrate` then `app:currencies:seed`
+  against it via `Symfony\Component\Process\Process` before it's
+  considered created (cleans up the empty file on any failure); `POST
+  /api/databases/new-year` (no body) is the in-app "start a new tax
+  year" action, calling the same `NewYearService::createNextYear()`
+  the `app:new-year` command uses, against the currently-active file.
+  `DATABASE_URL` is fixed in `backend/.env.dev` at
+  `sqlite:///%kernel.project_dir%/databases/active.sqlite3` — always
+  that symlink, never a specific tax year's file directly; switching
+  which file is active means repointing the symlink, not editing
+  `.env.local` (whose `DATABASE_URL` block is now empty for this reason).
+  If you add another subprocess here that needs a *different*
+  `DATABASE_URL` than the current request's own connection, also clear
+  `SYMFONY_DOTENV_VARS` in that subprocess's env array — `create()`'s
+  comment explains why: Symfony's Dotenv otherwise treats an already-set
+  `DATABASE_URL` as fair game to overwrite from `.env.dev` if it thinks
+  (via that var, inherited from the parent process) it was "previously
+  loaded from a dotenv file," silently discarding the override.
 - **Endpoints, grouped by what the frontend uses them for:**
   - `GET /api/accounts` (`AccountController::list`) — the lightweight,
     app-wide list. `LedgerStateService::accountsWithStats()` computes each
@@ -687,14 +728,12 @@ since they're pure and only need the account list, which is loaded anyway.
 
 **A single ledger-project database belongs to exactly one UK tax year,
 for its entire lifetime.** This mirrors how the sibling Nucleware/
-Accounts project has always worked (one SQLite file per tax year) —
-unlike that project, this app doesn't manage the multiple files itself
-(there's no in-app database switcher); running a second tax year means
-pointing a separate instance/`DATABASE_URL` at a separate file, entirely
-outside this app's concern. `app:new-year` (see "Commands" above)
-bootstraps that next file from the current one's closing balances —
-still a separate, manual step (copy the file, then swap `DATABASE_URL`),
-not something the running app triggers itself.
+Accounts project has always worked (one SQLite file per tax year).
+Unlike an earlier version of this app, switching which file is active,
+creating a brand-new database, and rolling forward into a new tax
+year's file are now all done from inside the running app — see
+`DatabaseController` under "Backend" below — rather than by hand-editing
+`.env.local` and running `app:new-year` from a terminal.
 
 - **There is no stored setting for this — no column, no migration, no
   picker.** `LedgerStateService::determinedTaxYearStart()` computes it
