@@ -23,13 +23,18 @@
 async function request(path, options) {
   const res = await fetch(path, options);
   if (!res.ok) {
-    // A handful of endpoints (the ledger batch write, symbol creation)
-    // return a deliberate 400/409 with {"error": "..."} for an expected
-    // rejection rather than a bug — surface that message when present so
-    // a caller can show it directly, instead of always falling back to
-    // the generic "<method> <path> failed: <status>".
+    // A handful of endpoints (the ledger batch write, symbol creation,
+    // the database switcher) return a deliberate 400/409/503 with
+    // {"error": "...", "reason"?: "..."} for an expected rejection rather
+    // than a bug — surface the message when present so a caller can show
+    // it directly, instead of always falling back to the generic
+    // "<method> <path> failed: <status>". `reason` (when the backend
+    // supplied one — see MigrationStatusListener) lets a caller branch on
+    // a stable machine-readable value instead of matching message text.
     const body = await res.json().catch(() => null);
-    throw new Error(body?.error || `${options?.method || "GET"} ${path} failed: ${res.status}`);
+    const err = new Error(body?.error || `${options?.method || "GET"} ${path} failed: ${res.status}`);
+    if (body?.reason) err.reason = body.reason;
+    throw err;
   }
   return res.json();
 }
@@ -141,4 +146,20 @@ export function getTagTotals(dimension, { excludeTag } = {}) {
   const params = new URLSearchParams({ dimension });
   if (excludeTag) params.set("excludeTag", excludeTag);
   return request(`/api/tag-totals?${params.toString()}`);
+}
+
+// The database switcher — see CLAUDE.md's "The active tax year" and
+// backend/src/Controller/DatabaseController.php. `filename` is always a
+// bare *.sqlite3 name under backend/databases/, never a path.
+export function getDatabases() {
+  return request("/api/databases");
+}
+export function setActiveDatabase(filename) {
+  return request("/api/databases/active", { method: "POST", ...jsonBody({ filename }) });
+}
+export function createDatabase(startYear) {
+  return request("/api/databases", { method: "POST", ...jsonBody({ startYear }) });
+}
+export function startNewTaxYear() {
+  return request("/api/databases/new-year", { method: "POST" });
 }
