@@ -18,10 +18,15 @@ This session's work repeatedly ran into friction from that boundary: a
 database missing a migration after being copied by `app:new-year`, a
 currency picker that looked broken because of it, and general tedium/
 error-risk in the manual `.env.local` edit itself. The user asked to
-revisit the boundary. This spec covers exactly that: a small in-app
-switcher, nothing else. `app:new-year` (creating a *new* tax year's file)
-is out of scope — this is purely about switching among files that
-already exist.
+revisit the boundary.
+
+Scope, as it stands after one expansion mid-design: switching among
+existing databases (the original ask), plus three bootstrap/lifecycle
+cases that turned out to need the same machinery — no active database at
+all, no databases to choose from, and starting a new tax year without
+leaving the app. `app:new-year` the *command* isn't removed — its
+carry-forward logic moves into a shared service so both the command and
+the new in-app action call the same code.
 
 ## Mechanism
 
@@ -100,13 +105,68 @@ New `DatabaseController` (`backend/src/Controller/DatabaseController.php`)
   matching this app's existing error-response convention (see
   `LedgerController`/`SymbolController`).
 
-**`MigrationStatusListener` exemption**: this listener currently guards
-every `/api/*` route with a `503` when the *active* database is behind
-on migrations. Both new routes must be exempted — otherwise, a database
-that's behind on migrations would make it impossible to even reach the
-switcher to pick a *different*, up-to-date database. Add an explicit
-path check (`str_starts_with($path, '/api/databases')`) alongside the
-existing `/api` prefix check.
+- `POST /api/databases`, body `{startYear}` — creates a brand-new,
+  blank database (the "no databases to choose from" bootstrap case).
+  Validates `startYear` is a plausible integer and that
+  `<startYear>-<startYear+1>.sqlite3` doesn't already exist under
+  `databases/`. Creates the empty file, then runs, via Symfony's
+  `Process` component against that file specifically
+  (`DATABASE_URL` overridden for the subprocess's environment only):
+  1. `php bin/console doctrine:migrations:migrate --no-interaction`
+  2. `php bin/console app:currencies:seed`
+
+  These are exactly the two commands CLAUDE.md already documents as the
+  correct way to bootstrap a fresh database — reused as subprocesses
+  rather than reimplemented, so there's no second, less-tested code path
+  for "build a database's schema." On success, returns the new entry
+  (same shape as `GET`'s list items) and does **not** itself switch to
+  it — see Frontend below for why that's the frontend's job, not this
+  endpoint's.
+- `POST /api/databases/new-year` (no body) — "start a new tax year" from
+  the currently active database. Resolves `active.sqlite3`'s current
+  target, parses its year from the filename, computes `startYear + 1`,
+  and calls `NewYearService::createNextYear()` (see below) targeting
+  `databases/<nextYear>-<nextYear + 1>.sqlite3`. `400` if the active
+  file's name doesn't match the tax-year pattern at all (nothing to
+  compute "next" from), or if the service refuses because the target
+  already exists (its existing safety check, unchanged — this is also
+  what makes the frontend's "only show for the latest year" restriction
+  a UX nicety rather than a required safety gate: running this from a
+  non-latest file computes a filename that already exists and is
+  refused either way).
+
+**`NewYearService`** (`backend/src/Service/NewYearService.php`): the
+copy/wipe/carry-forward logic currently inside `NewYearCommand::execute()`
+moves here as `createNextYear(string $newDbPath): array` (returns the
+same per-account summary the command currently prints), following this
+app's existing convention of business logic living in services, not
+commands/controllers (see `LedgerStateService`). `NewYearCommand` becomes
+a thin wrapper: parse the argument, call the service, print the result
+via `SymfonyStyle`. No behavior change for the existing terminal command.
+
+**`MigrationStatusListener` gains an earlier check**, run before the
+existing migration-status one: does `databases/active.sqlite3` exist and
+resolve (via `readlink()`) to a file that actually exists? If not, `503`
+with `{"error": "...", "reason": "no_active_database"}` — distinct from
+the existing migrations-pending response, which now also carries a
+matching `"reason": "migrations_pending"` field alongside its existing
+`error` message, so the frontend can branch on `reason` rather than
+matching message text. If `active.sqlite3` doesn't exist at all (fresh
+clone, nothing bootstrapped yet), this is the path that fires — SQLite's
+PDO driver would otherwise silently *create* an empty regular file at
+that path the moment anything tried to open a connection, which would
+both mask the real "nothing set up yet" state and leave a stray
+non-symlink file sitting where `active.sqlite3` is supposed to be a
+symlink; this check exists specifically to happen *before* any
+connection is ever attempted, closing that off.
+
+**`MigrationStatusListener` exemption**: this listener guards every
+`/api/*` route (both checks now) with a `503`. All four
+`/api/databases*` routes must stay exempted — otherwise a database in
+either bad state would make it impossible to even reach the switcher/
+bootstrap UI to fix it. Existing path check
+(`str_starts_with($path, '/api/databases')`) already covers the two new
+routes without changes.
 
 ## Frontend
 
@@ -124,19 +184,27 @@ This is a distinct concern from the existing "N outside tax year"
 warning badge (data-derived, unchanged) — one says which *file* you're
 in, the other what the *data in it* says.
 
-Clicking opens a small dropdown (new component, e.g.
-`DatabaseSwitcher.jsx`):
+Clicking opens a small dropdown (new component, `DatabaseSwitcher.jsx`):
 - Lists databases from `GET /api/databases`, filtered to `isTaxYear`
   entries by default.
 - A "Show all files" checkbox lifts that filter, revealing
   `development.sqlite3` and anything else.
 - The active entry is visibly marked.
-- Picking a different entry:
+- If the active entry's filename is the maximum year among every
+  `isTaxYear` entry in the (unfiltered) list, an extra "Start a new tax
+  year" item appears — computed client-side, no new field needed from
+  `GET /api/databases`.
+- Picking a different entry, or "Start a new tax year":
   1. Routes through the existing `attemptNavigation()` guard (same
      Save/Discard/Stay prompt used elsewhere for disruptive navigation
      away from a dirty draft — see CLAUDE.md's "UI conventions").
-  2. On a clean draft or explicit discard, calls the new
-     `api.setActiveDatabase(filename)`.
+  2. On a clean draft or explicit discard: an existing-entry pick calls
+     `api.setActiveDatabase(filename)` directly; "Start a new tax year"
+     first calls `api.startNewTaxYear()`
+     (`POST /api/databases/new-year`), then `setActiveDatabase()` with
+     the filename that call returns — two chained requests, not one
+     endpoint doing both, keeping each endpoint single-purpose (see
+     Backend).
   3. On success, `window.location.reload()` — full reload, not a soft
      refetch, so every piece of app state (accounts, currencies,
      symbols, counterparties, tags, settings, selected account, hash
@@ -144,18 +212,53 @@ Clicking opens a small dropdown (new component, e.g.
      consistent step rather than needing each to be individually
      audited for staleness.
 
-New `src/api.js` functions: `getDatabases()`
-(`GET /api/databases`), `setActiveDatabase(filename)`
-(`POST /api/databases/active`).
+**Empty state — no databases at all.** If `GET /api/databases` returns
+zero entries (regardless of the tax-year filter — there's nothing to
+filter), the dropdown's list is replaced with a year-number input,
+defaulting to the current UK tax year (`taxYearStartYearFor(todayISO())`,
+already in `lib/isa.js` — reused here as a sensible default only, not as
+any kind of validation of what the user types) and a "Create" button.
+Submitting calls `api.createDatabase(startYear)`
+(`POST /api/databases`), then chains into the same
+`setActiveDatabase()` → reload sequence as above once it resolves.
+
+**Blocking bootstrap state — no active database.** When `App.jsx`'s
+startup fetch gets `reason === "no_active_database"` (see Backend), it
+renders this same `DatabaseSwitcher` component full-screen in place of
+the normal app shell, with no way to dismiss it — nothing else in the
+app is usable until a database is selected or created. This reuses the
+dropdown's list-or-empty-state logic (including the create-a-new-
+database flow above) as-is; two things don't apply here and are simply
+absent rather than reused: there's no active entry to mark (none
+exists yet), and there's no "Start a new tax year" item — that option
+resolves against `active.sqlite3`'s *current* target (see Backend), and
+in this state there isn't one. The existing `migrations_pending` banner
+is unchanged by any of this — it stays exactly as it already works, no
+new full-screen treatment for that case.
+
+New `src/api.js` functions: `getDatabases()` (`GET /api/databases`),
+`setActiveDatabase(filename)` (`POST /api/databases/active`),
+`createDatabase(startYear)` (`POST /api/databases`),
+`startNewTaxYear()` (`POST /api/databases/new-year`).
 
 ## Safety & validation
 
 - Filename validation (regex, existence check, no path traversal) as
   described under Backend above — this is a web-reachable endpoint, so
   it validates even though this is a single-user local app.
+- `startYear` (the create-blank-database endpoint) validated as a
+  plausible integer and that the target filename doesn't already exist
+  — same "refuse rather than silently overwrite" posture the rest of
+  this app already takes (e.g. `app:new-year` refusing an existing
+  target, `SymbolController` refusing a duplicate ticker).
 - Same "single user, no auth" posture as the rest of the backend (see
-  CLAUDE.md) — no new auth model introduced for this.
+  CLAUDE.md) — no new auth model introduced for this, including for the
+  two new mutating endpoints.
 - Atomic symlink swap — no torn/missing-symlink window.
+- The `active.sqlite3`-must-be-a-real-symlink check (not just "a file
+  exists at that path") specifically prevents SQLite's PDO driver from
+  ever getting the chance to silently create a stray empty database file
+  there — see Backend.
 
 ## Testing
 
@@ -178,13 +281,27 @@ is pure filesystem glue, verified manually). Manual verification plan:
    still work when the *active* database is deliberately behind on
    migrations, proving the `MigrationStatusListener` exemption is
    correct.
-5. `yarn build` clean, no new frontend errors.
+5. Same scratch-copy convention: temporarily remove/rename
+   `active.sqlite3` and confirm the full-screen blocking picker appears
+   instead of the normal app shell, and that it's genuinely not
+   dismissible.
+6. Empty-state creation: point at a scratch `databases/` directory with
+   zero files, confirm the year-input/Create flow produces a working,
+   migrated, currency-seeded database and auto-switches to it.
+7. "Start a new tax year": confirm the option only appears when the
+   active file is genuinely the latest tax-year one present, confirm
+   `NewYearCommand` itself still behaves identically after the
+   `NewYearService` extraction (re-run its existing manual verification
+   from when it was first built), and confirm triggering it from the UI
+   produces the same result as running the command by hand would.
+8. `yarn build` clean, no new frontend errors. `php bin/phpunit` still
+   green after the `NewYearService` extraction.
 
 ## Out of scope
 
-- Creating a *new* tax year's database from this UI — that's
-  `app:new-year`, unchanged, still a terminal command.
 - Any change to how the *computed* active tax year
-  (`determinedTaxYearStart()`) works — untouched.
+  (`determinedTaxYearStart()`) works — untouched; this whole feature is
+  about which *file* is active, never about what the data-derived tax
+  year label says.
 - An admin UI for anything else (currencies/symbols/counterparties) —
   unrelated, still deliberately out of scope per CLAUDE.md.
