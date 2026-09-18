@@ -13,15 +13,17 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 /**
  * Bootstraps a fresh tax year's database from the current, live one — see
  * CLAUDE.md's "The active tax year": a ledger-project database belongs to
- * exactly one UK tax year for its whole lifetime, and switching years
- * means pointing DATABASE_URL at a new file, not something the app does
- * itself. This is the "one file per tax year" convention documented in
- * .env.local, ported from the sibling Nucleware/Accounts project.
+ * exactly one UK tax year for its whole lifetime. This is the "one file
+ * per tax year" convention, ported from the sibling Nucleware/Accounts
+ * project — switching which file is active is now done from inside the
+ * running app (see DatabaseController under CLAUDE.md's "Backend"), not
+ * by hand-editing DATABASE_URL.
  *
- * A thin wrapper — see NewYearService::createNextYear() for the actual
- * copy/wipe/carry-forward logic, shared with the in-app "start a new tax
- * year" action (DatabaseController::newYear(), POST
- * /api/databases/new-year) so both call exactly the same code.
+ * A thin wrapper, kept for scripting/backup use — see
+ * NewYearService::createNextYear() for the actual copy/wipe/carry-forward
+ * logic, shared with the in-app "start a new tax year" action
+ * (DatabaseController::newYear(), POST /api/databases/new-year) so both
+ * call exactly the same code.
  */
 #[AsCommand(
     name: 'app:new-year',
@@ -45,8 +47,9 @@ class NewYearCommand extends Command
 
                     php bin/console app:new-year databases/2025-2026.sqlite3
 
-                Point DATABASE_URL (see .env.local) at the new file once you're
-                ready to start using it.
+                This command never touches which file the running app is
+                pointed at — use the in-app switcher, or
+                POST /api/databases/active, for that.
                 HELP);
     }
 

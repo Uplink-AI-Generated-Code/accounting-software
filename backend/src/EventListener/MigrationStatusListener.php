@@ -58,7 +58,8 @@ class MigrationStatusListener
     public function __invoke(RequestEvent $event): void
     {
         $path = $event->getRequest()->getPathInfo();
-        if (!$event->isMainRequest() || !str_starts_with($path, '/api') || str_starts_with($path, '/api/databases')) {
+        $isDatabasesRoute = '/api/databases' === $path || str_starts_with($path, '/api/databases/');
+        if (!$event->isMainRequest() || !str_starts_with($path, '/api') || $isDatabasesRoute) {
             return;
         }
 
@@ -98,8 +99,14 @@ class MigrationStatusListener
         if (!is_link($active)) {
             return false;
         }
-        $target = readlink($active);
 
-        return false !== $target && file_exists($target);
+        // realpath(), not readlink()+file_exists(): a relative symlink
+        // target (e.g. hand-created via `ln -s 2024-2025.sqlite3
+        // active.sqlite3`) resolves against this process's CWD under
+        // readlink()+file_exists(), not the symlink's own directory —
+        // wrongly reporting no active database even though the file
+        // exists. Keep in agreement with DatabaseController::
+        // activeTarget(), which does the same check independently.
+        return false !== realpath($active);
     }
 }

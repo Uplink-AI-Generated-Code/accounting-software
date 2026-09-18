@@ -99,6 +99,16 @@ class DatabaseController
             return new JsonResponse(['error' => \sprintf('%s already exists', $filename)], 409);
         }
 
+        // A fresh clone has no databases/ at all — it's gitignored (see
+        // backend/.gitignore) — and that's exactly the case this action
+        // exists to bootstrap out of (the empty-state "create your
+        // first database" flow). Without this, touch() below fails
+        // silently into "Could not create ..." with no way to recover
+        // except creating the directory by hand outside the app.
+        if (!is_dir($dir) && false === @mkdir($dir, 0777, true) && !is_dir($dir)) {
+            return new JsonResponse(['error' => \sprintf('Could not create %s', $dir)], 500);
+        }
+
         if (false === touch($path)) {
             return new JsonResponse(['error' => \sprintf('Could not create %s', $filename)], 500);
         }
@@ -168,6 +178,8 @@ class DatabaseController
             $this->newYearService->createNextYear($newPath);
         } catch (\InvalidArgumentException $e) {
             return new JsonResponse(['error' => $e->getMessage()], 400);
+        } catch (\RuntimeException $e) {
+            return new JsonResponse(['error' => $e->getMessage()], 500);
         }
 
         return new JsonResponse($this->entryFor($newFilename, $activeTarget), 201);
@@ -222,23 +234,32 @@ class DatabaseController
     }
 
     /**
-     * Under php-fpm, each worker process can keep its own already-open
-     * DBAL connection to the *old* active.sqlite3 alive across requests —
-     * confirmed empirically: idle_connection_ttl (config/packages/
-     * doctrine.yaml) closes an expired connection on that worker's own
-     * next request, but which worker handles the next request is random,
-     * so some workers kept serving the old file's data indefinitely.
-     * Sending SIGUSR2 to the php-fpm master (this worker's parent
-     * process, assumed to still be running — a dead/reparented master
-     * would make this a harmless no-op against init instead) makes it
-     * gracefully respawn every worker — each one finishes its current
-     * request first, so an in-flight response is never dropped by the
-     * reload itself — leaving, once it completes, no worker still
-     * holding a connection to the file that was just switched away
-     * from. There's a small window between this response reaching the
-     * client and the reload completing where a request could still land
-     * on a not-yet-respawned worker; idle_connection_ttl covers that
-     * worker's own next request regardless. A no-op outside php-fpm
+     * Under php-fpm, a worker process that already served a request
+     * before this switch can keep resolving active.sqlite3 to the *old*
+     * file for a while afterward — confirmed empirically (a rapid curl
+     * loop against a multi-worker pool showed responses alternating
+     * between the old and new file, correlated with which worker
+     * handled each request), but not fully pinned down to one
+     * mechanism: standard php-fpm tears down PHP-level state between
+     * requests, so an already-open DBAL connection surviving isn't the
+     * likely cause despite `idle_connection_ttl` (config/packages/
+     * doctrine.yaml) existing for exactly that scenario; PHP's own
+     * per-worker realpath cache (`realpath_cache_ttl`, 120s by default)
+     * resolving the symlink to a stale target is a more likely fit, but
+     * wasn't independently isolated. Whichever it is, sending SIGUSR2 to
+     * the php-fpm master (this worker's parent process, assumed to
+     * still be running — a dead/reparented master would make this a
+     * harmless no-op against init instead) fixes it unconditionally:
+     * gracefully respawning every worker discards whatever per-worker
+     * state was responsible, without needing to know exactly what that
+     * state was. Each worker finishes its current request first, so an
+     * in-flight response is never dropped by the reload itself — but
+     * there's a small window between this response reaching the client
+     * and the reload completing where a request could still land on a
+     * not-yet-respawned worker and see the old file; `idle_connection_ttl`
+     * is a narrow secondary safety net for that window (only covers the
+     * "stale open connection" hypothesis, not the realpath-cache one),
+     * not a substitute for this reload. A no-op outside php-fpm
      * (e.g. `php bin/console`, or a future non-php-fpm prod SAPI), and
      * also a no-op if the pcntl extension (which defines SIGUSR2 — a
      * separate extension from posix, not guaranteed to ship alongside
@@ -283,12 +304,19 @@ class DatabaseController
         if (!is_link($active)) {
             return null;
         }
-        $target = readlink($active);
-        if (false === $target || !file_exists($target)) {
-            return null;
-        }
+        // realpath() (not readlink()+file_exists()) so a relative symlink
+        // target resolves against the symlink's own directory rather than
+        // the PHP process's CWD — activateSymlink() itself always writes
+        // an absolute target, but a hand-created symlink (e.g. `ln -s
+        // 2024-2025.sqlite3 active.sqlite3`, exactly what a user typing
+        // this by hand would write) is relative, and readlink()+
+        // file_exists() would then check for that filename relative to
+        // CWD and wrongly report no active database. Keep this in
+        // agreement with MigrationStatusListener::hasActiveDatabase(),
+        // which does the same check independently.
+        $target = realpath($active);
 
-        return basename($target);
+        return false === $target ? null : basename($target);
     }
 
     /** @return array{filename: string, label: ?string, isTaxYear: bool, active: bool} */

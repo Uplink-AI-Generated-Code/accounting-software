@@ -8,11 +8,10 @@ use Doctrine\DBAL\DriverManager;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
- * The copy/wipe/carry-forward logic behind `app:new-year` — see
- * NewYearCommand's docblock for the full behavior description (copies the
+ * The copy/wipe/carry-forward logic behind `app:new-year`: copies the
  * live database wholesale, then in the copy only wipes lines/transactions
  * and carries each real account's closing balance/cost basis forward as
- * its opening balance). Pulled out of the command into its own service,
+ * its opening balance. Pulled out of NewYearCommand into its own service,
  * following this app's existing convention of business logic living in
  * services (see LedgerStateService), so DatabaseController's in-app
  * "start a new tax year" action (POST /api/databases/new-year) can call
