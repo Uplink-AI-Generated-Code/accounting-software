@@ -107,7 +107,19 @@ class DatabaseController
             return new JsonResponse(['error' => 'Could not locate the PHP binary to run migrations'], 500);
         }
         $consolePath = $this->projectDir.'/bin/console';
-        $env = ['DATABASE_URL' => \sprintf('sqlite:///%s', $path)];
+        // SYMFONY_DOTENV_VARS must be cleared alongside DATABASE_URL: this
+        // request's own worker already booted its kernel via Dotenv, which
+        // recorded DATABASE_URL there as "loaded from a .env file". Process
+        // inherits that var into the child unless we override it too, and
+        // Symfony\Component\Dotenv\Dotenv::populate() treats any name
+        // already listed in SYMFONY_DOTENV_VARS as fair game to overwrite
+        // from .env.dev regardless of what's externally set — silently
+        // discarding our DATABASE_URL override and making the migration
+        // land in the *current* active.sqlite3 instead of the new file.
+        // Confirmed via `php bin/console debug:container --env-var=DATABASE_URL`
+        // run both ways: without this, the child reports .env.dev's raw,
+        // unresolved value; with it, it correctly reports our override.
+        $env = ['DATABASE_URL' => \sprintf('sqlite:///%s', $path), 'SYMFONY_DOTENV_VARS' => ''];
 
         // Exactly the two commands CLAUDE.md already documents as the
         // correct way to bootstrap a fresh database — reused as
