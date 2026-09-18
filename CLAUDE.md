@@ -133,8 +133,9 @@ SQLite. All commands run from `backend/`.
 - `backend/databases/` holds one `.sqlite3` file per tax year (plus any
   other files present), and `databases/active.sqlite3` is a symlink to
   whichever one is currently active — see `DatabaseController` under
-  "Backend" below for how it's switched. Both are gitignored, along
-  with the rest of `var/`; a separate `var/data_test.db` is used for the
+  "Backend" below for how it's switched. `backend/databases/` is
+  gitignored via its own rule, separate from `var/` (which is also
+  entirely gitignored); a separate `var/data_test.db` is used for the
   test suite (see below).
 - Run the backend test suite: `php bin/phpunit` (from `backend/`). Uses the
   `test` environment's own SQLite file — run `php bin/console

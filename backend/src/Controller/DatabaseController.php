@@ -70,9 +70,12 @@ class DatabaseController
             return new JsonResponse(['error' => $error], 400);
         }
 
-        $this->activateSymlink($filename);
+        $dir = $this->databasesDir();
+        if (!$this->activateSymlink($filename)) {
+            return new JsonResponse(['error' => \sprintf('Could not switch to %s', $filename)], 500);
+        }
 
-        return new JsonResponse($this->entryFor($filename, $filename));
+        return new JsonResponse($this->entryFor($filename, $this->activeTarget($dir)));
     }
 
     #[Route('', methods: ['POST'])]
@@ -193,19 +196,29 @@ class DatabaseController
      * new symlink under a temporary name in the same directory, then
      * rename() it over active.sqlite3 — rename() is atomic on the same
      * filesystem, so a request arriving mid-switch never sees a missing
-     * or broken symlink.
+     * or broken symlink. Returns false (leaving active.sqlite3 untouched)
+     * if either filesystem operation fails, e.g. a permissions problem
+     * or a cross-filesystem rename.
      */
-    private function activateSymlink(string $filename): void
+    private function activateSymlink(string $filename): bool
     {
         $dir = $this->databasesDir();
         $target = $dir.'/'.$filename;
         $active = $dir.'/active.sqlite3';
         $tmp = $dir.'/.active.sqlite3.tmp-'.bin2hex(random_bytes(4));
 
-        symlink($target, $tmp);
-        rename($tmp, $active);
+        if (false === symlink($target, $tmp)) {
+            return false;
+        }
+        if (false === rename($tmp, $active)) {
+            @unlink($tmp);
+
+            return false;
+        }
 
         $this->reloadPhpFpmWorkers();
+
+        return true;
     }
 
     /**
@@ -216,12 +229,20 @@ class DatabaseController
      * next request, but which worker handles the next request is random,
      * so some workers kept serving the old file's data indefinitely.
      * Sending SIGUSR2 to the php-fpm master (this worker's parent
-     * process) makes it gracefully respawn every worker — each one
-     * finishes its current request first, so this never drops the
-     * in-flight response — guaranteeing no worker can still hold a
-     * connection to the file that was just switched away from. A no-op
-     * outside php-fpm (e.g. `php bin/console`, or a future non-php-fpm
-     * prod SAPI).
+     * process, assumed to still be running — a dead/reparented master
+     * would make this a harmless no-op against init instead) makes it
+     * gracefully respawn every worker — each one finishes its current
+     * request first, so an in-flight response is never dropped by the
+     * reload itself — leaving, once it completes, no worker still
+     * holding a connection to the file that was just switched away
+     * from. There's a small window between this response reaching the
+     * client and the reload completing where a request could still land
+     * on a not-yet-respawned worker; idle_connection_ttl covers that
+     * worker's own next request regardless. A no-op outside php-fpm
+     * (e.g. `php bin/console`, or a future non-php-fpm prod SAPI), and
+     * also a no-op if the pcntl extension (which defines SIGUSR2 — a
+     * separate extension from posix, not guaranteed to ship alongside
+     * it) isn't loaded.
      *
      * The signal is deferred to a shutdown function, and
      * fastcgi_finish_request() is called first: sending SIGUSR2 while
@@ -233,11 +254,15 @@ class DatabaseController
      */
     private function reloadPhpFpmWorkers(): void
     {
-        if ('fpm-fcgi' !== \PHP_SAPI || !\function_exists('posix_kill')) {
+        if ('fpm-fcgi' !== \PHP_SAPI || !\function_exists('posix_kill') || !\defined('SIGUSR2')) {
             return;
         }
 
         $ppid = posix_getppid();
+        if ($ppid <= 1) {
+            return;
+        }
+
         register_shutdown_function(static function () use ($ppid): void {
             if (\function_exists('fastcgi_finish_request')) {
                 fastcgi_finish_request();
