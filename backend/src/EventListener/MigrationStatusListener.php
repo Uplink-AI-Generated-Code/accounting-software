@@ -2,6 +2,7 @@
 
 namespace App\EventListener;
 
+use App\Service\AppSettingsRepository;
 use Doctrine\Migrations\DependencyFactory;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
@@ -13,15 +14,10 @@ use Symfony\Component\HttpKernel\Event\RequestEvent;
  * with one clear, specific message in two situations, instead of letting
  * whatever exception happens to fire first surface as a generic 500:
  *
- *  - No active database at all: `databases/active.sqlite3` doesn't exist,
- *    isn't a symlink, or points at a file that no longer exists (e.g. a
- *    fresh clone — `databases/` is gitignored, so a new checkout starts
- *    with nothing there). Checked *before* any connection is ever
- *    attempted, specifically because SQLite's PDO driver would otherwise
- *    silently *create* an empty regular file at that path the moment
- *    anything tried to open a connection — masking the real "nothing set
- *    up yet" state and leaving a stray non-symlink file sitting where
- *    active.sqlite3 is supposed to be a symlink.
+ *  - No active database at all: app-settings.yaml doesn't exist, has a
+ *    null activeDatabase, or names a file that no longer exists (e.g. a
+ *    fresh clone — backend/databases/ is gitignored, so a new checkout
+ *    starts with nothing there).
  *  - The active database's schema hasn't caught up with the latest
  *    migration. This bit for real once: a database missing a single
  *    migration made GET /api/accounts 500, which — because App.jsx used
@@ -50,6 +46,7 @@ class MigrationStatusListener
     public function __construct(
         #[Autowire(service: 'doctrine.migrations.dependency_factory')]
         private readonly DependencyFactory $dependencyFactory,
+        private readonly AppSettingsRepository $appSettingsRepository,
         #[Autowire('%kernel.project_dir%')]
         private readonly string $projectDir,
     ) {
@@ -95,18 +92,8 @@ class MigrationStatusListener
 
     private function hasActiveDatabase(): bool
     {
-        $active = $this->projectDir.'/databases/active.sqlite3';
-        if (!is_link($active)) {
-            return false;
-        }
+        $activeDatabase = $this->appSettingsRepository->read()['activeDatabase'];
 
-        // realpath(), not readlink()+file_exists(): a relative symlink
-        // target (e.g. hand-created via `ln -s 2024-2025.sqlite3
-        // active.sqlite3`) resolves against this process's CWD under
-        // readlink()+file_exists(), not the symlink's own directory —
-        // wrongly reporting no active database even though the file
-        // exists. Keep in agreement with DatabaseController::
-        // activeTarget(), which does the same check independently.
-        return false !== realpath($active);
+        return null !== $activeDatabase && file_exists($this->projectDir.'/databases/'.$activeDatabase);
     }
 }
