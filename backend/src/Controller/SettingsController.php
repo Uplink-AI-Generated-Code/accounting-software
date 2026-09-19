@@ -20,14 +20,14 @@ class SettingsController
         return new JsonResponse($this->state->getSettings());
     }
 
-    #[Route('', methods: ['PUT'])]
-    public function put(Request $request): JsonResponse
+    #[Route('', methods: ['PATCH'])]
+    public function patch(Request $request): JsonResponse
     {
         $body = json_decode($request->getContent(), true);
         if (!\is_array($body)) {
             return new JsonResponse(['error' => 'Invalid JSON body'], 400);
         }
 
-        return new JsonResponse($this->state->replaceSettings($body));
+        return new JsonResponse($this->state->patchSettings($body));
     }
 }

@@ -9,6 +9,7 @@ use App\Entity\Line;
 use App\Entity\Symbol;
 use App\Entity\Tag;
 use App\Entity\Transaction;
+use App\Service\AppSettingsRepository;
 use App\Service\SettingKeys;
 use App\Service\SettingsService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -27,9 +28,9 @@ use Doctrine\ORM\EntityManagerInterface;
  *
  *  - The discrete per-entity endpoints (AccountController,
  *    SettingsController, TransactionController): upsertAccount(),
- *    deleteAccount(), replaceSettings(), applyLedgerOperations() — each
- *    one a single, independently-atomic mutation. This is the live app's
- *    normal write path.
+ *    deleteAccount(), patchPerDatabaseSettings(), applyLedgerOperations() —
+ *    each one a single, independently-atomic mutation. This is the live
+ *    app's normal write path.
  *  - AccountController::list()/::ledger(): accountsWithStats(),
  *    accountLedger() — the two reads the frontend actually uses.
  *  - ImportLocalStorageCommand / ExportStateCommand: writeState() /
@@ -51,6 +52,7 @@ class LedgerStateService
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly SettingsService $settingsService,
+        private readonly AppSettingsRepository $appSettingsRepository,
     ) {
     }
 
@@ -570,6 +572,10 @@ class LedgerStateService
     public function getSettings(): array
     {
         $arr = $this->settingsToArray();
+        $global = $this->appSettingsRepository->read();
+        $arr['groupLevels'] = $global['groupLevels'];
+        $arr['savedGroupings'] = $global['savedGroupings'];
+
         $taxYearStart = $this->determinedTaxYearStart();
         $arr['activeTaxYearStart'] = $taxYearStart;
         $arr['outOfTaxYearLineCount'] = null !== $taxYearStart ? $this->outOfTaxYearLineCount($taxYearStart) : 0;
@@ -585,6 +591,21 @@ class LedgerStateService
         }
 
         return $this->settingsToArray();
+    }
+
+    /** @param array<string, mixed> $data */
+    public function patchSettings(array $data): array
+    {
+        if (\array_key_exists('over65', $data)) {
+            $this->patchPerDatabaseSettings(['over65' => $data['over65']]);
+        }
+
+        $globalPartial = array_intersect_key($data, ['groupLevels' => true, 'savedGroupings' => true]);
+        if ([] !== $globalPartial) {
+            $this->appSettingsRepository->write($globalPartial);
+        }
+
+        return $this->getSettings();
     }
 
     /**
