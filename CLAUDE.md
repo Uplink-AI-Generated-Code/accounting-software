@@ -131,12 +131,15 @@ SQLite. All commands run from `backend/`.
   file the running app is pointed at — use the in-app switcher, or
   `POST /api/databases/active`, for that.
 - `backend/databases/` holds one `.sqlite3` file per tax year (plus any
-  other files present), and `databases/active.sqlite3` is a symlink to
-  whichever one is currently active — see `DatabaseController` under
-  "Backend" below for how it's switched. `backend/databases/` is
-  gitignored via its own rule, separate from `var/` (which is also
-  entirely gitignored); a separate `var/data_test.db` is used for the
-  test suite (see below).
+  other files present), and `databases/app-settings.yaml` names which
+  one is currently active — see `AppSettingsRepository`/
+  `ActiveDatabaseDriver` under "Backend" below for how switching works.
+  `backend/databases/` is gitignored via its own rule, separate from
+  `var/` (which is also entirely gitignored); a separate `var/data_test.db`
+  is used for the test suite (see below). `DATABASE_URL` (`.env`/
+  `.env.local`) is only meaningful for the `test` environment now — dev
+  and prod resolve their connection from `app-settings.yaml` instead, at
+  the moment each connection actually opens (see `ActiveDatabasePathResolver`).
 - Run the backend test suite: `php bin/phpunit` (from `backend/`). Uses the
   `test` environment's own SQLite file — run `php bin/console
   doctrine:migrations:migrate --env=test` once after a fresh clone or a new
@@ -153,9 +156,10 @@ it covers and why); no test suite and no linter on the frontend.
   screen bolted on.
 - **`MigrationStatusListener`** (`src/EventListener/`, `kernel.request`,
   priority 300) checks, in order: is there an active database at all
-  (`databases/active.sqlite3` must exist as a symlink to a real file —
-  see `DatabaseController` below), then is its schema caught up with the
-  latest migration. It refuses every `/api/*` request except
+  (`databases/app-settings.yaml`'s `activeDatabase` must be non-null and
+  name a file that exists under `databases/` — see `AppSettingsRepository`
+  below), then is its schema caught up with the latest migration. It
+  refuses every `/api/*` request except
   `/api/databases*` (which needs to work *without* an active database,
   to power the picker) with a `503` and a `reason` field —
   `no_active_database`, or `migrations_pending` with a clear
@@ -175,32 +179,75 @@ it covers and why); no test suite and no linter on the frontend.
   picker looking broken too, with no clue the actual problem was one
   unrun migration.
 - **`DatabaseController`** (`/api/databases*`) is what the in-app
-  switcher (`src/components/DatabaseSwitcher.jsx`) talks to, and the only
-  place `databases/active.sqlite3`'s symlink target ever changes at
-  runtime: `GET /api/databases` lists every `.sqlite3` file present
-  (excluding `active.sqlite3` itself) with `{filename, label, isTaxYear,
-  active}`; `POST /api/databases/active` (body `{filename}`) atomically
-  repoints the symlink (`symlink()` to a temp name, then `rename()` over
-  `active.sqlite3` — atomic on the same filesystem); `POST /api/databases`
-  (body `{startYear}`) creates a brand-new `<year>-<year+1>.sqlite3`,
-  running `doctrine:migrations:migrate` then `app:currencies:seed`
-  against it via `Symfony\Component\Process\Process` before it's
-  considered created (cleans up the empty file on any failure); `POST
-  /api/databases/new-year` (no body) is the in-app "start a new tax
-  year" action, calling the same `NewYearService::createNextYear()`
-  the `app:new-year` command uses, against the currently-active file.
-  `DATABASE_URL` is fixed in `backend/.env.dev` at
-  `sqlite:///%kernel.project_dir%/databases/active.sqlite3` — always
-  that symlink, never a specific tax year's file directly; switching
-  which file is active means repointing the symlink, not editing
-  `.env.local` (whose `DATABASE_URL` block is now empty for this reason).
-  If you add another subprocess here that needs a *different*
-  `DATABASE_URL` than the current request's own connection, also clear
-  `SYMFONY_DOTENV_VARS` in that subprocess's env array — `create()`'s
-  comment explains why: Symfony's Dotenv otherwise treats an already-set
-  `DATABASE_URL` as fair game to overwrite from `.env.dev` if it thinks
-  (via that var, inherited from the parent process) it was "previously
-  loaded from a dotenv file," silently discarding the override.
+  switcher (`src/components/DatabaseSwitcher.jsx`) talks to: `GET
+  /api/databases` lists every `.sqlite3` file present with `{filename,
+  label, isTaxYear, active}`; `POST /api/databases/active` (body
+  `{filename}`) writes `activeDatabase` via `AppSettingsRepository::
+  write()`; `POST /api/databases` (body `{startYear}`) creates a
+  brand-new `<year>-<year+1>.sqlite3`, running
+  `doctrine:migrations:migrate` then `app:currencies:seed` against it
+  via `Symfony\Component\Process\Process` before it's considered created
+  (cleans up the empty file on any failure); `POST /api/databases/new-year`
+  (no body) is the in-app "start a new tax year" action, calling the
+  same `NewYearService::createNextYear()` the `app:new-year` command
+  uses, against the currently-active file.
+- **`AppSettingsRepository`** (`src/Service/`) owns
+  `backend/databases/app-settings.yaml` — a plain, hand-editable,
+  gitignored YAML file (not Doctrine-managed) holding `activeDatabase`
+  (which tax-year file is active) plus two settings that are genuinely
+  global rather than tied to one tax year: `groupLevels`, `savedGroupings`
+  (see "UI conventions" below). `read()` returns defaults
+  (`activeDatabase: null`, `groupLevels: []`, one seeded `savedGroupings`
+  entry) when the file is missing or fails to parse. `write(array
+  $partial)` does a `flock()`-guarded read-merge-write: a *separate*,
+  never-renamed lock file (`app-settings.yaml.lock`) guards the critical
+  section — locking the data file's own descriptor doesn't work, since
+  `write()` also atomically `rename()`s a temp file over that same path,
+  which would swap the lock's inode out from under it mid-write. This
+  replaced an earlier design (`databases/active.sqlite3`, a symlink) that
+  needed a `SIGUSR2` php-fpm pool-reload and `idle_connection_ttl` tuning
+  to work around real staleness bugs — see
+  `docs/superpowers/specs/2026-09-19-app-settings-and-active-database-design.md`
+  for the history.
+- **`ActiveDatabasePathResolver`**/**`ActiveDatabaseDriver`**/
+  **`ActiveDatabaseMiddleware`** (`src/Doctrine/`) are how a real SQLite
+  connection actually gets pointed at the active file: `ActiveDatabaseMiddleware`
+  implements `Doctrine\DBAL\Driver\Middleware` (auto-registered for the
+  `default` connection by doctrine-bundle's autoconfiguration, no
+  `services.yaml` wiring needed) and, for every environment except
+  `test`, wraps the driver in `ActiveDatabaseDriver`, whose `connect()`
+  calls `ActiveDatabasePathResolver::resolve()` and overrides the
+  connection's `path` param with whatever it returns — read fresh from
+  `app-settings.yaml` on every real connection attempt, with no env var,
+  symlink, or compiled-container value in between to go stale. `resolve()`
+  checks `getenv('ACTIVE_DATABASE_PATH_OVERRIDE')` first (used by
+  `DatabaseController::create()`'s migrate/seed subprocess to target a
+  brand-new, not-yet-active file — deliberately not `DATABASE_URL`,
+  since that name is tracked by Symfony's Dotenv and a subprocess
+  inheriting `SYMFONY_DOTENV_VARS` would have it silently overwritten
+  from `.env.dev`); otherwise it reads `activeDatabase` and throws if
+  nothing's configured. That throw is safe for the HTTP path —
+  `MigrationStatusListener` already refuses every `/api/*` request
+  before any connection is attempted when there's no active database —
+  but means a bare CLI command (e.g. `doctrine:migrations:migrate`) run
+  with nothing configured now fails loudly instead of silently
+  succeeding against the wrong file. **Anything that needs the active
+  database's real file path directly (not through the ORM's own live
+  connection) must go through `ActiveDatabasePathResolver::resolve()`**
+  — `Doctrine\DBAL\Connection::getParams()['path']` reflects only the
+  connection's *original* params from `DATABASE_URL`, never this
+  middleware's override, since `AbstractDriverMiddleware::connect(array
+  $params)` takes `$params` by value and the mutation never propagates
+  back into `Connection`'s own stored params. This bit `NewYearService`
+  for real once — it read `getParams()` directly and silently built a
+  new tax year's file from the wrong source.
+  `config/packages/doctrine.yaml`'s `dbal: url:` stays pointed at the
+  base `.env`'s templated default; it's resolved once at connection
+  construction and then unconditionally overwritten by
+  `ActiveDatabaseDriver` for every environment except `test`, so its
+  actual value doesn't matter outside `test`. `backend/.env.dev` no
+  longer sets `DATABASE_URL` at all (only its `APP_SECRET` block
+  remains) — there's nothing left for it to override.
 - **Endpoints, grouped by what the frontend uses them for:**
   - `GET /api/accounts` (`AccountController::list`) — the lightweight,
     app-wide list. `LedgerStateService::accountsWithStats()` computes each
@@ -226,13 +273,23 @@ it covers and why); no test suite and no linter on the frontend.
     transaction left with zero lines — and returns no data: deleting
     always navigates the frontend away from the account being viewed, so
     there's no ledger screen left to patch (`LedgerStateService::deleteAccount()`).
-  - `GET`/`PUT /api/settings` (`SettingsController`) — plain singleton
-    read/replace for the *stored* fields (`over65`, `groupLevels`,
-    `savedGroupings`). `GET`'s response also carries two read-only
-    *computed* fields, `activeTaxYearStart`/`outOfTaxYearLineCount`,
-    added on top by `LedgerStateService::getSettings()` — see "The
-    active tax year" below; there's no column backing either, and `PUT`
-    ignores them if a client sends them back.
+  - `GET`/`PATCH /api/settings` (`SettingsController`) — a merged view
+    over two different backends, transparent to the frontend: `over65`
+    lives per-database, in a `Setting` key-value table (natural-key
+    entity, `key`+`value`, `value` always valid JSON text — see
+    `SettingsService`); `groupLevels`/`savedGroupings` live globally, in
+    `app-settings.yaml` (see `AppSettingsRepository` above) — a UI
+    grouping preference has no reason to reset just because you switched
+    tax years. `GET` merges both plus two read-only *computed* fields,
+    `activeTaxYearStart`/`outOfTaxYearLineCount`, added on top by
+    `LedgerStateService::getSettings()` — see "The active tax year"
+    below; there's no column backing either. `PATCH` takes a **partial**
+    object — only the field(s) actually changing — and
+    `LedgerStateService::patchSettings()` routes each key present to
+    whichever backend owns it; the frontend never spreads the whole
+    `settings` object into a save call any more (`App.jsx`'s
+    `saveSettings()` merges the partial into local state instead of
+    replacing it).
   - `POST /api/ledger/batch` (`LedgerController`) — the one endpoint that
     still takes a *list*: `{operations: [...]}`, a 4-primitive vocabulary
     (`upsertLine`, `deleteLine`, `upsertTransaction`, `deleteTransaction`)
@@ -751,9 +808,12 @@ year's file are now all done from inside the running app — see
   it turned out the real data was never multi-year to begin with; don't
   reintroduce that column/migration.
 - **`GET /api/settings` exposes two *computed*, read-only fields**
-  (added by `getSettings()` on top of `settingsToArray()` — the latter
-  stays pure/stored-only, used unchanged by `readState()`/
-  `replaceSettings()`, so a full export/import never carries these):
+  (added by `getSettings()` on top of the per-database `over65`
+  value plus the global `groupLevels`/`savedGroupings` — `readState()`/
+  `writeState()` (full per-database export/import) only ever carry
+  `over65`, since the other two aren't per-database data at all; a
+  database-level backup was never a meaningful place for a global UI
+  preference to live):
   - `activeTaxYearStart` — the year above, or `null` on a genuinely
     blank database (no lines saved anywhere yet). `App.jsx`'s header
     only renders the `2024/25 tax year` badge when this is non-null;
