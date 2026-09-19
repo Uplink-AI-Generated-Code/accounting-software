@@ -125,7 +125,7 @@ SQLite. All commands run from `backend/`.
   line/transaction and sets each account's `openingBalance`/
   `openingBalanceCashValue` to its *current* closing balance/cost basis
   for asset/liability/equity/investment accounts, or resets both to
-  null for income/isa-income/expense/isa-parent accounts (period-specific
+  null for income/isa-income/expense/investment-parent accounts (period-specific
   flows, not a balance that carries across tax years). Refuses to run if
   the target path already exists. This CLI path never touches which
   file the running app is pointed at — use the in-app switcher, or
@@ -386,6 +386,16 @@ it covers and why); no test suite and no linter on the frontend.
   `accountToArray()`/`lineToArray()`'s `array_filter`. This matches the
   frontend's own convention of fields like `line.order` or `line.cashValue`
   being entirely absent rather than present-but-null.
+- **SQLite's `foreign_keys` pragma is enabled on every connection this
+  app makes** (`src/Doctrine/ForeignKeysMiddleware`/`ForeignKeysDriver`,
+  a Doctrine connection middleware executing `PRAGMA foreign_keys = ON`
+  immediately after every real connect — SQLite doesn't enforce foreign
+  keys by default, and the setting isn't stored in the database file
+  itself, so it has to be set per-connection every time). Every FK in
+  the schema is now genuinely enforced, not merely declarative — see
+  `docs/superpowers/specs/2026-09-19-generalized-investment-parent-design.md`
+  for the audit confirming this doesn't conflict with any existing
+  bulk-delete/insert ordering in this codebase.
 - `readState()`/`writeState()` (a full read/wipe-and-rebuild) still exist
   on `LedgerStateService`, used only by `ExportStateCommand` and
   `ImportLocalStorageCommand` — a backup or a first-time import is
@@ -443,8 +453,16 @@ it covers and why); no test suite and no linter on the frontend.
   a save would send, so the `effectiveRecords` substitution has to add it
   back in for display purposes).
 - Account types: `asset`, `liability`, `equity`, `income`, `isa-income`,
-  `expense`, `investment`, `isa-parent`. An `isa-parent` holds no balance
-  itself — it's a wrapper grouping subaccounts via `isaParentId`.
+  `expense`, `investment`, `investment-parent`. An `investment-parent`
+  holds no balance itself — it's a wrapper grouping subaccounts via a
+  real, enforced foreign key, `parentId` (`Account.parent` backend-side,
+  `ON DELETE NO ACTION`). It groups either a Stocks & Shares ISA (when
+  its `isaKind` is `"stocks-shares-isa"` — the same field flat ISA
+  accounts use, reused here rather than a separate flag) or a plain
+  organizational holding with no ISA meaning at all. A `type:
+  "investment"` account must always have a parent — enforced at the
+  frontend, in `LedgerStateService::hydrateAccount()`, and by a database
+  `CHECK` constraint (`type != 'investment' OR parent_id IS NOT NULL`).
 - **`isa-income`** is a plain, balance-bearing, contra (credit-normal —
   it's in `CONTRA_TYPES`) account type for dividends/interest generated
   *inside* an ISA — HMRC doesn't count that money against the
