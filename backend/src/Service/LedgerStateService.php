@@ -6,11 +6,11 @@ use App\Entity\Account;
 use App\Entity\Counterparty;
 use App\Entity\Currency;
 use App\Entity\Line;
-use App\Entity\Settings;
 use App\Entity\Symbol;
 use App\Entity\Tag;
 use App\Entity\Transaction;
-use App\Repository\SettingsRepository;
+use App\Service\SettingKeys;
+use App\Service\SettingsService;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
@@ -50,19 +50,17 @@ class LedgerStateService
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly SettingsRepository $settingsRepository,
+        private readonly SettingsService $settingsService,
     ) {
     }
 
     /** @return array{accounts: array<int, array<string, mixed>>, records: array<int, array<string, mixed>>, settings: array<string, mixed>, currencies: array<int, array<string, mixed>>} */
     public function readState(): array
     {
-        $settings = $this->settingsRepository->getOrCreate();
-
         return [
             'accounts' => $this->accountsArray(),
             'records' => $this->recordsArray(),
-            'settings' => $this->settingsToArray($settings),
+            'settings' => $this->settingsToArray(),
             'currencies' => $this->currenciesArray(),
         ];
     }
@@ -502,9 +500,7 @@ class LedgerStateService
                 }
             }
 
-            $settings = $this->settingsRepository->getOrCreate();
-            $this->hydrateSettings($settings, $settingsData);
-            $this->em->persist($settings);
+            $this->settingsService->set(SettingKeys::OVER_65, (bool) ($settingsData['over65'] ?? false));
         });
     }
 
@@ -573,7 +569,7 @@ class LedgerStateService
      */
     public function getSettings(): array
     {
-        $arr = $this->settingsToArray($this->settingsRepository->getOrCreate());
+        $arr = $this->settingsToArray();
         $taxYearStart = $this->determinedTaxYearStart();
         $arr['activeTaxYearStart'] = $taxYearStart;
         $arr['outOfTaxYearLineCount'] = null !== $taxYearStart ? $this->outOfTaxYearLineCount($taxYearStart) : 0;
@@ -582,14 +578,13 @@ class LedgerStateService
     }
 
     /** @param array<string, mixed> $data */
-    public function replaceSettings(array $data): array
+    public function patchPerDatabaseSettings(array $data): array
     {
-        $settings = $this->settingsRepository->getOrCreate();
-        $this->hydrateSettings($settings, $data);
-        $this->em->persist($settings);
-        $this->em->flush();
+        if (\array_key_exists('over65', $data)) {
+            $this->settingsService->set(SettingKeys::OVER_65, (bool) $data['over65']);
+        }
 
-        return $this->settingsToArray($settings);
+        return $this->settingsToArray();
     }
 
     /**
@@ -923,16 +918,6 @@ class LedgerStateService
         $this->em->persist($currency);
     }
 
-    /** @param array<string, mixed> $data */
-    private function hydrateSettings(Settings $settings, array $data): Settings
-    {
-        $settings->setOver65((bool) ($data['over65'] ?? false));
-        $settings->setGroupLevels($data['groupLevels'] ?? ['type']);
-        $settings->setSavedGroupings($data['savedGroupings'] ?? []);
-
-        return $settings;
-    }
-
     /** @return array<int, array<string, mixed>> */
     private function accountsArray(): array
     {
@@ -1039,12 +1024,10 @@ class LedgerStateService
     }
 
     /** @return array<string, mixed> */
-    private function settingsToArray(Settings $s): array
+    private function settingsToArray(): array
     {
         return [
-            'over65' => $s->isOver65(),
-            'groupLevels' => $s->getGroupLevels(),
-            'savedGroupings' => $s->getSavedGroupings(),
+            'over65' => (bool) ($this->settingsService->get(SettingKeys::OVER_65) ?? false),
         ];
     }
 
