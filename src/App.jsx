@@ -224,21 +224,23 @@ export default function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, [accounts]);
 
-  function saveSettings(next) {
-    // Optimistic: a flat replace with no cascading effect on accounts or
-    // transactions, so there's nothing to reconcile once the request lands.
-    setSettings(next);
-    api.putSettings(next).then(() => setStorageOK(true)).catch(() => setStorageOK(false));
+  function saveSettings(partial) {
+    // Optimistic: merge the partial into local state immediately (not a
+    // blind replace — `partial` only carries the field(s) actually
+    // changing, so replacing outright would wipe every other setting
+    // from the UI until the next GET /api/settings).
+    setSettings((prev) => ({ ...prev, ...partial }));
+    api.patchSettings(partial).then(() => setStorageOK(true)).catch(() => setStorageOK(false));
   }
 
   function saveGroupingPreset(levels) {
     const already = (settings.savedGroupings || []).some((s) => JSON.stringify(s.levels) === JSON.stringify(levels));
     if (already) return;
-    saveSettings({ ...settings, savedGroupings: [...(settings.savedGroupings || []), { id: uid(), levels }] });
+    saveSettings({ savedGroupings: [...(settings.savedGroupings || []), { id: uid(), levels }] });
   }
 
   function removeGroupingPreset(id) {
-    saveSettings({ ...settings, savedGroupings: (settings.savedGroupings || []).filter((s) => s.id !== id) });
+    saveSettings({ savedGroupings: (settings.savedGroupings || []).filter((s) => s.id !== id) });
   }
 
   // Each investment account holds exactly one security, so its balance —
@@ -429,7 +431,7 @@ export default function App() {
           <div className="mb-3">
             <GroupLevelPicker
               levels={settings.groupLevels || ["type"]}
-              onChange={(lv) => saveSettings({ ...settings, groupLevels: lv })}
+              onChange={(lv) => saveSettings({ groupLevels: lv })}
               saved={settings.savedGroupings}
               onSave={saveGroupingPreset}
               onRemove={removeGroupingPreset}

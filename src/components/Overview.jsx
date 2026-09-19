@@ -56,7 +56,7 @@ export function Overview({ accounts, symbols, settings, onSaveSettings, onSaveGr
           <span style={{ fontSize: 11.5, color: C.inkFaint }}>Group by</span>
           <GroupLevelPicker
             levels={groupLevels}
-            onChange={(lv) => onSaveSettings({ ...settings, groupLevels: lv })}
+            onChange={(lv) => onSaveSettings({ groupLevels: lv })}
             saved={settings.savedGroupings}
             onSave={onSaveGrouping}
             onRemove={onRemoveGrouping}

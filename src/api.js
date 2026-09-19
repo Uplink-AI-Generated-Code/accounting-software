@@ -71,8 +71,8 @@ export function getSettings() {
   return request("/api/settings");
 }
 
-export function putSettings(settings) {
-  return request("/api/settings", { method: "PUT", ...jsonBody(settings) });
+export function patchSettings(partial) {
+  return request("/api/settings", { method: "PATCH", ...jsonBody(partial) });
 }
 
 // operations: see lib/ledgerOperations.js — an ordered list of

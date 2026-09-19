@@ -68,7 +68,7 @@ export function AllowanceView({ accounts, settings, onSaveSettings, onSelect, ac
       </div>
 
       <label className="flex items-center gap-2 mb-6" style={{ fontSize: 13, color: C.inkSoft }}>
-        <input type="checkbox" checked={!!settings.over65} onChange={(e) => onSaveSettings({ ...settings, over65: e.target.checked })} />
+        <input type="checkbox" checked={!!settings.over65} onChange={(e) => onSaveSettings({ over65: e.target.checked })} />
         I'm 65 or over (keeps the full £20,000 Cash ISA capacity once the lower cap applies)
       </label>
 
