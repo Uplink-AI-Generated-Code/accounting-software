@@ -6,8 +6,8 @@ import { TYPES, GROUP_DIMENSIONS } from "./theme";
 // working with a subset that doesn't include the wrapper itself.
 export function counterpartyOf(account, allAccounts) {
   if (account.counterparty) return account.counterparty;
-  if (account.isaParentId) {
-    const parent = allAccounts.find((a) => a.id === account.isaParentId);
+  if (account.parentId) {
+    const parent = allAccounts.find((a) => a.id === account.parentId);
     if (parent && parent.counterparty) return parent.counterparty;
   }
   return "";
@@ -27,7 +27,7 @@ export function bucketBy(subset, dim, allAccounts, symbols = []) {
     const byCur = {};
     const wrappers = [];
     subset.forEach((a) => {
-      if (a.type === "isa-parent") { wrappers.push(a); return; }
+      if (a.type === "investment-parent") { wrappers.push(a); return; }
       const cur = (a.type === "investment" ? symbols.find((s) => s.ticker === a.symbol)?.tradingCurrency : a.currency) || "—";
       byCur[cur] = byCur[cur] || [];
       byCur[cur].push(a);
@@ -109,7 +109,7 @@ export function leafMatchesQuery(leaf, query) {
 
 export function subtotalsForItems(items) {
   const sub = {};
-  items.filter((a) => a.type !== "investment" && a.type !== "isa-parent").forEach((a) => { sub[a.currency] = (sub[a.currency] || 0) + (a.balance || 0); });
+  items.filter((a) => a.type !== "investment" && a.type !== "investment-parent").forEach((a) => { sub[a.currency] = (sub[a.currency] || 0) + (a.balance || 0); });
   return sub;
 }
 

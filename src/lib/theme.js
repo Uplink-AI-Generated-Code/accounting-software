@@ -28,7 +28,7 @@ export const TYPES = [
   { key: "isa-income", label: "ISA Income" },
   { key: "expense", label: "Expenses" },
   { key: "investment", label: "Stocks & Shares" },
-  { key: "isa-parent", label: "Stocks & Shares ISAs" },
+  { key: "investment-parent", label: "Investment wrapper" },
 ];
 
 export const ISA_KINDS = [

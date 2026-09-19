@@ -59,12 +59,12 @@ export function isaRulesFor(startYear, over65) {
 export function isaProducts(accounts) {
   const products = [];
   accounts.forEach((a) => {
-    if (a.type === "isa-parent") {
+    if (a.type === "investment-parent" && a.isaKind === "stocks-shares-isa") {
       products.push({
         account: a,
         kind: "stocks-shares-isa",
         flexible: !!a.flexible,
-        accountIds: accounts.filter((x) => x.isaParentId === a.id).map((x) => x.id),
+        accountIds: accounts.filter((x) => x.parentId === a.id).map((x) => x.id),
       });
     } else if (a.isaKind && a.isaKind !== "stocks-shares-isa") {
       products.push({ account: a, kind: a.isaKind, flexible: !!a.flexible, accountIds: [a.id] });
