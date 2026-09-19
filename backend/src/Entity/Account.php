@@ -11,10 +11,16 @@ use Doctrine\ORM\Mapping as ORM;
  * so re-saving the same account keeps the same id transactions' lines
  * reference.
  *
- * `isaParentId` is kept as a plain string, not a mapped association: the
- * frontend already resolves the parent by scanning the account list itself
- * (see counterpartyOf() in lib/grouping.js), and a bulk replace-on-save
- * doesn't need relational integrity here.
+ * `parent` is a real, enforced self-referential foreign key (`ON DELETE
+ * NO ACTION`, matching every other FK on this entity — currency, symbol,
+ * counterparty): an `investment-parent` wrapper account groups other
+ * accounts, which point back at it via this field. Wire format is still
+ * a flat string (`parentId`, the referenced account's `id`), matching
+ * how currency/symbol/counterparty are already exposed despite being
+ * real associations backend-side. A `type: "investment"` account must
+ * always have a non-null parent — enforced here via a database CHECK
+ * constraint (see the migration that introduced this), in
+ * LedgerStateService::hydrateAccount(), and in AccountFormModal.jsx.
  *
  * `currency`/`symbol`/`counterparty` are FKs to natural-key reference
  * entities (Currency/Symbol/Counterparty) rather than free strings — see
@@ -84,8 +90,9 @@ class Account
     #[ORM\Column(length: 32, nullable: true)]
     private ?string $isaKind = null;
 
-    #[ORM\Column(length: 32, nullable: true)]
-    private ?string $isaParentId = null;
+    #[ORM\ManyToOne(targetEntity: self::class)]
+    #[ORM\JoinColumn(name: 'parent_id', referencedColumnName: 'id', nullable: true)]
+    private ?self $parent = null;
 
     #[ORM\Column(nullable: true)]
     private ?bool $flexible = null;
@@ -210,14 +217,14 @@ class Account
         return $this;
     }
 
-    public function getIsaParentId(): ?string
+    public function getParent(): ?self
     {
-        return $this->isaParentId;
+        return $this->parent;
     }
 
-    public function setIsaParentId(?string $isaParentId): static
+    public function setParent(?self $parent): static
     {
-        $this->isaParentId = $isaParentId;
+        $this->parent = $parent;
 
         return $this;
     }
