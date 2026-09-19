@@ -48,7 +48,11 @@ class AccountController
             return new JsonResponse(['error' => 'Invalid JSON body'], 400);
         }
 
-        return new JsonResponse($this->state->upsertAccount($id, $body));
+        try {
+            return new JsonResponse($this->state->upsertAccount($id, $body));
+        } catch (\InvalidArgumentException $e) {
+            return new JsonResponse(['error' => $e->getMessage()], 400);
+        }
     }
 
     /**
@@ -59,7 +63,11 @@ class AccountController
     #[Route('/{id}', methods: ['DELETE'])]
     public function delete(string $id): JsonResponse
     {
-        $this->state->deleteAccount($id);
+        try {
+            $this->state->deleteAccount($id);
+        } catch (\Doctrine\DBAL\Exception\ForeignKeyConstraintViolationException) {
+            return new JsonResponse(['error' => "Can't delete a wrapper account that still has subaccounts. Delete those first."], 409);
+        }
 
         return new JsonResponse(['ok' => true]);
     }

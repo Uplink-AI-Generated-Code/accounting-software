@@ -789,8 +789,12 @@ class LedgerStateService
         $account->setCounterparty($this->resolveCounterparty($data['counterparty'] ?? null));
         $account->setSubtype(isset($data['subtype']) ? (string) $data['subtype'] : null);
         $account->setIsaKind($data['isaKind'] ?? null);
-        $account->setIsaParentId($data['isaParentId'] ?? null);
         $account->setFlexible(isset($data['flexible']) ? (bool) $data['flexible'] : null);
+        $account->setParent($this->resolveParent($data['parentId'] ?? null));
+
+        if ('investment' === $account->getType() && null === $account->getParent()) {
+            throw new \InvalidArgumentException('An investment account must have a parent wrapper.');
+        }
 
         return $account;
     }
@@ -837,6 +841,19 @@ class LedgerStateService
         }
 
         return $symbol;
+    }
+
+    private function resolveParent(mixed $id): ?Account
+    {
+        if (null === $id || '' === $id) {
+            return null;
+        }
+        $parent = $this->em->getRepository(Account::class)->find((string) $id);
+        if (!$parent) {
+            throw new \InvalidArgumentException(sprintf('Unknown parent account "%s".', $id));
+        }
+
+        return $parent;
     }
 
     private function resolveCounterparty(mixed $name): ?Counterparty
@@ -996,7 +1013,7 @@ class LedgerStateService
             'counterparty' => $a->getCounterparty()?->getName(),
             'subtype' => $a->getSubtype(),
             'isaKind' => $a->getIsaKind(),
-            'isaParentId' => $a->getIsaParentId(),
+            'parentId' => $a->getParent()?->getId(),
             'flexible' => $a->isFlexible(),
         ], static fn ($v) => null !== $v);
     }
