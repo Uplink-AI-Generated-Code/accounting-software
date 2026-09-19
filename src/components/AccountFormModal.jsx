@@ -9,7 +9,7 @@ import { createSymbol } from "../api";
    Account form modal
 --------------------------------------------------------- */
 export function AccountFormModal({ initial, accounts, currencies, symbols, counterparties, onCancel, onSave, onDelete, onSymbolCreated }) {
-  const wrappers = accounts.filter((a) => a.type === "isa-parent");
+  const wrappers = accounts.filter((a) => a.type === "investment-parent");
 
   const [name, setName] = useState(initial.name || "");
   const [type, setType] = useState(initial.typePreset || initial.type || "asset");
@@ -32,17 +32,20 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
   // apart. Plain string on the account itself, no backing entity — see
   // CLAUDE.md.
   const [subtype, setSubtype] = useState(initial.subtype || "");
-  // "" = not an ISA, "cash-isa"/"lifetime-isa"/"innovative-finance-isa" = a
-  // standalone flat ISA, or an isa-parent account id = "this is a
-  // subaccount of that Stocks & Shares ISA wrapper".
-  const [isaChoice, setIsaChoice] = useState(initial.isaParentPreset || initial.isaParentId || initial.isaKind || "");
+  // For a non-wrapper account: "" = not an ISA, "cash-isa"/"lifetime-isa"/
+  // "innovative-finance-isa" = a standalone flat ISA, or a wrapper account
+  // id = "this is a subaccount of that wrapper" (ISA or not — see
+  // isSubaccount below). For a wrapper account itself (isWrapper): ""  =
+  // a plain organizational wrapper, "stocks-shares-isa" = this wrapper is
+  // an ISA — reusing the same field/values rather than a separate flag.
+  const [isaChoice, setIsaChoice] = useState(initial.isaParentPreset || initial.parentId || initial.isaKind || "");
 
-  const isWrapper = type === "isa-parent";
+  const isWrapper = type === "investment-parent";
   const isSubaccount = wrappers.some((w) => w.id === isaChoice);
   // Flexibility is a property of the ISA product itself (the wrapper, for
   // a Stocks & Shares ISA), not of each subaccount — so the toggle only
   // appears where it actually applies. Counterparty works the same way.
-  const showFlexible = isWrapper || (!isSubaccount && !!isaChoice);
+  const showFlexible = (isWrapper && isaChoice === "stocks-shares-isa") || (!isWrapper && !isSubaccount && !!isaChoice);
   const showCounterparty = !isSubaccount;
   // Nominal (income/expense) accounts use this same field for "who was
   // paid/who paid" rather than "where this account is held" — see
@@ -91,6 +94,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
     // Name is optional — see displayAccountName() in lib/format.js for
     // the Subtype/Counterparty-based fallback shown when it's blank.
     if (type === "investment" && !symbol.trim()) return;
+    if (type === "investment" && !isSubaccount) return;
     const data = {
       id: initial.id,
       name: name.trim(),
@@ -105,10 +109,19 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
       // A wrapper holds nothing directly — no currency or opening balance.
       delete data.currency;
       delete data.openingBalance;
-      data.flexible = flexible;
+      data.isaKind = isaChoice || null;
+      if (isaChoice === "stocks-shares-isa") data.flexible = flexible;
     } else if (isaEligible && isSubaccount) {
-      data.isaKind = "stocks-shares-isa";
-      data.isaParentId = isaChoice;
+      // Only tag the subaccount itself as ISA-related when the chosen
+      // wrapper actually is one — IsaAllowanceService::isExternalLine()
+      // checks a counterpart account's own isaKind directly, so setting
+      // this unconditionally would make a non-ISA wrapper's subaccounts
+      // look like internal ISA transfers to the allowance engine.
+      const chosenWrapper = wrappers.find((w) => w.id === isaChoice);
+      if (chosenWrapper?.isaKind === "stocks-shares-isa") {
+        data.isaKind = "stocks-shares-isa";
+      }
+      data.parentId = isaChoice;
     } else if (isaEligible && isaChoice) {
       data.isaKind = isaChoice;
       data.flexible = flexible;
@@ -141,6 +154,12 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
             {TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
           </select>
         </Field>
+        {isWrapper && (
+          <label className="flex items-center gap-2" style={{ fontSize: 13, color: C.inkSoft }}>
+            <input type="checkbox" checked={isaChoice === "stocks-shares-isa"} onChange={(e) => setIsaChoice(e.target.checked ? "stocks-shares-isa" : "")} />
+            This is a Stocks &amp; Shares ISA
+          </label>
+        )}
 
         {!isWrapper && type === "investment" && (
           <Field label="Symbol">
@@ -204,9 +223,9 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
         )}
 
         {!isWrapper && (type === "asset" || type === "investment") && (
-          <Field label="ISA">
+          <Field label={type === "investment" ? "Wrapper" : "ISA"}>
             <select value={isaChoice} onChange={(e) => setIsaChoice(e.target.value)} style={inputStyle} disabled={!!initial.isaParentPreset}>
-              <option value="">Not an ISA</option>
+              {type !== "investment" && <option value="">Not an ISA</option>}
               {type === "asset" && ISA_KINDS.filter((k) => k.key !== "stocks-shares-isa").map((k) => (
                 <option key={k.key} value={k.key}>{k.label}</option>
               ))}
@@ -215,7 +234,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
               ))}
             </select>
             {type === "investment" && wrappers.length === 0 && (
-              <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 4 }}>Create a Stocks & Shares ISA wrapper first to hold this as a subaccount.</div>
+              <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 4 }}>Create an investment wrapper first — every stock/share account must belong to one.</div>
             )}
           </Field>
         )}

@@ -3,11 +3,12 @@ import { C } from "../lib/theme";
 import { fmt, fmtUnits, displayAccountName } from "../lib/format";
 
 /* ---------------------------------------------------------
-   ISA parent (Stocks & Shares ISA wrapper) — holds no ledger of its own,
-   just groups its cash and stock subaccounts.
+   Investment wrapper (Stocks & Shares ISA or a plain organizational
+   grouping) — holds no ledger of its own, just groups its cash and stock
+   subaccounts.
 --------------------------------------------------------- */
 export function IsaParentView({ account, accounts, symbols, onEditAccount, onSelect, onNewSubaccount }) {
-  const subs = accounts.filter((a) => a.isaParentId === account.id);
+  const subs = accounts.filter((a) => a.parentId === account.id);
   const cashSubs = subs.filter((a) => a.type === "asset");
   const stockSubs = subs.filter((a) => a.type === "investment");
 
@@ -15,11 +16,11 @@ export function IsaParentView({ account, accounts, symbols, onEditAccount, onSel
     <div>
       <div className="flex items-start justify-between mb-5">
         <div>
-          <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>Stocks & Shares ISA</div>
+          <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>{account.isaKind === "stocks-shares-isa" ? "Stocks & Shares ISA" : "Investment wrapper"}</div>
           <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{displayAccountName(account)}</h2>
           <div style={{ fontSize: 13, color: C.inkFaint, marginTop: 6 }}>{subs.length} subaccount{subs.length === 1 ? "" : "s"}</div>
         </div>
-        <button onClick={onEditAccount} className="px-3 py-1.5 rounded" style={{ border: `1px solid ${C.line}`, fontSize: 13 }}>Edit ISA</button>
+        <button onClick={onEditAccount} className="px-3 py-1.5 rounded" style={{ border: `1px solid ${C.line}`, fontSize: 13 }}>Edit</button>
       </div>
 
       <div className="mb-6">

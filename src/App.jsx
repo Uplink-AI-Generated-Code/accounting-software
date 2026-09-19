@@ -250,8 +250,8 @@ export default function App() {
   // subaccounts it groups. balance/portfolioValue are computed server-side
   // now (see GET /api/accounts) rather than derived here.
   function accountDisplay(a) {
-    if (a.type === "isa-parent") {
-      const n = accounts.filter((x) => x.isaParentId === a.id).length;
+    if (a.type === "investment-parent") {
+      const n = accounts.filter((x) => x.parentId === a.id).length;
       return `${n} subaccount${n === 1 ? "" : "s"}`;
     }
     const bal = a.balance || 0;
@@ -275,9 +275,9 @@ export default function App() {
   }
 
   function requestDeleteAccount(id) {
-    const hasSubaccounts = accounts.some((a) => a.isaParentId === id);
+    const hasSubaccounts = accounts.some((a) => a.parentId === id);
     if (hasSubaccounts) {
-      setError("Can't delete an ISA that still has subaccounts. Delete those first.");
+      setError("Can't delete a wrapper account that still has subaccounts. Delete those first.");
       return;
     }
     const acc = accounts.find((a) => a.id === id);
@@ -498,7 +498,7 @@ export default function App() {
           ) : showAllowance ? (
             <AllowanceView accounts={accounts} settings={settings} onSaveSettings={saveSettings} onSelect={setSelectedId} activeTaxYearStart={activeTaxYearStart} />
           ) : selected ? (
-            selected.type === "isa-parent" ? (
+            selected.type === "investment-parent" ? (
               <IsaParentView
                 account={selected}
                 accounts={accounts}

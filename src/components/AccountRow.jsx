@@ -5,7 +5,7 @@ import { fmt, fmtUnits, displayAccountName } from "../lib/format";
 // One line per account in the chart of accounts — replaces the earlier
 // card grid (AccountCard) specifically to fit far more accounts in the
 // same vertical space after importing a large chart (see CLAUDE.md's
-// project history). Same three balance shapes as before (isa-parent's
+// project history). Same three balance shapes as before (investment-parent's
 // subaccount count, investment's units+value, everything else's plain
 // balance), just laid out on one row instead of stacked across a card.
 // `subtitle` is only passed by the search-results view — the matched
@@ -77,8 +77,8 @@ export function AccountRow({ a, accounts, symbols, onSelect, subtitle, groupLeve
             <span style={{ color: C.inkFaint }}>· {a.imbalancedLineCount}</span>
           </span>
         )}
-        {a.type === "isa-parent" ? (
-          <span style={{ color: C.inkFaint }}>{accounts.filter((x) => x.isaParentId === a.id).length} subaccounts</span>
+        {a.type === "investment-parent" ? (
+          <span style={{ color: C.inkFaint }}>{accounts.filter((x) => x.parentId === a.id).length} subaccounts</span>
         ) : a.type === "investment" ? (
           <>
             <span style={{ color: C.inkFaint }}>{fmtUnits(a.balance || 0, a.symbol)} units</span>
