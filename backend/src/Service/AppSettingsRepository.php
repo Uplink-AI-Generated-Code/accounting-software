@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
+use Symfony\Component\Yaml\Exception\ParseException;
 use Symfony\Component\Yaml\Yaml;
 
 /**
@@ -33,7 +34,17 @@ class AppSettingsRepository
             return $this->defaults();
         }
 
-        $parsed = Yaml::parseFile($path);
+        try {
+            $parsed = Yaml::parseFile($path);
+        } catch (ParseException) {
+            // A hand-edited file with a typo shouldn't crash every route
+            // (including /api/databases* — the very recovery UI this is
+            // meant to stay reachable for). Treat it like a missing file:
+            // fall back to defaults, which surfaces as the normal
+            // "no_active_database" blocking picker the user can already
+            // recover from, not an opaque stack-trace 500.
+            return $this->defaults();
+        }
 
         return \is_array($parsed) ? array_merge($this->defaults(), $parsed) : $this->defaults();
     }
@@ -80,8 +91,16 @@ class AppSettingsRepository
             $merged = array_merge($this->defaults(), \is_array($existing) ? $existing : [], $partial);
 
             $tmp = $this->filePath().'.tmp-'.bin2hex(random_bytes(4));
-            file_put_contents($tmp, Yaml::dump($merged, 4));
-            rename($tmp, $this->filePath());
+            if (false === file_put_contents($tmp, Yaml::dump($merged, 4))) {
+                @unlink($tmp);
+
+                throw new \RuntimeException(\sprintf('Could not write %s', $tmp));
+            }
+            if (!rename($tmp, $this->filePath())) {
+                @unlink($tmp);
+
+                throw new \RuntimeException(\sprintf('Could not move %s into place at %s', $tmp, $this->filePath()));
+            }
 
             return $merged;
         } finally {

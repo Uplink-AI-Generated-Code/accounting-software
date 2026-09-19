@@ -69,7 +69,11 @@ class DatabaseController
             return new JsonResponse(['error' => $error], 400);
         }
 
-        $this->appSettingsRepository->write(['activeDatabase' => $filename]);
+        try {
+            $this->appSettingsRepository->write(['activeDatabase' => $filename]);
+        } catch (\RuntimeException) {
+            return new JsonResponse(['error' => \sprintf('Could not switch to %s', $filename)], 500);
+        }
 
         return new JsonResponse($this->entryFor($filename, $filename));
     }
@@ -181,9 +185,6 @@ class DatabaseController
         }
         if (!preg_match('/^[A-Za-z0-9_.-]+\.sqlite3$/', $filename)) {
             return 'filename must be a bare *.sqlite3 name, no path separators';
-        }
-        if ('active.sqlite3' === $filename) {
-            return 'active.sqlite3 is the pointer itself, not a selectable database';
         }
         if (!file_exists($this->databasesDir().'/'.$filename)) {
             return \sprintf('%s does not exist', $filename);

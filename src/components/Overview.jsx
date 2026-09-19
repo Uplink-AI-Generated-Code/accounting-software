@@ -29,7 +29,7 @@ export function Overview({ accounts, symbols, settings, onSaveSettings, onSaveGr
   const totalsByCurrency = {};
   accounts.filter((a) => a.type !== "investment" && a.type !== "isa-parent").forEach((a) => { totalsByCurrency[a.currency] = (totalsByCurrency[a.currency] || 0) + (a.balance || 0); });
 
-  const groupLevels = settings.groupLevels || ["type"];
+  const groupLevels = (settings.groupLevels?.length ? settings.groupLevels : ["type"]);
 
   return (
     <div>

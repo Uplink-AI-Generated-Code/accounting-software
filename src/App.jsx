@@ -430,7 +430,7 @@ export default function App() {
 
           <div className="mb-3">
             <GroupLevelPicker
-              levels={settings.groupLevels || ["type"]}
+              levels={(settings.groupLevels?.length ? settings.groupLevels : ["type"])}
               onChange={(lv) => saveSettings({ groupLevels: lv })}
               saved={settings.savedGroupings}
               onSave={saveGroupingPreset}
@@ -480,7 +480,7 @@ export default function App() {
             }
             return (
               <SidebarGroupTree
-                groups={buildNestedGroups(matched, settings.groupLevels || ["type"], accounts, symbols)}
+                groups={buildNestedGroups(matched, (settings.groupLevels?.length ? settings.groupLevels : ["type"]), accounts, symbols)}
                 depth={0}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
@@ -513,7 +513,7 @@ export default function App() {
                 accounts={accounts}
                 symbols={symbols}
                 currencies={currencies}
-                groupLevels={settings.groupLevels || ["type"]}
+                groupLevels={(settings.groupLevels?.length ? settings.groupLevels : ["type"])}
                 activeTaxYearStart={activeTaxYearStart}
                 balance={selected.balance || 0}
                 knownTags={knownTags}
@@ -527,7 +527,7 @@ export default function App() {
                 accounts={accounts}
                 symbols={symbols}
                 currencies={currencies}
-                groupLevels={settings.groupLevels || ["type"]}
+                groupLevels={(settings.groupLevels?.length ? settings.groupLevels : ["type"])}
                 activeTaxYearStart={activeTaxYearStart}
                 balance={selected.balance || 0}
                 knownTags={knownTags}

@@ -28,7 +28,7 @@ use Doctrine\ORM\EntityManagerInterface;
  *
  *  - The discrete per-entity endpoints (AccountController,
  *    SettingsController, TransactionController): upsertAccount(),
- *    deleteAccount(), patchPerDatabaseSettings(), applyLedgerOperations() —
+ *    deleteAccount(), patchSettings(), applyLedgerOperations() —
  *    each one a single, independently-atomic mutation. This is the live
  *    app's normal write path.
  *  - AccountController::list()/::ledger(): accountsWithStats(),

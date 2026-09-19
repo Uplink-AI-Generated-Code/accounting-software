@@ -2,7 +2,6 @@
 
 namespace App\Doctrine;
 
-use App\Service\AppSettingsRepository;
 use Doctrine\DBAL\Driver;
 use Doctrine\DBAL\Driver\Middleware;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -19,9 +18,7 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
 class ActiveDatabaseMiddleware implements Middleware
 {
     public function __construct(
-        private readonly AppSettingsRepository $appSettingsRepository,
-        #[Autowire('%kernel.project_dir%/databases')]
-        private readonly string $databasesDir,
+        private readonly ActiveDatabasePathResolver $pathResolver,
         #[Autowire('%kernel.environment%')]
         private readonly string $environment,
     ) {
@@ -33,6 +30,6 @@ class ActiveDatabaseMiddleware implements Middleware
             return $driver;
         }
 
-        return new ActiveDatabaseDriver($driver, $this->appSettingsRepository, $this->databasesDir);
+        return new ActiveDatabaseDriver($driver, $this->pathResolver);
     }
 }

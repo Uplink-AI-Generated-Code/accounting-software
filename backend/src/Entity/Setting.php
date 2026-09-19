@@ -17,7 +17,7 @@ use Doctrine\ORM\Mapping as ORM;
 class Setting
 {
     #[ORM\Id]
-    #[ORM\Column(length: 64)]
+    #[ORM\Column(name: '`key`', length: 64)]
     private string $key;
 
     #[ORM\Column(type: 'text')]

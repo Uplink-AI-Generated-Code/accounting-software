@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Doctrine\ActiveDatabasePathResolver;
 use App\Entity\Currency;
 use App\Entity\Symbol;
 use Doctrine\DBAL\DriverManager;
@@ -25,6 +26,7 @@ class NewYearService
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly LedgerStateService $state,
+        private readonly ActiveDatabasePathResolver $pathResolver,
     ) {
     }
 
@@ -40,10 +42,7 @@ class NewYearService
      */
     public function createNextYear(string $newDbPath): array
     {
-        $sourcePath = $this->em->getConnection()->getParams()['path'] ?? null;
-        if (!\is_string($sourcePath) || '' === $sourcePath) {
-            throw new \RuntimeException('Could not determine the current database\'s file path — app:new-year only supports SQLite.');
-        }
+        $sourcePath = $this->pathResolver->resolve();
 
         if (file_exists($newDbPath)) {
             throw new \InvalidArgumentException(\sprintf('%s already exists — remove or rename it first.', $newDbPath));
