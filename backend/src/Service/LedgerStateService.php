@@ -463,20 +463,60 @@ class LedgerStateService
 
             $connection = $this->em->getConnection();
             // line_tag first — same reason as deleteTransactionLines():
-            // this app never enables SQLite's foreign_keys pragma, so
-            // ON DELETE CASCADE on line_tag never fires on its own.
+            // even though SQLite's foreign_keys pragma is now enforced
+            // everywhere (see ForeignKeysMiddleware), so ON DELETE CASCADE
+            // on line_tag does fire on its own now, this explicit delete is
+            // kept for clarity/defense-in-depth rather than relied upon
+            // implicitly.
             $connection->executeStatement('DELETE FROM line_tag');
             $connection->executeStatement('DELETE FROM line');
             $connection->executeStatement('DELETE FROM transactions');
             $connection->executeStatement('DELETE FROM account');
 
+            // Two passes: an import file has no guaranteed ordering (a
+            // hand-authored or externally-produced one especially — see
+            // ImportLocalStorageCommand), so a child account can appear
+            // before its own parent in $accountsData. The first pass
+            // builds every Account object with its scalar fields — but no
+            // `parent` set, and *not yet persisted or flushed* — into an
+            // in-memory map keyed by id, so every account (however ordered
+            // in the input) is resolvable by the second pass, which wires
+            // up `parent` and re-validates the investment-requires-parent
+            // rule now that the full set is known. Only then are all the
+            // accounts persisted and flushed together, in one INSERT batch
+            // that already carries the right `parent_id` on every row —
+            // this has to happen in this order (build+link, then
+            // persist+flush), not persist-then-link-then-flush, because
+            // the schema's own `CHECK (type != 'investment' OR parent_id
+            // IS NOT NULL)` is enforced per-row at INSERT time: an
+            // investment account inserted with a still-null parent_id
+            // (to be filled in by a second flush) would violate it
+            // immediately, even though the batch as a whole is
+            // consistent. hydrateAccount() itself keeps resolving/
+            // validating parent immediately for the single-account
+            // `upsertAccount()` path, which never has this ordering
+            // problem (a client can't reference an unpersisted account).
             $accountsById = [];
             foreach ($accountsData as $data) {
-                $account = $this->hydrateAccount(new Account(), $data);
+                $account = $this->hydrateAccount(new Account(), $data, withParent: false);
                 $account->setId((string) $data['id']);
-                $this->em->persist($account);
                 $accountsById[$account->getId()] = $account;
             }
+
+            foreach ($accountsData as $data) {
+                $account = $accountsById[(string) $data['id']];
+                $parent = $this->resolveParentFromBatch($data['parentId'] ?? null, $accountsById);
+                $account->setParent($parent);
+
+                if ('investment' === $account->getType() && null === $parent) {
+                    throw new \InvalidArgumentException('An investment account must have a parent wrapper.');
+                }
+            }
+
+            foreach ($accountsById as $account) {
+                $this->em->persist($account);
+            }
+            $this->em->flush();
 
             foreach ($recordsData as $data) {
                 $transactionId = $data['transactionId'] ?? null;
@@ -735,13 +775,13 @@ class LedgerStateService
      * A bulk DQL DELETE bypasses the UnitOfWork entirely, so it does
      * *not* clean up `line_tag` the way removing a Line entity normally
      * would (see opDeleteLine(), which uses `$em->remove()` and gets this
-     * for free) — and SQLite's `ON DELETE CASCADE` on `line_tag` can't
-     * cover it either, since this app never enables SQLite's
-     * `foreign_keys` pragma, making those clauses declarative only. Every
-     * linked-transaction edit goes through opUpsertTransaction(), which
-     * calls this before recreating the lines, so without this explicit
-     * cleanup `line_tag` would accumulate an orphaned row on every single
-     * edit of a tagged linked entry.
+     * for free). SQLite's `ON DELETE CASCADE` on `line_tag` *would* now
+     * cover it on its own — `foreign_keys` enforcement is on everywhere
+     * as of ForeignKeysMiddleware — but this explicit cleanup is kept
+     * anyway for clarity/defense-in-depth rather than relying on the
+     * cascade implicitly. Every linked-transaction edit goes through
+     * opUpsertTransaction(), which calls this before recreating the
+     * lines.
      */
     private function deleteTransactionLines(string $transactionId): void
     {
@@ -777,8 +817,15 @@ class LedgerStateService
         }
     }
 
-    /** @param array<string, mixed> $data */
-    private function hydrateAccount(Account $account, array $data): Account
+    /**
+     * @param array<string, mixed> $data
+     * @param bool                 $withParent when false, skips resolving/setting
+     *                                         `parent` and the investment-requires-parent
+     *                                         check — used by writeState()'s first pass,
+     *                                         which completes both once every account in
+     *                                         the batch has been persisted (see there)
+     */
+    private function hydrateAccount(Account $account, array $data, bool $withParent = true): Account
     {
         $account->setName((string) $data['name']);
         $account->setType((string) $data['type']);
@@ -790,6 +837,11 @@ class LedgerStateService
         $account->setSubtype(isset($data['subtype']) ? (string) $data['subtype'] : null);
         $account->setIsaKind($data['isaKind'] ?? null);
         $account->setFlexible(isset($data['flexible']) ? (bool) $data['flexible'] : null);
+
+        if (!$withParent) {
+            return $account;
+        }
+
         $account->setParent($this->resolveParent($data['parentId'] ?? null));
 
         if ('investment' === $account->getType() && null === $account->getParent()) {
@@ -849,6 +901,28 @@ class LedgerStateService
             return null;
         }
         $parent = $this->em->getRepository(Account::class)->find((string) $id);
+        if (!$parent) {
+            throw new \InvalidArgumentException(sprintf('Unknown parent account "%s".', $id));
+        }
+
+        return $parent;
+    }
+
+    /**
+     * writeState()'s order-independent counterpart to resolveParent(): looks
+     * the parent up in the batch's own in-memory map (every Account object
+     * built for this import, keyed by id — not yet persisted) rather than
+     * querying the repository, since the parent may appear later than the
+     * child in $accountsData's own order.
+     *
+     * @param array<string, Account> $accountsById
+     */
+    private function resolveParentFromBatch(mixed $id, array $accountsById): ?Account
+    {
+        if (null === $id || '' === $id) {
+            return null;
+        }
+        $parent = $accountsById[(string) $id] ?? null;
         if (!$parent) {
             throw new \InvalidArgumentException(sprintf('Unknown parent account "%s".', $id));
         }

@@ -17,8 +17,27 @@ final class Version20260919194846 extends AbstractMigration
         return 'Generalize isa-parent into investment-parent (rename isa_parent_id to parent_id, make it a real enforced FK), and require every investment account to have a parent (CHECK constraint) — see docs/superpowers/specs/2026-09-19-generalized-investment-parent-design.md';
     }
 
+    /**
+     * SQLite's `DROP TABLE account` (part of the temp-table-rebuild pattern below)
+     * performs an implicit `DELETE FROM account` before dropping the table. With
+     * `foreign_keys` enforcement on (see ForeignKeysMiddleware), `line.account_id`'s
+     * `ON DELETE CASCADE` would fire on that implicit delete and wipe every `line`
+     * row in the database. `PRAGMA foreign_keys` is also a documented no-op inside
+     * an active transaction in SQLite, so this migration must run non-transactionally
+     * and toggle the pragma itself around the rebuild.
+     */
+    public function isTransactional(): bool
+    {
+        return false;
+    }
+
     public function up(Schema $schema): void
     {
+        // Queued via addSql (not executed immediately), so it runs in the correct
+        // order relative to every other addSql'd statement below — the migrator
+        // executes all of $plannedSql, in the order added, only after up() returns.
+        $this->addSql('PRAGMA foreign_keys = OFF');
+
         $this->addSql("UPDATE account SET type = 'investment-parent' WHERE type = 'isa-parent'");
         $this->addSql("UPDATE account SET isa_kind = 'stocks-shares-isa' WHERE type = 'investment-parent'");
         $this->addSql('CREATE TEMPORARY TABLE __temp__account AS SELECT id, name, type, currency, opening_balance, symbol, counterparty, isa_kind, isa_parent_id, flexible, subtype, opening_balance_cash_value FROM account');
@@ -30,10 +49,15 @@ final class Version20260919194846 extends AbstractMigration
         $this->addSql('CREATE INDEX IDX_7D3656A4ECC836F9 ON account (symbol)');
         $this->addSql('CREATE INDEX IDX_7D3656A46956883F ON account (currency)');
         $this->addSql('CREATE INDEX IDX_7D3656A4727ACA70 ON account (parent_id)');
+
+        $this->addSql('PRAGMA foreign_key_check');
+        $this->addSql('PRAGMA foreign_keys = ON');
     }
 
     public function down(Schema $schema): void
     {
+        $this->addSql('PRAGMA foreign_keys = OFF');
+
         // this down() migration is auto-generated, please modify it to your needs
         $this->addSql('CREATE TEMPORARY TABLE __temp__account AS SELECT id, name, type, opening_balance, opening_balance_cash_value, subtype, isa_kind, flexible, currency, symbol, counterparty, parent_id FROM account');
         $this->addSql('DROP TABLE account');
@@ -43,5 +67,8 @@ final class Version20260919194846 extends AbstractMigration
         $this->addSql('CREATE INDEX IDX_7D3656A46956883F ON account (currency)');
         $this->addSql('CREATE INDEX IDX_7D3656A4ECC836F9 ON account (symbol)');
         $this->addSql('CREATE INDEX IDX_7D3656A49B3DE79C ON account (counterparty)');
+
+        $this->addSql('PRAGMA foreign_key_check');
+        $this->addSql('PRAGMA foreign_keys = ON');
     }
 }

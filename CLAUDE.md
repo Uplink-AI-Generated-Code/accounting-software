@@ -96,7 +96,30 @@ SQLite. All commands run from `backend/`.
 - Apply migrations: `php bin/console doctrine:migrations:migrate`
 - After changing an entity: `php bin/console doctrine:migrations:diff` to
   generate the migration, then `migrate` as above — never hand-edit the
-  SQLite schema directly.
+  SQLite schema directly. **Any generated migration containing `DROP
+  TABLE`** (the temp-table-rebuild pattern Doctrine emits whenever a
+  column changes on SQLite) **must disable the `foreign_keys` pragma
+  around the rebuild, then re-enable it with a `PRAGMA foreign_key_check`
+  in between** — now that `foreign_keys` enforcement is on in every
+  environment (see `ForeignKeysMiddleware` under "Backend" below),
+  SQLite's `DROP TABLE` performs an implicit `DELETE FROM <table>` first,
+  which fires any `ON DELETE CASCADE` pointing at that table and can
+  silently wipe dependent rows (this is exactly what happened to every
+  `line` row via `line.account_id`'s cascade in
+  `Version20260919194846.php` before it was fixed). `PRAGMA
+  foreign_keys` is a documented no-op inside an active transaction in
+  SQLite, so the migration also needs `isTransactional(): bool { return
+  false; }`, and the pragma statements must go through `$this->addSql()`
+  like every other statement, not a direct
+  `$this->connection->executeStatement()` call — `addSql()` only queues
+  SQL into `$plannedSql`, executed by the migrator in order *after*
+  `up()`/`down()` returns, so a pragma toggled via `executeStatement()`
+  runs at the wrong time (immediately, interleaved with nothing) instead
+  of bracketing the queued `DROP TABLE`/`CREATE TABLE`/`INSERT` sequence
+  the way it needs to. Verify empirically against a copy of a real
+  database (never the live file — see the testing-isolation memory) by
+  running the actual `doctrine:migrations:migrate` command and comparing
+  row counts before/after, not just by reasoning about the SQL.
 - One-time import of existing browser data: export it from devtools
   (`copy(localStorage.getItem('ledger-storage:personal:ledger-data'))`),
   save it as a JSON file, then `php bin/console app:import-local-storage

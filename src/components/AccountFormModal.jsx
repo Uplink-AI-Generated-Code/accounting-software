@@ -68,6 +68,10 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
   const [newSymbolCurrency, setNewSymbolCurrency] = useState(currencies[0]?.code || "GBP");
   const [symbolError, setSymbolError] = useState("");
   const [creatingSymbol, setCreatingSymbol] = useState(false);
+  // Only surfaced after a failed Save (see submit()'s "investment without a
+  // chosen wrapper" guard below) — not on first render, since a brand-new
+  // investment account naturally starts with no wrapper chosen yet.
+  const [attemptedSubmit, setAttemptedSubmit] = useState(false);
 
   function submitNewSymbol() {
     const ticker = newTicker.trim().toUpperCase();
@@ -94,7 +98,10 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
     // Name is optional — see displayAccountName() in lib/format.js for
     // the Subtype/Counterparty-based fallback shown when it's blank.
     if (type === "investment" && !symbol.trim()) return;
-    if (type === "investment" && !isSubaccount) return;
+    if (type === "investment" && !isSubaccount) {
+      setAttemptedSubmit(true);
+      return;
+    }
     const data = {
       id: initial.id,
       name: name.trim(),
@@ -150,7 +157,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
           </Field>
         )}
         <Field label="Type">
-          <select value={type} onChange={(e) => { setType(e.target.value); setIsaChoice(""); }} style={inputStyle} disabled={!!initial.typePreset}>
+          <select value={type} onChange={(e) => { setType(e.target.value); setIsaChoice(""); setAttemptedSubmit(false); }} style={inputStyle} disabled={!!initial.typePreset}>
             {TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
           </select>
         </Field>
@@ -224,7 +231,8 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
 
         {!isWrapper && (type === "asset" || type === "investment") && (
           <Field label={type === "investment" ? "Wrapper" : "ISA"}>
-            <select value={isaChoice} onChange={(e) => setIsaChoice(e.target.value)} style={inputStyle} disabled={!!initial.isaParentPreset}>
+            <select value={isaChoice} onChange={(e) => { setIsaChoice(e.target.value); setAttemptedSubmit(false); }} style={inputStyle} disabled={!!initial.isaParentPreset}>
+              {type === "investment" && <option value="">Select a wrapper…</option>}
               {type !== "investment" && <option value="">Not an ISA</option>}
               {type === "asset" && ISA_KINDS.filter((k) => k.key !== "stocks-shares-isa").map((k) => (
                 <option key={k.key} value={k.key}>{k.label}</option>
@@ -235,6 +243,9 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
             </select>
             {type === "investment" && wrappers.length === 0 && (
               <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 4 }}>Create an investment wrapper first — every stock/share account must belong to one.</div>
+            )}
+            {type === "investment" && wrappers.length > 0 && !isSubaccount && attemptedSubmit && (
+              <div style={{ fontSize: 11.5, color: C.debit, marginTop: 4 }}>Select a wrapper before saving — every stock/share account must belong to one.</div>
             )}
           </Field>
         )}

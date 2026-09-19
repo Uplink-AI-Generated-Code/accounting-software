@@ -98,6 +98,7 @@ class ImportLocalStorageCommand extends Command
 
             return Command::FAILURE;
         }
+        $accounts = $this->upgradeLegacyAccountShape($accounts);
 
         if (isset($data['records']) && \is_array($data['records'])) {
             $records = $data['records'];
@@ -162,5 +163,47 @@ class ImportLocalStorageCommand extends Command
                 'lines' => $lines,
             ];
         }, $transactions);
+    }
+
+    /**
+     * Upgrades every account's shape from before the isa-parent →
+     * investment-parent generalization (see CLAUDE.md): a wrapper account
+     * used to be `type: "isa-parent"` with subaccounts pointing at it via
+     * `isaParentId`; it's now `type: "investment-parent"` (with an
+     * `isaKind` of "stocks-shares-isa", since every pre-existing wrapper
+     * was implicitly a Stocks & Shares ISA — there was no other kind yet)
+     * and subaccounts point at it via `parentId`. Without this,
+     * LedgerStateService::hydrateAccount() either hard-throws on an
+     * investment subaccount (it only reads `parentId`, which a legacy
+     * export never has) or silently drops an asset subaccount's wrapper
+     * link, and the wrapper itself would import as an orphaned,
+     * unrecognized `type: "isa-parent"` row. A no-op on any export already
+     * in the current shape (no `isa-parent` type, no `isaParentId` key).
+     *
+     * @param array<int, array<string, mixed>> $accounts
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function upgradeLegacyAccountShape(array $accounts): array
+    {
+        return array_map(static function ($a) {
+            if (!\is_array($a)) {
+                return $a;
+            }
+
+            if ('isa-parent' === ($a['type'] ?? null)) {
+                $a['type'] = 'investment-parent';
+                $a['isaKind'] = $a['isaKind'] ?? 'stocks-shares-isa';
+            }
+
+            if (\array_key_exists('isaParentId', $a)) {
+                if (!\array_key_exists('parentId', $a)) {
+                    $a['parentId'] = $a['isaParentId'];
+                }
+                unset($a['isaParentId']);
+            }
+
+            return $a;
+        }, $accounts);
     }
 }
