@@ -78,7 +78,7 @@ class IsaAllowanceServiceTest extends KernelTestCase
         $a->setCurrency($this->em->getRepository(Currency::class)->find($overrides['currency'] ?? 'GBP'));
         $a->setOpeningBalance($overrides['openingBalance'] ?? 0);
         $a->setIsaKind($overrides['isaKind'] ?? null);
-        $a->setIsaParentId($overrides['isaParentId'] ?? null);
+        $a->setParent($overrides['parent'] ?? null);
         $a->setFlexible($overrides['flexible'] ?? null);
         $this->em->persist($a);
 
@@ -135,11 +135,11 @@ class IsaAllowanceServiceTest extends KernelTestCase
 
     public function testStandaloneInvestmentLineInsideIsaWrapperUsesCashValueNotUnits(): void
     {
-        $wrapper = $this->makeAccount('isaWrapper', ['type' => 'isa-parent', 'flexible' => false]);
+        $wrapper = $this->makeAccount('isaWrapper', ['type' => 'investment-parent', 'isaKind' => 'stocks-shares-isa', 'flexible' => false]);
         $symbol = $this->ensureSymbol('ACME');
         $holding = $this->makeAccount('isaHolding', [
             'type' => 'investment',
-            'isaParentId' => 'isaWrapper',
+            'parent' => $wrapper,
         ]);
         $holding->setSymbol($symbol);
 

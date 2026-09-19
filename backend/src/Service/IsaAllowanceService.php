@@ -211,10 +211,10 @@ class IsaAllowanceService
     {
         $products = [];
         foreach ($accounts as $a) {
-            if ('isa-parent' === $a['type']) {
+            if ('investment-parent' === $a['type'] && 'stocks-shares-isa' === ($a['isaKind'] ?? null)) {
                 $childIds = array_values(array_map(
                     static fn ($x) => $x['id'],
-                    array_filter($accounts, static fn ($x) => ($x['isaParentId'] ?? null) === $a['id'])
+                    array_filter($accounts, static fn ($x) => ($x['parentId'] ?? null) === $a['id'])
                 ));
                 $products[] = [
                     'accountId' => $a['id'],
