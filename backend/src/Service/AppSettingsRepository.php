@@ -45,6 +45,10 @@ class AppSettingsRepository
      * silently clobber each other: the second writer's read happens
      * *after* the first writer's write completes, not before it.
      *
+     * Uses a separate, never-renamed lock file to serialize writers,
+     * since flock() on a file that gets rename()'d underneath doesn't
+     * work: the lock ends up bound to the old inode, not the new content.
+     *
      * @param array<string, mixed> $partial
      *
      * @return array{activeDatabase: ?string, groupLevels: array<int, string>, savedGroupings: array<int, array{id: string, levels: array<int, string>}>}
@@ -56,17 +60,22 @@ class AppSettingsRepository
             throw new \RuntimeException(\sprintf('Could not create %s', $dir));
         }
 
-        $handle = fopen($this->filePath(), 'c+');
-        if (false === $handle) {
-            throw new \RuntimeException(\sprintf('Could not open %s', $this->filePath()));
+        $lockHandle = fopen($this->lockFilePath(), 'c+');
+        if (false === $lockHandle) {
+            throw new \RuntimeException(\sprintf('Could not open lock file %s', $this->lockFilePath()));
         }
 
         try {
-            if (!flock($handle, \LOCK_EX)) {
-                throw new \RuntimeException(\sprintf('Could not lock %s', $this->filePath()));
+            if (!flock($lockHandle, \LOCK_EX)) {
+                throw new \RuntimeException(\sprintf('Could not lock %s', $this->lockFilePath()));
             }
 
-            $existingRaw = stream_get_contents($handle);
+            // Now that we hold the lock on a stable inode (the lock file),
+            // read the data file's current content.
+            $existingRaw = '';
+            if (file_exists($this->filePath())) {
+                $existingRaw = file_get_contents($this->filePath());
+            }
             $existing = '' !== $existingRaw ? Yaml::parse($existingRaw) : null;
             $merged = array_merge($this->defaults(), \is_array($existing) ? $existing : [], $partial);
 
@@ -76,14 +85,19 @@ class AppSettingsRepository
 
             return $merged;
         } finally {
-            flock($handle, \LOCK_UN);
-            fclose($handle);
+            flock($lockHandle, \LOCK_UN);
+            fclose($lockHandle);
         }
     }
 
     private function filePath(): string
     {
         return $this->projectDir.'/databases/app-settings.yaml';
+    }
+
+    private function lockFilePath(): string
+    {
+        return $this->filePath().'.lock';
     }
 
     /** @return array{activeDatabase: ?string, groupLevels: array<int, string>, savedGroupings: array<int, array{id: string, levels: array<int, string>}>} */
