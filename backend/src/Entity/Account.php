@@ -76,8 +76,14 @@ class Account
     #[ORM\Column(nullable: true)]
     private ?int $openingBalanceCashValue = null;
 
+    // Two join columns, not one — Symbol's primary key is now the pair
+    // (ticker, tradingCurrency), so referencing one requires both. Kept
+    // nullable together (an account either has a symbol or it doesn't —
+    // see the CHECK constraint added in this same migration, which
+    // enforces that in the database too).
     #[ORM\ManyToOne(targetEntity: Symbol::class)]
-    #[ORM\JoinColumn(name: 'symbol', referencedColumnName: 'ticker', nullable: true)]
+    #[ORM\JoinColumn(name: 'symbol_ticker', referencedColumnName: 'ticker', nullable: true)]
+    #[ORM\JoinColumn(name: 'symbol_currency', referencedColumnName: 'trading_currency', nullable: true)]
     private ?Symbol $symbol = null;
 
     #[ORM\ManyToOne(targetEntity: Counterparty::class)]

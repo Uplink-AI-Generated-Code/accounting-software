@@ -13,6 +13,17 @@ use Doctrine\ORM\Mapping as ORM;
  * is here rather than on Account because a given ticker always trades in
  * one currency; an investment Account's own `currency` field is unused
  * once it has a `symbol` — see Account.php's docblock.
+ *
+ * Primary key is the pair `(ticker, tradingCurrency)`, not `ticker`
+ * alone — mirroring `Tag`'s existing `(dimension, value)` composite key
+ * (see CLAUDE.md's "Tags" section) — so the same ticker can exist more
+ * than once, one row per trading currency it's actually traded in (e.g.
+ * "AAPL" on Nasdaq in USD and "AAPL" as an LSE-listed line in GBP are two
+ * separate Symbol rows). `tradingCurrency` is therefore immutable once
+ * set: changing it would mean changing part of the row's own identity,
+ * which is a new row, not an edit — see LedgerStateService's rescale
+ * operation and the admin endpoints for what *is* editable (`name`,
+ * `scale`).
  */
 #[ORM\Entity(repositoryClass: SymbolRepository::class)]
 class Symbol
@@ -21,15 +32,21 @@ class Symbol
     #[ORM\Column(length: 32)]
     private string $ticker;
 
+    // Part of the identity, not an ordinary field — see the class
+    // docblock. Set once via setTradingCurrency() immediately after
+    // construction (before the first persist()); there is deliberately
+    // no way to change it on an existing row. `nullable: false` since a
+    // Symbol without a trading currency has no meaningful identity.
+    #[ORM\Id]
+    #[ORM\ManyToOne(targetEntity: Currency::class)]
+    #[ORM\JoinColumn(name: 'trading_currency', referencedColumnName: 'code', nullable: false)]
+    private Currency $tradingCurrency;
+
     #[ORM\Column(length: 255)]
     private string $name;
 
     #[ORM\Column]
     private int $scale;
-
-    #[ORM\ManyToOne(targetEntity: Currency::class)]
-    #[ORM\JoinColumn(name: 'trading_currency', referencedColumnName: 'code', nullable: false)]
-    private Currency $tradingCurrency;
 
     public function getTicker(): string
     {
@@ -39,6 +56,18 @@ class Symbol
     public function setTicker(string $ticker): static
     {
         $this->ticker = $ticker;
+
+        return $this;
+    }
+
+    public function getTradingCurrency(): Currency
+    {
+        return $this->tradingCurrency;
+    }
+
+    public function setTradingCurrency(Currency $tradingCurrency): static
+    {
+        $this->tradingCurrency = $tradingCurrency;
 
         return $this;
     }
@@ -63,18 +92,6 @@ class Symbol
     public function setScale(int $scale): static
     {
         $this->scale = $scale;
-
-        return $this;
-    }
-
-    public function getTradingCurrency(): Currency
-    {
-        return $this->tradingCurrency;
-    }
-
-    public function setTradingCurrency(Currency $tradingCurrency): static
-    {
-        $this->tradingCurrency = $tradingCurrency;
 
         return $this;
     }

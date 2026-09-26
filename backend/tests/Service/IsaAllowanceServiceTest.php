@@ -55,13 +55,14 @@ class IsaAllowanceServiceTest extends KernelTestCase
 
     private function ensureSymbol(string $ticker, string $tradingCurrency = 'GBP', int $scale = 1000000): Symbol
     {
-        $symbol = $this->em->getRepository(Symbol::class)->find($ticker);
+        $currency = $this->em->getRepository(Currency::class)->find($tradingCurrency);
+        $symbol = $this->em->getRepository(Symbol::class)->find(['ticker' => $ticker, 'tradingCurrency' => $currency]);
         if (!$symbol) {
             $symbol = (new Symbol())
                 ->setTicker($ticker)
                 ->setName($ticker)
                 ->setScale($scale)
-                ->setTradingCurrency($this->em->getRepository(Currency::class)->find($tradingCurrency));
+                ->setTradingCurrency($currency);
             $this->em->persist($symbol);
             $this->em->flush();
         }

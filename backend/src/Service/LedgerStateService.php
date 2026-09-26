@@ -832,7 +832,7 @@ class LedgerStateService
         $account->setCurrency($this->resolveCurrency($data['currency'] ?? null));
         $account->setOpeningBalance(isset($data['openingBalance']) ? (int) $data['openingBalance'] : null);
         $account->setOpeningBalanceCashValue(isset($data['openingBalanceCashValue']) ? (int) $data['openingBalanceCashValue'] : null);
-        $account->setSymbol($this->resolveSymbol($data['symbol'] ?? null));
+        $account->setSymbol($this->resolveSymbol($data['symbolTicker'] ?? null, $data['symbolCurrency'] ?? null));
         $account->setCounterparty($this->resolveCounterparty($data['counterparty'] ?? null));
         $account->setSubtype(isset($data['subtype']) ? (string) $data['subtype'] : null);
         $account->setIsaKind($data['isaKind'] ?? null);
@@ -882,14 +882,18 @@ class LedgerStateService
         return $currency;
     }
 
-    private function resolveSymbol(mixed $ticker): ?Symbol
+    private function resolveSymbol(mixed $ticker, mixed $tradingCurrencyCode): ?Symbol
     {
         if (null === $ticker || '' === $ticker) {
             return null;
         }
-        $symbol = $this->em->getRepository(Symbol::class)->find((string) $ticker);
+        $currency = $this->resolveCurrency($tradingCurrencyCode);
+        if (!$currency) {
+            throw new \InvalidArgumentException('A symbol reference requires its trading currency.');
+        }
+        $symbol = $this->em->getRepository(Symbol::class)->find(['ticker' => (string) $ticker, 'tradingCurrency' => $currency]);
         if (!$symbol) {
-            throw new \InvalidArgumentException(sprintf('Unknown symbol "%s".', $ticker));
+            throw new \InvalidArgumentException(sprintf('Unknown symbol "%s" in %s.', $ticker, $tradingCurrencyCode));
         }
 
         return $symbol;
@@ -1094,7 +1098,8 @@ class LedgerStateService
             'currency' => $a->getCurrency()?->getCode(),
             'openingBalance' => $a->getOpeningBalance(),
             'openingBalanceCashValue' => $a->getOpeningBalanceCashValue(),
-            'symbol' => $a->getSymbol()?->getTicker(),
+            'symbolTicker' => $a->getSymbol()?->getTicker(),
+            'symbolCurrency' => $a->getSymbol()?->getTradingCurrency()->getCode(),
             'counterparty' => $a->getCounterparty()?->getName(),
             'subtype' => $a->getSubtype(),
             'isaKind' => $a->getIsaKind(),
