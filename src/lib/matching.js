@@ -1,4 +1,5 @@
-import { fmt, fmtUnits } from "./format";
+import { fmt, fmtUnits, scaleForCurrency } from "./format";
+import { fromMinorUnits } from "./scale";
 import { symbolKey } from "./symbolKey";
 
 // getComparableAmount/getDirectComparableAmount — the mirrored-vs-natural
@@ -75,12 +76,25 @@ export function balanceHint(lines, accounts) {
   if (curs.length === 2 && enriched.length === 2) {
     const [a, b] = enriched;
     if (Math.sign(a.value) !== Math.sign(b.value)) {
-      // A ratio between two different currencies' scaled integers is
-      // legitimately a display-only float here — it's never persisted or
-      // round-tripped, just shown once as an FX rate, so this is exempt
-      // from the "no floats" rule the actual stored amounts follow.
-      const rate = Math.abs(b.value / a.value);
-      return { type: "fx", message: `Exchange — implied rate 1 ${a.currency} = ${rate.toFixed(4)} ${b.currency}` };
+      // A ratio between two different currencies' *natural* decimal
+      // values is legitimately a display-only float here — it's never
+      // persisted or round-tripped, just shown once as an FX rate, so
+      // this is exempt from the "no floats" rule the actual stored
+      // amounts follow. Each side's raw scaled integer must be converted
+      // through its OWN currency's scale first — dividing the raw
+      // integers directly (as this used to) silently assumes both sides
+      // share one scale, which is wrong the moment one leg is, say, BTC
+      // (scale 8) and the other GBP (scale 2): off by a factor of 10^6.
+      const realA = Number(fromMinorUnits(a.value, scaleForCurrency(a.currency)));
+      const realB = Number(fromMinorUnits(b.value, scaleForCurrency(b.currency)));
+      const rate = Math.abs(realB / realA);
+      // A fixed 4 decimal places reads fine for two similarly-scaled
+      // currencies but silently rounds to a meaningless "0.0000" for a
+      // pair as lopsided as BTC/GBP — significant figures stay
+      // informative at any magnitude, and toLocaleString (unlike
+      // toPrecision) never drops into exponential notation.
+      const rateStr = rate.toLocaleString("en-GB", { maximumSignificantDigits: 6, minimumSignificantDigits: 1 });
+      return { type: "fx", message: `Exchange — implied rate 1 ${a.currency} = ${rateStr} ${b.currency}` };
     }
     return { type: "unbalanced", message: "Both legs move the same direction" };
   }

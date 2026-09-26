@@ -25,7 +25,7 @@ export function setSymbolScales(symbols) {
 // fmtUnits display convention) if the registry hasn't loaded yet or the
 // code/ticker is unrecognized — better a plausible guess for one frame
 // than a crash.
-function scaleForCurrency(code) {
+export function scaleForCurrency(code) {
   return currencyScales[code] ?? 2;
 }
 function scaleForSymbol(key) {
