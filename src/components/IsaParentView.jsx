@@ -1,6 +1,7 @@
 import { Plus } from "lucide-react";
 import { C } from "../lib/theme";
 import { fmt, fmtUnits, displayAccountName } from "../lib/format";
+import { symbolKey } from "../lib/symbolKey";
 
 /* ---------------------------------------------------------
    Investment wrapper (Stocks & Shares ISA or a plain organizational
@@ -52,11 +53,11 @@ export function IsaParentView({ account, accounts, symbols, onEditAccount, onSel
         ) : (
           <div className="flex flex-col gap-1.5">
             {stockSubs.map((a) => {
-              const tradingCurrency = symbols.find((s) => s.ticker === a.symbol)?.tradingCurrency;
+              const tradingCurrency = a.symbolCurrency;
               return (
                 <button key={a.id} onClick={() => onSelect(a.id)} className="flex items-center justify-between px-3 py-2.5 rounded text-left" style={{ background: C.card, border: `1px solid ${C.line}` }}>
-                  <span style={{ fontSize: 13.5 }}>{displayAccountName(a)} <span style={{ color: C.gold, fontSize: 12 }}>{a.symbol}</span></span>
-                  <span className="ll-mono" style={{ fontSize: 13.5 }}>{fmtUnits(a.balance || 0, a.symbol)} units · {fmt(a.portfolioValue || 0, tradingCurrency)}</span>
+                  <span style={{ fontSize: 13.5 }}>{displayAccountName(a)} <span style={{ color: C.gold, fontSize: 12 }}>{a.symbolTicker}</span></span>
+                  <span className="ll-mono" style={{ fontSize: 13.5 }}>{fmtUnits(a.balance || 0, symbolKey(a.symbolTicker, a.symbolCurrency))} units · {fmt(a.portfolioValue || 0, tradingCurrency)}</span>
                 </button>
               );
             })}

@@ -6,7 +6,7 @@ import { displayAccountName } from "../lib/format";
 import { miniInput } from "./ui";
 
 function accountLabel(a) {
-  return `${displayAccountName(a)} (${a.type === "investment" ? a.symbol : a.currency})`;
+  return `${displayAccountName(a)} (${a.type === "investment" ? a.symbolTicker : a.currency})`;
 }
 
 // Recursive group renderer for browse mode (no active search) — mirrors

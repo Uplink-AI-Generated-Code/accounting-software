@@ -5,6 +5,7 @@ import { toMinorUnits, fromMinorUnits } from "../lib/scale";
 import { ModalShell, Field, inputStyle } from "./ui";
 import { createSymbol } from "../api";
 import { displayAccountName } from "../lib/format";
+import { symbolKey, parseSymbolKey } from "../lib/symbolKey";
 
 /* ---------------------------------------------------------
    Account form modal
@@ -15,7 +16,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
   const [name, setName] = useState(initial.name || "");
   const [type, setType] = useState(initial.typePreset || initial.type || "asset");
   const [currency, setCurrency] = useState(initial.currency || "GBP");
-  const [symbol, setSymbol] = useState(initial.symbol || "");
+  const [symbol, setSymbol] = useState(initial.symbolTicker && initial.symbolCurrency ? symbolKey(initial.symbolTicker, initial.symbolCurrency) : "");
   const currencyScale = currencies.find((c) => c.code === currency)?.scale ?? 2;
   const [opening, setOpening] = useState(initial.openingBalance ? fromMinorUnits(initial.openingBalance, currencyScale) : "0");
   const [flexible, setFlexible] = useState(!!initial.flexible);
@@ -56,7 +57,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
   const counterpartyLabel = isNominalType ? "Counterparty" : "Institution";
   const knownCounterparties = counterparties.map((c) => c.name).sort();
   const knownSubtypes = Array.from(new Set(accounts.map((a) => a.subtype).filter(Boolean))).sort();
-  const tradingCurrency = symbols.find((s) => s.ticker === symbol)?.tradingCurrency;
+  const tradingCurrency = symbol ? parseSymbolKey(symbol).tradingCurrency : undefined;
 
   // Symbol is a curated, closed set (LedgerStateService::resolveSymbol()
   // hard-errors on an unknown ticker) — a blank database starts with zero
@@ -86,7 +87,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
     createSymbol({ ticker, name: newSymbolName.trim(), scale, tradingCurrency: newSymbolCurrency })
       .then((created) => {
         onSymbolCreated(created);
-        setSymbol(created.ticker);
+        setSymbol(symbolKey(created.ticker, created.tradingCurrency));
         setAddingSymbol(false);
         setNewTicker("");
         setNewSymbolName("");
@@ -108,7 +109,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
       name: name.trim(),
       type,
       openingBalance: toMinorUnits(opening, currencyScale) || 0,
-      ...(type === "investment" ? { symbol: symbol.trim().toUpperCase() } : { currency }),
+      ...(type === "investment" ? { symbolTicker: parseSymbolKey(symbol).ticker, symbolCurrency: parseSymbolKey(symbol).tradingCurrency } : { currency }),
       ...(showCounterparty && counterparty.trim() ? { counterparty: counterparty.trim() } : {}),
       ...(!isWrapper && subtype.trim() ? { subtype: subtype.trim() } : {}),
     };
@@ -175,7 +176,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
               <>
                 <select value={symbol} onChange={(e) => setSymbol(e.target.value)} style={inputStyle}>
                   <option value="">Select symbol…</option>
-                  {symbols.map((s) => <option key={s.ticker} value={s.ticker}>{s.ticker} — {s.name}</option>)}
+                  {symbols.map((s) => <option key={symbolKey(s.ticker, s.tradingCurrency)} value={symbolKey(s.ticker, s.tradingCurrency)}>{s.ticker} — {s.name} ({s.tradingCurrency})</option>)}
                 </select>
                 <button
                   type="button"

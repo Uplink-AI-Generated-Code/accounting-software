@@ -14,6 +14,7 @@ import { useMatchCandidates } from "./useMatchCandidates";
 import { useLedgerRowAnimation } from "./useLedgerRowAnimation";
 import { UnitsChart } from "./charts";
 import { iconBtn, miniInput, ImbalanceBadge, TagChips, TagsEditor } from "./ui";
+import { symbolKey } from "../lib/symbolKey";
 
 /* ---------------------------------------------------------
    Stock Ledger — one account, one security. Trades are units against a
@@ -56,8 +57,8 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
   // an investment account's own `currency` field is unused, see
   // CLAUDE.md. Units are scaled by the symbol's own scale, cash by the
   // trading currency's scale — two different scales, never conflated.
-  const unitScale = symbols.find((s) => s.ticker === account.symbol)?.scale ?? 6;
-  const tradingCurrency = symbols.find((s) => s.ticker === account.symbol)?.tradingCurrency;
+  const unitScale = symbols.find((s) => s.ticker === account.symbolTicker && s.tradingCurrency === account.symbolCurrency)?.scale ?? 6;
+  const tradingCurrency = account.symbolCurrency;
   const cashScale = currencies.find((c) => c.code === tradingCurrency)?.scale ?? 2;
 
   function unitsDeltaOf(d) {
@@ -318,9 +319,9 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
           <div style={{ fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", letterSpacing: 0.8 }}>
             {["Stocks & Shares", tradingCurrency, account.counterparty, account.subtype].filter(Boolean).join(" · ")}
           </div>
-          <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{displayAccountName(account)} <span style={{ color: C.gold }}>{account.symbol}</span></h2>
+          <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{displayAccountName(account)} <span style={{ color: C.gold }}>{account.symbolTicker}</span></h2>
           <div className="ll-mono" style={{ fontSize: 22, marginTop: 6 }}>
-            {fmtUnits(balance, account.symbol)} <span style={{ fontSize: 14, color: C.inkFaint }}>units</span>
+            {fmtUnits(balance, symbolKey(account.symbolTicker, account.symbolCurrency))} <span style={{ fontSize: 14, color: C.inkFaint }}>units</span>
             <span style={{ fontSize: 15, color: C.ink, marginLeft: 10 }}>{fmt(portfolioValue, tradingCurrency)}</span>
             {avgCost !== null && <span style={{ fontSize: 13, color: C.inkFaint, marginLeft: 10 }}>avg {fmt(avgCost, tradingCurrency)}/unit</span>}
           </div>
@@ -363,9 +364,9 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
             <div className="grid items-center" style={{ gridTemplateColumns: gridCols, fontSize: 13.5, color: C.inkFaint }}>
               <div style={{ fontSize: 12.5 }}>—</div>
               <div style={{ fontStyle: "italic" }}>Opening balance</div>
-              <div className="ll-mono text-right">{account.openingBalance < 0 ? fmtUnits(-account.openingBalance, account.symbol) : "—"}</div>
-              <div className="ll-mono text-right">{account.openingBalance > 0 ? fmtUnits(account.openingBalance, account.symbol) : "—"}</div>
-              <div className="ll-mono text-right" style={{ fontWeight: 600 }}>{fmtUnits(account.openingBalance, account.symbol)}</div>
+              <div className="ll-mono text-right">{account.openingBalance < 0 ? fmtUnits(-account.openingBalance, symbolKey(account.symbolTicker, account.symbolCurrency)) : "—"}</div>
+              <div className="ll-mono text-right">{account.openingBalance > 0 ? fmtUnits(account.openingBalance, symbolKey(account.symbolTicker, account.symbolCurrency)) : "—"}</div>
+              <div className="ll-mono text-right" style={{ fontWeight: 600 }}>{fmtUnits(account.openingBalance, symbolKey(account.symbolTicker, account.symbolCurrency))}</div>
               <div />
             </div>
             <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 3, paddingLeft: 118 }}>
@@ -405,7 +406,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
                     className="ll-mono text-right" style={{ ...miniInput, color: C.credit }}
                     onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }}
                   />
-                  <div className="ll-mono text-right" style={{ fontWeight: 600, fontSize: 13.5 }}>{fmtUnits(r.running, account.symbol)}</div>
+                  <div className="ll-mono text-right" style={{ fontWeight: 600, fontSize: 13.5 }}>{fmtUnits(r.running, symbolKey(account.symbolTicker, account.symbolCurrency))}</div>
                   <div className="flex gap-1 justify-end">
                     <button onClick={commit} title="Save" style={iconBtn(C.credit)}><Check size={15} /></button>
                     <button onClick={cancel} title="Cancel" style={iconBtn(C.inkFaint)}><X size={15} /></button>
@@ -505,9 +506,9 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
                   {unmatched && <span title="Value side not yet matched to another account"><AlertTriangle size={12} color={C.gold} /></span>}
                   <TagChips tags={r.line.tags} />
                 </div>
-                <div className="ll-mono text-right" style={{ color: unitsOut ? C.debit : C.inkFaint }}>{unitsOut ? fmtUnits(unitsOut, account.symbol) : "—"}</div>
-                <div className="ll-mono text-right" style={{ color: unitsIn ? C.credit : C.inkFaint }}>{unitsIn ? fmtUnits(unitsIn, account.symbol) : "—"}</div>
-                <div className="ll-mono text-right" style={{ fontWeight: 600 }}>{fmtUnits(r.running, account.symbol)}</div>
+                <div className="ll-mono text-right" style={{ color: unitsOut ? C.debit : C.inkFaint }}>{unitsOut ? fmtUnits(unitsOut, symbolKey(account.symbolTicker, account.symbolCurrency)) : "—"}</div>
+                <div className="ll-mono text-right" style={{ color: unitsIn ? C.credit : C.inkFaint }}>{unitsIn ? fmtUnits(unitsIn, symbolKey(account.symbolTicker, account.symbolCurrency)) : "—"}</div>
+                <div className="ll-mono text-right" style={{ fontWeight: 600 }}>{fmtUnits(r.running, symbolKey(account.symbolTicker, account.symbolCurrency))}</div>
                 <div className="flex justify-end items-center gap-0.5">
                   {hasAbove && (
                     <button onClick={(e) => { e.stopPropagation(); moveRow(idx, -1); }} title="Move earlier among same-date entries" style={{ padding: 2 }}>

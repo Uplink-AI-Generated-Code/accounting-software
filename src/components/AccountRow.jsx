@@ -1,6 +1,7 @@
 import { AlertTriangle } from "lucide-react";
 import { C, TYPES, ISA_KINDS } from "../lib/theme";
 import { fmt, fmtUnits, displayAccountName } from "../lib/format";
+import { symbolKey } from "../lib/symbolKey";
 
 // One line per account in the chart of accounts — replaces the earlier
 // card grid (AccountCard) specifically to fit far more accounts in the
@@ -15,7 +16,7 @@ import { fmt, fmtUnits, displayAccountName } from "../lib/format";
 export function AccountRow({ a, accounts, symbols, onSelect, subtitle, groupLevels = [] }) {
   // Trading currency lives on the Symbol now, not the account — see
   // CLAUDE.md.
-  const tradingCurrency = symbols.find((s) => s.ticker === a.symbol)?.tradingCurrency;
+  const tradingCurrency = a.symbolCurrency;
   // Whichever of Type/Currency/Counterparty/Subtype the active grouping
   // (settings.groupLevels) doesn't already nest by — showing one that's
   // already the group header above would just repeat it on every row.
@@ -24,7 +25,7 @@ export function AccountRow({ a, accounts, symbols, onSelect, subtitle, groupLeve
   // thing — see lib/grouping.js's bucketBy()), so it's always shown.
   const badgeParts = [
     !groupLevels.includes("type") && TYPES.find((t) => t.key === a.type)?.label,
-    "investment" === a.type ? a.symbol : null,
+    "investment" === a.type ? a.symbolTicker : null,
     !groupLevels.includes("currency") && ("investment" === a.type ? tradingCurrency : a.currency),
     !groupLevels.includes("counterparty") && a.counterparty,
     !groupLevels.includes("subtype") && a.subtype,
@@ -81,7 +82,7 @@ export function AccountRow({ a, accounts, symbols, onSelect, subtitle, groupLeve
           <span style={{ color: C.inkFaint }}>{accounts.filter((x) => x.parentId === a.id).length} subaccounts</span>
         ) : a.type === "investment" ? (
           <>
-            <span style={{ color: C.inkFaint }}>{fmtUnits(a.balance || 0, a.symbol)} units</span>
+            <span style={{ color: C.inkFaint }}>{fmtUnits(a.balance || 0, symbolKey(a.symbolTicker, a.symbolCurrency))} units</span>
             <span style={{ color: C.ink, fontWeight: 600 }}>{fmt(a.portfolioValue || 0, tradingCurrency)}</span>
           </>
         ) : (

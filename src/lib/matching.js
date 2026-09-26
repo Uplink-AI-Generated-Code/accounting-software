@@ -1,4 +1,5 @@
 import { fmt, fmtUnits } from "./format";
+import { symbolKey } from "./symbolKey";
 
 // getComparableAmount/getDirectComparableAmount — the mirrored-vs-natural
 // sign logic used to search for a match — now live in the backend's
@@ -15,7 +16,7 @@ import { fmt, fmtUnits } from "./format";
 export function formatCandidateAmount(c) {
   if (c.account.type === "investment") {
     const natural = c.line.cashValue !== undefined ? -c.line.cashValue : 0;
-    return `${fmtUnits(c.line.amount, c.account.symbol)} units · ${fmt(natural, c.line.cashCurrency)}`;
+    return `${fmtUnits(c.line.amount, symbolKey(c.account.symbolTicker, c.account.symbolCurrency))} units · ${fmt(natural, c.line.cashCurrency)}`;
   }
   return fmt(c.line.amount, c.account.currency);
 }

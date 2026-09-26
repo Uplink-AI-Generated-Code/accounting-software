@@ -28,7 +28,7 @@ export function bucketBy(subset, dim, allAccounts, symbols = []) {
     const wrappers = [];
     subset.forEach((a) => {
       if (a.type === "investment-parent") { wrappers.push(a); return; }
-      const cur = (a.type === "investment" ? symbols.find((s) => s.ticker === a.symbol)?.tradingCurrency : a.currency) || "—";
+      const cur = (a.type === "investment" ? a.symbolCurrency : a.currency) || "—";
       byCur[cur] = byCur[cur] || [];
       byCur[cur].push(a);
     });
@@ -92,7 +92,7 @@ export function flattenAllAccounts(accounts, allAccounts, symbols = []) {
     const typeLabel = TYPES.find((t) => t.key === a.type)?.label || a.type;
     const counterparty = counterpartyOf(a, allAccounts) || "No counterparty";
     const subtype = a.subtype || "No subtype";
-    const currency = (a.type === "investment" ? symbols.find((s) => s.ticker === a.symbol)?.tradingCurrency : a.currency) || "—";
+    const currency = (a.type === "investment" ? a.symbolCurrency : a.currency) || "—";
     return { account: a, path: [typeLabel, counterparty, subtype, currency] };
   });
 }

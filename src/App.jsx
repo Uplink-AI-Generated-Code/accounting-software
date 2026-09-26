@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Plus, AlertTriangle, BookOpen, X, Search } from "lucide-react";
 import { C } from "./lib/theme";
 import { uid, fmt, fmtUnits, setCurrencyScales, setSymbolScales, displayAccountName } from "./lib/format";
+import { symbolKey } from "./lib/symbolKey";
 import { buildNestedGroups, flattenAllAccounts, leafMatchesQuery } from "./lib/grouping";
 import { taxYearBounds } from "./lib/isa";
 import { accountIdFromHash, setHashForAccount } from "./lib/hash";
@@ -256,8 +257,8 @@ export default function App() {
     }
     const bal = a.balance || 0;
     if (a.type === "investment") {
-      const tradingCurrency = symbols.find((s) => s.ticker === a.symbol)?.tradingCurrency;
-      return `${fmtUnits(bal, a.symbol)} ${a.symbol} · ${fmt(a.portfolioValue || 0, tradingCurrency)}`;
+      const tradingCurrency = a.symbolCurrency;
+      return `${fmtUnits(bal, symbolKey(a.symbolTicker, a.symbolCurrency))} ${a.symbolTicker} · ${fmt(a.portfolioValue || 0, tradingCurrency)}`;
     }
     return fmt(bal, a.currency);
   }
@@ -485,7 +486,6 @@ export default function App() {
                 selectedId={selectedId}
                 onSelect={setSelectedId}
                 accountDisplay={accountDisplay}
-                symbols={symbols}
               />
             );
           })()}

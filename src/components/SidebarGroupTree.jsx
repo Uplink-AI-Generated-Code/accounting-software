@@ -4,7 +4,7 @@ import { fmt, displayAccountName } from "../lib/format";
 
 // Renders nested groups in the sidebar — indented headers down to
 // whichever level is a leaf, where actual clickable account rows appear.
-export function SidebarGroupTree({ groups, depth, selectedId, onSelect, accountDisplay, symbols = [] }) {
+export function SidebarGroupTree({ groups, depth, selectedId, onSelect, accountDisplay }) {
   return groups.map((g) => (
     <div key={g.key} className="mb-3" style={{ marginLeft: depth * 8 }}>
       <div style={{ fontSize: 10.5, letterSpacing: 1, textTransform: "uppercase", color: C.inkFaint, padding: "4px 8px" }}>{g.label}</div>
@@ -13,7 +13,7 @@ export function SidebarGroupTree({ groups, depth, selectedId, onSelect, accountD
           // See AccountRow.jsx for what these fields are and why
           // imbalanceIn/imbalanceOut are kept separate rather than netted.
           const imbalanced = (a.imbalancedLineCount || 0) > 0;
-          const imbalanceCurrency = a.type === "investment" ? symbols.find((s) => s.ticker === a.symbol)?.tradingCurrency : a.currency;
+          const imbalanceCurrency = a.type === "investment" ? a.symbolCurrency : a.currency;
           const imbalanceTitle = imbalanced
             ? `${a.imbalancedLineCount} imbalanced line${a.imbalancedLineCount === 1 ? "" : "s"}`
               + (a.imbalanceOut > 0 ? ` — Out ${fmt(a.imbalanceOut, imbalanceCurrency)}` : "")
@@ -36,7 +36,7 @@ export function SidebarGroupTree({ groups, depth, selectedId, onSelect, accountD
           );
         })
       ) : (
-        <SidebarGroupTree groups={g.children} depth={depth + 1} selectedId={selectedId} onSelect={onSelect} accountDisplay={accountDisplay} symbols={symbols} />
+        <SidebarGroupTree groups={g.children} depth={depth + 1} selectedId={selectedId} onSelect={onSelect} accountDisplay={accountDisplay} />
       )}
     </div>
   ));

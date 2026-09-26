@@ -3,6 +3,7 @@ import { C } from "../lib/theme";
 import { fmt, fmtUnits, fmtDate, displayAccountName } from "../lib/format";
 import { getTaggedLines } from "../api";
 import { useTagTotals } from "./useTagTotals";
+import { symbolKey } from "../lib/symbolKey";
 
 /* ---------------------------------------------------------
    Tags — browsing/reporting for the cross-cutting facts that don't fit
@@ -104,7 +105,7 @@ export function TagsView({ knownTags, onSelect }) {
                     </span>
                     <span className="ll-mono" style={{ color: l.line.amount < 0 ? C.debit : C.credit, flexShrink: 0 }}>
                       {l.account.type === "investment"
-                        ? `${fmtUnits(l.line.amount, l.account.symbol)} units`
+                        ? `${fmtUnits(l.line.amount, symbolKey(l.account.symbolTicker, l.account.symbolCurrency))} units`
                         : fmt(l.line.amount, l.account.currency)}
                     </span>
                   </button>

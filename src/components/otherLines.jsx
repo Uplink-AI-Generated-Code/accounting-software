@@ -7,6 +7,7 @@ import { getMatchCandidates } from "../api";
 import { formatCandidateAmount, candidateIsNegative } from "../lib/matching";
 import { miniInput } from "./ui";
 import { AccountPicker } from "./AccountPicker";
+import { symbolKey } from "../lib/symbolKey";
 
 const DEBOUNCE_MS = 300;
 
@@ -43,14 +44,15 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
   function scaleForCurrency(code) {
     return currencies.find((c) => c.code === code)?.scale ?? 2;
   }
-  function scaleForSymbol(ticker) {
-    return symbols.find((s) => s.ticker === ticker)?.scale ?? 6;
+  function scaleForSymbol(ticker, tradingCurrency) {
+    return symbols.find((s) => s.ticker === ticker && s.tradingCurrency === tradingCurrency)?.scale ?? 6;
   }
-  // An investment account's own trading currency now lives on its Symbol,
-  // not on the Account itself (see CLAUDE.md) — this is the one place to
-  // resolve it from, for any account (this ledger's own, or another leg's).
+  // An investment account's own trading currency now lives directly on the
+  // Account (symbolCurrency, populated from its Symbol server-side) — this
+  // is the one place to resolve it from, for any account (this ledger's
+  // own, or another leg's).
   function tradingCurrencyFor(acc) {
-    return symbols.find((s) => s.ticker === acc?.symbol)?.tradingCurrency;
+    return acc?.symbolCurrency;
   }
   const primaryCurrency = account.type === "investment" ? tradingCurrencyFor(account) : account.currency;
 
@@ -61,7 +63,7 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
     if (oAcc && oAcc.type === "investment") {
       const naturalCash = o.cashValue !== undefined ? -o.cashValue : 0;
       base.unitsIsOut = o.amount < 0;
-      base.unitsStr = fromMinorUnits(Math.abs(o.amount), scaleForSymbol(oAcc.symbol));
+      base.unitsStr = fromMinorUnits(Math.abs(o.amount), scaleForSymbol(oAcc.symbolTicker, oAcc.symbolCurrency));
       base.cashIsOut = naturalCash < 0;
       base.cashStr = naturalCash !== 0 ? fromMinorUnits(Math.abs(naturalCash), scaleForCurrency(tradingCurrencyFor(oAcc))) : "";
     } else {
@@ -82,7 +84,7 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
     const unchanged = ol.snapshot && ol.snapshot.accountId === ol.accountId;
 
     if (olAcc && olAcc.type === "investment") {
-      const unitsMag = Math.abs(toMinorUnits(ol.unitsStr, scaleForSymbol(olAcc.symbol)));
+      const unitsMag = Math.abs(toMinorUnits(ol.unitsStr, scaleForSymbol(olAcc.symbolTicker, olAcc.symbolCurrency)));
       const units = isNaN(unitsMag) ? 0 : ol.unitsIsOut ? -unitsMag : unitsMag;
       const base = unchanged ? { ...ol.snapshot } : { accountId: ol.accountId, date: d.date || todayISO(), description: d.description };
       base.amount = units;
@@ -238,7 +240,7 @@ export function OtherLinesEditor({ draft, account, accounts, symbols, groupLevel
           {draft.otherLines.map((ol) => {
             const olAcc = accounts.find((a) => a.id === ol.accountId);
             const isStock = olAcc && olAcc.type === "investment";
-            const olTradingCurrency = isStock ? symbols.find((s) => s.ticker === olAcc.symbol)?.tradingCurrency : null;
+            const olTradingCurrency = isStock ? olAcc.symbolCurrency : null;
             const olCandidates = otherLineCandidates[ol.key];
             return (
               <div key={ol.key} className="flex flex-col gap-1.5">

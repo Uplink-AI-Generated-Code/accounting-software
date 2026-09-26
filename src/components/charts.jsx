@@ -6,6 +6,7 @@ import { CHART_INTERVALS, intervalRange, buildDailySeries } from "../lib/chartSe
 import { taxYearBounds } from "../lib/isa";
 import { buildCostBasisSeries, buildPortfolioValueSeries } from "../lib/stockMath";
 import { miniInput } from "./ui";
+import { symbolKey } from "../lib/symbolKey";
 
 // Seeds the custom date pair from this ledger's tax year the *first*
 // time "Custom" is picked (customStart/customEnd both still empty) —
@@ -189,12 +190,12 @@ function StockChartTooltip({ active, payload, account, tradingCurrency, compareY
   return (
     <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 6, padding: "8px 10px", fontSize: 12.5, lineHeight: 1.7 }}>
       <div style={{ fontWeight: 600, marginBottom: 3 }}>{fmtDateShort(date)}</div>
-      {row(C.gold, "Units", byKey.units && byKey.units.value, (v) => `${fmtUnits(v, account.symbol)} ${account.symbol}`)}
+      {row(C.gold, "Units", byKey.units && byKey.units.value, (v) => `${fmtUnits(v, symbolKey(account.symbolTicker, account.symbolCurrency))} ${account.symbolTicker}`)}
       {row(C.credit, "Cost basis", byKey.cost && byKey.cost.value, (v) => fmt(v, tradingCurrency))}
       {row(C.plum, "Worth", byKey.value && byKey.value.value, (v) => fmt(v, tradingCurrency))}
       {compareYoY && (
         <div style={{ marginTop: 4, paddingTop: 4, borderTop: `1px solid ${C.lineSoft}`, color: C.inkFaint }}>
-          {row(C.goldDim, "Units, last year", byKey.unitsPrev && byKey.unitsPrev.value, (v) => `${fmtUnits(v, account.symbol)} ${account.symbol}`)}
+          {row(C.goldDim, "Units, last year", byKey.unitsPrev && byKey.unitsPrev.value, (v) => `${fmtUnits(v, symbolKey(account.symbolTicker, account.symbolCurrency))} ${account.symbolTicker}`)}
           {row(C.credit, "Cost, last year", byKey.costPrev && byKey.costPrev.value, (v) => fmt(v, tradingCurrency))}
           {row(C.plum, "Worth, last year", byKey.valuePrev && byKey.valuePrev.value, (v) => fmt(v, tradingCurrency))}
         </div>
@@ -267,12 +268,12 @@ export function UnitsChart({ account, transactions, tradingCurrency, activeTaxYe
           <ComposedChart data={merged} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
             <CartesianGrid stroke={C.lineSoft} vertical={false} />
             <XAxis dataKey="offset" tickFormatter={(o) => (merged[o] ? fmtDateShort(merged[o].date) : "")} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={{ stroke: C.line }} tickLine={false} minTickGap={40} />
-            <YAxis yAxisId="units" tickFormatter={(v) => fmtUnits(v, account.symbol)} tick={{ fontSize: 11, fill: C.gold }} axisLine={false} tickLine={false} width={55} />
+            <YAxis yAxisId="units" tickFormatter={(v) => fmtUnits(v, symbolKey(account.symbolTicker, account.symbolCurrency))} tick={{ fontSize: 11, fill: C.gold }} axisLine={false} tickLine={false} width={55} />
             <YAxis yAxisId="money" orientation="right" tickFormatter={(v) => fmt(v, tradingCurrency)} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={80} />
             <Tooltip content={<StockChartTooltip account={account} tradingCurrency={tradingCurrency} compareYoY={compareYoY} />} />
             <Legend wrapperStyle={{ fontSize: 12 }} />
             {compareYoY && <Line yAxisId="units" type="stepAfter" dataKey="unitsPrev" name="Units (last year)" stroke={C.goldDim} strokeWidth={1.5} strokeDasharray="4 3" dot={false} isAnimationActive={false} />}
-            <Bar yAxisId="units" dataKey="units" name={`${account.symbol} units`} fill={C.gold} fillOpacity={0.3} isAnimationActive={false} />
+            <Bar yAxisId="units" dataKey="units" name={`${account.symbolTicker} units`} fill={C.gold} fillOpacity={0.3} isAnimationActive={false} />
             {compareYoY && <Line yAxisId="money" type="stepAfter" dataKey="costPrev" name="Cost basis (last year)" stroke={C.credit} strokeWidth={1.5} strokeDasharray="4 3" dot={false} isAnimationActive={false} />}
             {compareYoY && <Line yAxisId="money" type="stepAfter" dataKey="valuePrev" name="Portfolio value (last year)" stroke={C.plum} strokeWidth={1.5} strokeDasharray="4 3" dot={false} isAnimationActive={false} />}
             <Line yAxisId="money" type="stepAfter" dataKey="cost" name="Cost basis" stroke={C.credit} strokeWidth={2} dot={false} activeDot={{ r: 4 }} isAnimationActive={false} />
