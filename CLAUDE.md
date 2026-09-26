@@ -540,9 +540,9 @@ integers in both directions, JSON like `"amount": 2000`.
   as primary key — `Currency.code` (`"GBP"`), `Symbol` the composite pair
   `(ticker, tradingCurrency)` (`"AAPL"` + `"USD"`), `Counterparty.name`
   (`"Barclays"`) — no surrogate id, deliberately, so raw DB records stay
-  human-readable. `Account.currency` / `Account.symbol` / `Account.counterparty`
-  and `Line.cashCurrency` / `Line.exchangeCurrency` are FKs to these, not
-  free strings anymore.
+  human-readable. `Account.currency` / `Account.symbolTicker`+`symbolCurrency`
+  (composite FK) / `Account.counterparty` and `Line.cashCurrency` /
+  `Line.exchangeCurrency` are FKs to these, not free strings anymore.
   `Counterparty` covers both meanings `Account.counterparty` can have —
   "where this account is held" for a real account, "who was paid/who
   paid" for an income/expense/isa-income one; `AccountFormModal` labels
