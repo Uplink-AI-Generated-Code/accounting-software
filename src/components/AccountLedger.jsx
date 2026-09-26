@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, Check, X, ArrowLeftRight, AlertTriangle, Pencil, Unlink2, TrendingUp, TableProperties, ChevronUp, ChevronDown } from "lucide-react";
 import { C, TYPES } from "../lib/theme";
-import { fmt, todayISO, fmtDate, displayAccountName } from "../lib/format";
+import { fmt, fmtPlain, todayISO, fmtDate, displayAccountName } from "../lib/format";
 import { toMinorUnits, fromMinorUnits } from "../lib/scale";
 import { reorderSameDate } from "../lib/grouping";
 import { formatCandidateAmount, candidateIsNegative, balanceHint } from "../lib/matching";
@@ -377,9 +377,9 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
             <div style={{ fontSize: 12.5 }}>—</div>
             <div style={{ fontStyle: "italic" }}>Opening balance</div>
             <div />
-            <div className="ll-mono text-right">{account.openingBalance < 0 ? fmt(-account.openingBalance, account.currency) : "—"}</div>
-            <div className="ll-mono text-right">{account.openingBalance > 0 ? fmt(account.openingBalance, account.currency) : "—"}</div>
-            <div className="ll-mono text-right" style={{ fontWeight: 600 }}>{fmt(account.openingBalance, account.currency)}</div>
+            <div className="ll-mono text-right">{account.openingBalance < 0 ? fmtPlain(-account.openingBalance, account.currency) : "—"}</div>
+            <div className="ll-mono text-right">{account.openingBalance > 0 ? fmtPlain(account.openingBalance, account.currency) : "—"}</div>
+            <div className="ll-mono text-right" style={{ fontWeight: 600 }}>{fmtPlain(account.openingBalance, account.currency)}</div>
             <div />
           </div>
         )}
@@ -421,7 +421,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
                     className="ll-mono text-right" style={{ ...miniInput, color: C.credit }}
                     onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }}
                   />
-                  <div className="ll-mono text-right" style={{ fontWeight: 600, fontSize: 13.5, color: r.running < 0 ? C.debit : C.ink }}>{fmt(r.running, account.currency)}</div>
+                  <div className="ll-mono text-right" style={{ fontWeight: 600, fontSize: 13.5, color: r.running < 0 ? C.debit : C.ink }}>{fmtPlain(r.running, account.currency)}</div>
                   <div className="flex gap-1 justify-end">
                     <button onClick={commit} title="Save" style={iconBtn(C.credit)}><Check size={15} /></button>
                     <button onClick={cancel} title="Cancel" style={iconBtn(C.inkFaint)}><X size={15} /></button>
@@ -552,9 +552,9 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
               <div style={{ color: C.inkFaint, fontSize: 12.5, display: "flex", alignItems: "center", gap: 4 }}>
                 {r.others.length > 0 ? (<><ArrowLeftRight size={11} /> {r.others.map((a) => displayAccountName(a)).join(", ")}</>) : <span style={{ fontStyle: "italic" }}>unmatched</span>}
               </div>
-              <div className="ll-mono text-right" style={{ color: out ? C.debit : C.inkFaint }}>{out ? fmt(out, account.currency) : "—"}</div>
-              <div className="ll-mono text-right" style={{ color: inn ? C.credit : C.inkFaint }}>{inn ? fmt(inn, account.currency) : "—"}</div>
-              <div className="ll-mono text-right" style={{ fontWeight: 600, color: r.running < 0 ? C.debit : C.ink }}>{fmt(r.running, account.currency)}</div>
+              <div className="ll-mono text-right" style={{ color: out ? C.debit : C.inkFaint }}>{out ? fmtPlain(out, account.currency) : "—"}</div>
+              <div className="ll-mono text-right" style={{ color: inn ? C.credit : C.inkFaint }}>{inn ? fmtPlain(inn, account.currency) : "—"}</div>
+              <div className="ll-mono text-right" style={{ fontWeight: 600, color: r.running < 0 ? C.debit : C.ink }}>{fmtPlain(r.running, account.currency)}</div>
               <div className="flex justify-end items-center gap-0.5">
                 {hasAbove && (
                   <button onClick={(e) => { e.stopPropagation(); moveRow(idx, -1); }} title="Move earlier among same-date entries" style={{ padding: 2 }}>

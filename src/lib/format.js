@@ -46,6 +46,17 @@ export function fmt(amount, currency) {
     return `${v.toFixed(scale)} ${currency}`;
   }
 }
+// Same amount as fmt(), without the currency code/symbol prefix — for a
+// ledger's own per-entry rows and its "Opening balance" row, where the
+// account's (or trading pair's) currency is already shown once in the
+// header/column context, so repeating it on every row is just noise.
+// Still fully scale-aware, exactly like fmt() — only the currency prefix
+// itself is dropped, never the precision.
+export function fmtPlain(amount, currency) {
+  const scale = scaleForCurrency(currency);
+  const v = Number.isFinite(amount) ? Number(fromMinorUnits(amount, scale) || "0") : 0;
+  return v.toLocaleString("en-GB", { minimumFractionDigits: scale, maximumFractionDigits: scale });
+}
 // An account's `name` can be blank (see CLAUDE.md's "Account model") — a
 // credit card or an income/expense account often has nothing to add
 // beyond its own Subtype/Counterparty. Falls back to those, joined; if

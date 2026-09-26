@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, Check, X, AlertTriangle, Pencil, Unlink2, TrendingUp, TableProperties, ChevronUp, ChevronDown } from "lucide-react";
 import { C } from "../lib/theme";
-import { fmt, fmtUnits, todayISO, fmtDate, displayAccountName } from "../lib/format";
+import { fmt, fmtPlain, fmtUnits, todayISO, fmtDate, displayAccountName } from "../lib/format";
 import { toMinorUnits, fromMinorUnits, divRoundHalfUp } from "../lib/scale";
 import { reorderSameDate } from "../lib/grouping";
 import { applyCostBasisLine, applyPortfolioValueLine } from "../lib/stockMath";
@@ -370,7 +370,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
               <div />
             </div>
             <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 3, paddingLeft: 118 }}>
-              Cost {fmt(account.openingBalanceCashValue || 0, tradingCurrency)} · Worth {fmt(account.openingBalanceCashValue || 0, tradingCurrency)}
+              Cost {fmtPlain(account.openingBalanceCashValue || 0, tradingCurrency)} · Worth {fmtPlain(account.openingBalanceCashValue || 0, tradingCurrency)}
             </div>
           </div>
         )}
@@ -524,8 +524,8 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
                 </div>
               </div>
               <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 3, paddingLeft: 118 }}>
-                {natural !== null && <>Value {fmt(natural, r.line.cashCurrency)} · </>}
-                Cost {fmt(r.runningCost, tradingCurrency)} · Worth {fmt(r.runningValue, tradingCurrency)}
+                {natural !== null && <>Value {fmtPlain(natural, r.line.cashCurrency)} · </>}
+                Cost {fmtPlain(r.runningCost, tradingCurrency)} · Worth {fmtPlain(r.runningValue, tradingCurrency)}
                 {r.others.length > 0 ? ` · ${r.others.map((a) => displayAccountName(a)).join(", ")}` : " · unmatched"}
               </div>
             </div>
