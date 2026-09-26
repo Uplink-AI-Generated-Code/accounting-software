@@ -990,6 +990,17 @@ class LedgerStateService
      */
     private function hydrateLine(Line $line, array $data, ?Transaction $transaction, Account $account): Line
     {
+        if ('investment-parent' === $account->getType()) {
+            // A wrapper holds no balance of its own — see the account
+            // type's docblock/CLAUDE.md — so it can never legitimately be
+            // a line's own account, only the parent other accounts point
+            // at. The frontend's AccountPicker already excludes wrapper
+            // accounts from the linked-account list (otherLines.jsx); this
+            // is the same rule enforced server-side, for every write path
+            // that reaches hydrateLine() (the live batch endpoint, and
+            // writeState()'s import/restore).
+            throw new \InvalidArgumentException(sprintf('Account "%s" is a wrapper and cannot hold lines directly.', $account->getId()));
+        }
         if ($transaction) {
             $transaction->addLine($line);
         } else {
