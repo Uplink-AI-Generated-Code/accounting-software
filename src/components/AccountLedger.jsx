@@ -393,7 +393,12 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
           const inn = r.line.amount > 0 ? r.line.amount : 0;
           const hint = balanceHint(r.record.lines, accounts);
           const unbalanced = hint.type === "unbalanced";
-          const single = hint.type === "single";
+          // "single-fx" is still an unpaired line (it just also carries an
+          // exchange-tag rate to show — see lib/matching.js) and must get
+          // the same "still needs a match" highlight a plain single-sided
+          // line does, unlike "fx" (a genuinely linked, already-resolved
+          // two-line pair), which deliberately gets no highlight at all.
+          const single = hint.type === "single" || hint.type === "single-fx";
           const iconColor = unbalanced ? C.debit : C.gold;
           const flagBg = unbalanced ? C.debitBg : single ? C.goldBg : "transparent";
           const flagBorder = unbalanced ? C.debit : single ? C.gold : "transparent";

@@ -52,7 +52,7 @@ function lineBalanceValue(line, acc) {
 // the magnitude of each side, so the caller doesn't need to reason about
 // which sign convention (mirrored or natural) either side's raw value
 // follows — only the ratio's size matters for display.
-function impliedRateMessage(valueA, currencyA, valueB, currencyB) {
+function impliedRateStr(valueA, currencyA, valueB, currencyB) {
   const realA = Number(fromMinorUnits(valueA, scaleForCurrency(currencyA)));
   const realB = Number(fromMinorUnits(valueB, scaleForCurrency(currencyB)));
   if (realA === 0) return null;
@@ -62,8 +62,7 @@ function impliedRateMessage(valueA, currencyA, valueB, currencyB) {
   // as lopsided as BTC/GBP — significant figures stay informative at any
   // magnitude, and toLocaleString (unlike toPrecision) never drops into
   // exponential notation.
-  const rateStr = rate.toLocaleString("en-GB", { maximumSignificantDigits: 6, minimumSignificantDigits: 1 });
-  return `Exchange — implied rate 1 ${currencyA} = ${rateStr} ${currencyB}`;
+  return rate.toLocaleString("en-GB", { maximumSignificantDigits: 6, minimumSignificantDigits: 1 });
 }
 
 /* ---------------------------------------------------------
@@ -89,14 +88,20 @@ export function balanceHint(lines, accounts) {
     // An unpaired line can still carry its own currency-exchange tag
     // (line.exchangeAmount/exchangeCurrency — see CLAUDE.md's "Data
     // model") recording what it was worth in another currency, even with
-    // no second real ledger line to compare against. Show the same
-    // implied-rate message a genuinely linked FX pair gets, rather than
-    // the generic "not yet matched" text, whenever that tag is present.
+    // no second real ledger line to compare against — surface that rate
+    // alongside the usual "not yet matched" wording, rather than instead
+    // of it. This is deliberately its own type ("single-fx"), not "fx" —
+    // unlike a genuinely linked two-line FX pair (which is done, needing
+    // no more attention), this line is still unpaired and must keep the
+    // same "still needs a match" highlight/icon a plain single-sided line
+    // gets (see AccountLedger.jsx's `single` check).
     const x = enriched[0];
     const { line } = x;
     if (line.exchangeAmount !== undefined && line.exchangeCurrency && line.exchangeCurrency !== x.currency) {
-      const message = impliedRateMessage(x.value, x.currency, line.exchangeAmount, line.exchangeCurrency);
-      if (message) return { type: "fx", message };
+      const rateStr = impliedRateStr(x.value, x.currency, line.exchangeAmount, line.exchangeCurrency);
+      if (rateStr) {
+        return { type: "single-fx", message: `Single-sided — not yet matched to another account (exchange tag: 1 ${x.currency} = ${rateStr} ${line.exchangeCurrency})` };
+      }
     }
     return { type: "single", message: "Single-sided — not yet matched to another account" };
   }
@@ -115,8 +120,8 @@ export function balanceHint(lines, accounts) {
   if (curs.length === 2 && enriched.length === 2) {
     const [a, b] = enriched;
     if (Math.sign(a.value) !== Math.sign(b.value)) {
-      const message = impliedRateMessage(a.value, a.currency, b.value, b.currency);
-      if (message) return { type: "fx", message };
+      const rateStr = impliedRateStr(a.value, a.currency, b.value, b.currency);
+      if (rateStr) return { type: "fx", message: `Exchange — implied rate 1 ${a.currency} = ${rateStr} ${b.currency}` };
     }
     return { type: "unbalanced", message: "Both legs move the same direction" };
   }
