@@ -852,6 +852,95 @@ class LedgerStateService
     }
 
     /**
+     * Rewrites every stored amount denominated in this currency to the
+     * new scale, in one transaction — see CLAUDE.md's "Amounts,
+     * currencies, and reference data" for why `scale` isn't just a
+     * display setting. A decrease that would lose precision on any
+     * existing row is refused outright (nothing partially applies); an
+     * increase is always lossless and always allowed. Returns how many
+     * rows were touched (0 if $newScale equals the current scale — a
+     * genuine no-op, not an error).
+     */
+    public function rescaleCurrency(string $code, int $newScale): int
+    {
+        $currency = $this->em->getRepository(Currency::class)->find($code);
+        if (!$currency) {
+            throw new \InvalidArgumentException(sprintf('Unknown currency code "%s".', $code));
+        }
+        $delta = $newScale - $currency->getScale();
+        if (0 === $delta) {
+            return 0;
+        }
+
+        return $this->em->wrapInTransaction(function () use ($currency, $code, $delta, $newScale) {
+            $conn = $this->em->getConnection();
+            $divisor = 10 ** abs($delta);
+            $op = $delta > 0 ? '*' : '/';
+
+            /** @var array<int, array{sql: string, params: array<int, mixed>}> $targets */
+            $targets = [
+                [
+                    'sql' => "opening_balance IS NOT NULL AND currency = ? AND type != 'investment'",
+                    'table' => 'account',
+                    'column' => 'opening_balance',
+                    'params' => [$code],
+                ],
+                [
+                    'sql' => 'opening_balance_cash_value IS NOT NULL AND symbol_currency = ?',
+                    'table' => 'account',
+                    'column' => 'opening_balance_cash_value',
+                    'params' => [$code],
+                ],
+                [
+                    'sql' => "account_id IN (SELECT id FROM account WHERE currency = ? AND type != 'investment')",
+                    'table' => 'line',
+                    'column' => 'amount',
+                    'params' => [$code],
+                ],
+                [
+                    'sql' => 'cash_value IS NOT NULL AND cash_currency = ?',
+                    'table' => 'line',
+                    'column' => 'cash_value',
+                    'params' => [$code],
+                ],
+                [
+                    'sql' => 'exchange_amount IS NOT NULL AND exchange_currency = ?',
+                    'table' => 'line',
+                    'column' => 'exchange_amount',
+                    'params' => [$code],
+                ],
+            ];
+
+            if ($delta < 0) {
+                $lossy = 0;
+                foreach ($targets as $t) {
+                    $lossy += (int) $conn->fetchOne(
+                        "SELECT COUNT(*) FROM {$t['table']} WHERE {$t['column']} % ? != 0 AND ({$t['sql']})",
+                        [$divisor, ...$t['params']]
+                    );
+                }
+                if ($lossy > 0) {
+                    throw new \InvalidArgumentException(sprintf('Decreasing %s\'s scale would lose precision on %d existing amount(s) — refused.', $code, $lossy));
+                }
+            }
+
+            $rowsTouched = 0;
+            foreach ($targets as $t) {
+                $rowsTouched += $conn->executeStatement(
+                    "UPDATE {$t['table']} SET {$t['column']} = {$t['column']} {$op} ? WHERE {$t['sql']}",
+                    [$divisor, ...$t['params']]
+                );
+            }
+
+            $currency->setScale($newScale);
+            $this->em->persist($currency);
+            $this->em->flush();
+
+            return $rowsTouched;
+        });
+    }
+
+    /**
      * Looks up a Currency/Symbol/Counterparty by its natural key. Throws a
      * clear error naming the missing code rather than silently
      * fabricating a row with a guessed scale — these are reference data,
