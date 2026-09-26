@@ -537,20 +537,31 @@ integers in both directions, JSON like `"amount": 2000`.
 
 - **`Currency`, `Symbol`, `Counterparty` are natural-key reference
   entities** (`backend/src/Entity/`), each with the business key itself
-  as primary key — `Currency.code` (`"GBP"`), `Symbol.ticker`
-  (`"AAPL"`), `Counterparty.name` (`"Barclays"`) — no surrogate id,
-  deliberately, so raw DB records stay human-readable. `Account.currency`
-  / `Account.symbol` / `Account.counterparty` and `Line.cashCurrency` /
-  `Line.exchangeCurrency` are FKs to these, not free strings anymore.
+  as primary key — `Currency.code` (`"GBP"`), `Symbol` the composite pair
+  `(ticker, tradingCurrency)` (`"AAPL"` + `"USD"`), `Counterparty.name`
+  (`"Barclays"`) — no surrogate id, deliberately, so raw DB records stay
+  human-readable. `Account.currency` / `Account.symbol` / `Account.counterparty`
+  and `Line.cashCurrency` / `Line.exchangeCurrency` are FKs to these, not
+  free strings anymore.
   `Counterparty` covers both meanings `Account.counterparty` can have —
   "where this account is held" for a real account, "who was paid/who
   paid" for an income/expense/isa-income one; `AccountFormModal` labels
   the field "Institution" or "Counterparty" depending on `account.type`,
   but it's one column, one entity, either way.
   `Currency` also carries an optional `name` (e.g. "British Pound
-  Sterling"). `Symbol` additionally carries `name`, `scale` (unit
-  precision — *not* a currency scale), and `tradingCurrency` (FK to
-  `Currency`). `Account.subtype`, by contrast, is a **plain string
+  Sterling"). `Symbol`'s primary key is the pair `(ticker,
+  tradingCurrency)`, not `ticker` alone — the same ticker can exist more
+  than once, one row per trading currency it's actually traded in (e.g.
+  "AAPL" in USD and a separately-tracked "AAPL" GBP line are two distinct
+  Symbol rows) — mirroring `Tag`'s own composite `(dimension, value)`
+  key. `Symbol` additionally carries `name` and `scale` (unit precision —
+  *not* a currency scale); `tradingCurrency` is part of its identity, not
+  an ordinary field, so it's never edited after creation. `Account.symbol`
+  is therefore two columns, `symbolTicker`/`symbolCurrency`, forming a
+  composite FK into `Symbol` (wire format: `"symbolTicker": "AAPL",
+  "symbolCurrency": "USD"`, never a nested object) — backed by a `CHECK
+  ((symbol_ticker IS NULL) = (symbol_currency IS NULL))` so the two always
+  travel together. `Account.subtype`, by contrast, is a **plain string
   column, not a reference entity** — nothing else references it, so
   there's no half-normalization benefit to a table for it the way there
   is for Currency/Symbol/Counterparty; see "UI conventions" below for what
@@ -577,9 +588,11 @@ integers in both directions, JSON like `"amount": 2000`.
   A state-JSON import from a database with different currencies (e.g.
   RON/INR from the sibling Nucleware/Accounts project) just declares
   them in its own `currencies` array instead.
-- **API wire format for these FKs is still just the natural-key string**
-  (`"currency": "GBP"`, `"symbol": "AAPL"`), consistent with how
-  `Account`/`Transaction` ids already work — never a nested object.
+- **API wire format for these FKs** — `Currency` and `Counterparty` use a
+  natural-key string (`"currency": "GBP"`, `"counterparty": "Barclays"`),
+  consistent with how `Account`/`Transaction` ids already work — never a
+  nested object. `Symbol` uses two separate fields since it's a composite
+  key: `"symbolTicker"` and `"symbolCurrency"` (as documented above).
 - **`LedgerStateService::resolveCurrency()`/`resolveSymbol()`/
   `resolveCounterparty()`** are where a JSON payload's currency
   code/ticker/counterparty name gets turned into the actual entity on
@@ -594,14 +607,34 @@ integers in both directions, JSON like `"amount": 2000`.
   `AccountFormModal`), and there's no meaningful extra data a first use
   needs to supply, so it stays that way rather than regressing into a
   closed picker.
-- **`GET /api/currencies`/`/api/symbols`/`/api/counterparties`** are
-  read-only for now (see "Backend" above) — `App.jsx` fetches all three
-  once alongside the account list and passes them down as props
-  (`currencies`, `symbols`, `counterparties`) to whatever needs them
+- **`Currency`/`Symbol` now have full admin CRUD** (`CurrencyController`,
+  `SymbolController`, `src/components/ReferenceDataView.jsx`) — `POST`
+  create, `PATCH` edit `name`/`scale`, `DELETE`. `code`/`(ticker,
+  tradingCurrency)` are immutable once created — a different one is a new
+  row, not a rename. Editing `scale` runs
+  `LedgerStateService::rescaleCurrency()`/`rescaleSymbol()`, which
+  rewrites every stored amount denominated in that currency/symbol to the
+  new scale in one transaction; a decrease that would lose precision on
+  any existing row is refused outright (`400`, naming how many rows would
+  be affected), never silently rounded — see
+  docs/superpowers/specs/2026-09-26-currency-symbol-admin-design.md.
+  Deleting a still-referenced currency/symbol already fails at the
+  database level (every FK into `currency`/`symbol` is `NOT DEFERRABLE
+  INITIALLY IMMEDIATE`, and `foreign_keys` enforcement is on everywhere)
+  — both controllers just translate that into a clean `409`, the same
+  pattern `AccountController::delete()` already uses for a wrapper
+  account with subaccounts. `Counterparty` stays free-text/find-or-create
+  and out of this admin surface entirely.
+- **`GET /api/currencies`/`/api/symbols`/`/api/counterparties`** — `App.jsx`
+  fetches all three once alongside the account list and passes them down as
+  props (`currencies`, `symbols`, `counterparties`) to whatever needs them
   (`AccountFormModal`'s pickers, `AccountLedger`/`StockLedger`/
   `otherLines.jsx`'s scale lookups, `lib/grouping.js`'s currency-dimension
   bucketing). There's no context/global store — this app prop-drills
-  already, see `accounts` itself.
+  already, see `accounts` itself. `Counterparty` and (prior to `POST
+  /api/symbols`) `Currency`/`Symbol` were read-only; `Currency`/`Symbol`
+  now have full admin endpoints (see above), while `Counterparty` remains
+  read-only and find-or-create only.
 - **`src/lib/scale.js`** is the one place that converts between the
   wire-format integer and a human-editable decimal string, without ever
   going through a float intermediate: `toMinorUnits(str, scale)` (parse,
@@ -620,18 +653,21 @@ integers in both directions, JSON like `"amount": 2000`.
   below for where it's actually used, and keep the PHP and JS versions
   byte-identical if you ever touch either.
 - **`src/lib/format.js`'s `fmt(amount, currencyCode)`/`fmtUnits(n,
-  symbolTicker)`** keep their existing 2-argument call-site shape
-  everywhere in the app — they don't take a `scale` parameter directly.
-  Instead, `setCurrencyScales(currencies)`/`setSymbolScales(symbols)` are
-  called once by `App.jsx` right after fetching `/api/currencies`/
-  `/api/symbols`, populating a small module-level lookup `fmt`/`fmtUnits`
-  read from internally. This was a deliberate choice over threading a
-  `scale` argument through every single display call site (`AccountRow`,
-  `Overview`, `charts.jsx`, ...) — a lookup by code/ticker is simpler than
-  a prop-drilled parameter for something that's genuinely global,
-  read-only, loaded-once data. If a value's scale genuinely isn't in the
-  registry yet (e.g. mid-load), `fmt`/`fmtUnits` fall back to a plausible
-  default (2 / 6) rather than crashing.
+  symbolKeyString)`** keep their 2-argument call-site shape everywhere in
+  the app — they don't take a `scale` parameter directly. `fmt` takes a
+  currency code; `fmtUnits` takes `symbolKeyString`, the composite key from
+  `lib/symbolKey.js`'s `symbolKey(ticker, tradingCurrency)` (not a bare
+  ticker, since the same ticker can exist under multiple trading currencies).
+  `setCurrencyScales(currencies)`/`setSymbolScales(symbols)` are called once
+  by `App.jsx` right after fetching `/api/currencies`/`/api/symbols`,
+  populating a small module-level lookup `fmt`/`fmtUnits` read from
+  internally. This was a deliberate choice over threading a `scale` argument
+  through every single display call site (`AccountRow`, `Overview`,
+  `charts.jsx`, ...) — a lookup by code/ticker+currency is simpler than a
+  prop-drilled parameter for something that's genuinely global, read-only,
+  loaded-once data. If a value's scale genuinely isn't in the registry yet
+  (e.g. mid-load), `fmt`/`fmtUnits` fall back to a plausible default (2 / 6)
+  rather than crashing.
 
 ## Matching and linking — two different comparison modes, on purpose
 
