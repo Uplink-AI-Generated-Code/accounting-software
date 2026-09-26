@@ -101,7 +101,11 @@ class CurrencyController
                 if (!\is_int($scale) && !(\is_string($scale) && ctype_digit($scale))) {
                     return new JsonResponse(['error' => 'Scale must be a non-negative integer'], 400);
                 }
-                $rowsTouched = $this->state->rescaleCurrency($code, (int) $scale);
+                $scale = (int) $scale;
+                if ($scale < 0) {
+                    return new JsonResponse(['error' => 'Scale must be a non-negative integer'], 400);
+                }
+                $rowsTouched = $this->state->rescaleCurrency($code, $scale);
             }
             if (\array_key_exists('name', $body)) {
                 $currency->setName(null === $body['name'] ? null : trim((string) $body['name']));
