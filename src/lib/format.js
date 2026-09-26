@@ -36,7 +36,12 @@ export function fmt(amount, currency) {
   const scale = scaleForCurrency(currency);
   const v = Number.isFinite(amount) ? Number(fromMinorUnits(amount, scale) || "0") : 0;
   try {
-    return new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(v);
+    // Intl doesn't reject an unrecognized-but-well-formed currency code
+    // (e.g. "BTC") — it silently formats it at its own default 2 fraction
+    // digits instead, discarding the precision `v` was already correctly
+    // computed at. minimumFractionDigits/maximumFractionDigits force it to
+    // respect this currency's own registered scale instead of guessing.
+    return new Intl.NumberFormat("en-GB", { style: "currency", currency, minimumFractionDigits: scale, maximumFractionDigits: scale }).format(v);
   } catch (e) {
     return `${v.toFixed(scale)} ${currency}`;
   }
