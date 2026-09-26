@@ -18,6 +18,7 @@ import { AccountLedger } from "./components/AccountLedger";
 import { StockLedger } from "./components/StockLedger";
 import { AccountFormModal } from "./components/AccountFormModal";
 import { DatabaseSwitcher, DatabaseSwitcherBlocking } from "./components/DatabaseSwitcher";
+import { ReferenceDataView } from "./components/ReferenceDataView";
 
 /* ---------------------------------------------------------
    App
@@ -64,6 +65,7 @@ export default function App() {
   const [sidebarImbalancedOnly, setSidebarImbalancedOnly] = useState(false);
   const [showAllowance, setShowAllowance] = useState(false);
   const [showTags, setShowTags] = useState(false);
+  const [showReferenceData, setShowReferenceData] = useState(false);
   const [accountForm, setAccountForm] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null); // { id, entryCount, name }
   const [error, setError] = useState("");
@@ -135,19 +137,31 @@ export default function App() {
     }
   }
   function setSelectedId(id) {
-    attemptNavigation(() => selectAccount(id));
+    attemptNavigation(() => { setShowAllowance(false); setShowTags(false); setShowReferenceData(false); selectAccount(id); });
   }
   function goToAllowance() {
-    attemptNavigation(() => { setSelectedIdRaw(null); setShowAllowance(true); setShowTags(false); });
+    attemptNavigation(() => { setSelectedIdRaw(null); setShowAllowance(true); setShowTags(false); setShowReferenceData(false); });
   }
   function goToTags() {
-    attemptNavigation(() => { setSelectedIdRaw(null); setShowAllowance(false); setShowTags(true); });
+    attemptNavigation(() => { setSelectedIdRaw(null); setShowAllowance(false); setShowTags(true); setShowReferenceData(false); });
+  }
+  function goToReferenceData() {
+    attemptNavigation(() => { setSelectedIdRaw(null); setShowAllowance(false); setShowTags(false); setShowReferenceData(true); });
   }
 
   async function refreshAccounts() {
     const list = await api.getAccounts();
     setAccounts(list);
     return list;
+  }
+
+  function refreshReferenceData() {
+    return Promise.all([api.getCurrencies(), api.getSymbols()]).then(([cur, sym]) => {
+      setCurrencies(cur);
+      setSymbols(sym);
+      setCurrencyScales(cur);
+      setSymbolScales(sym);
+    });
   }
 
   useEffect(() => {
@@ -411,7 +425,7 @@ export default function App() {
 
       <div className="flex" style={{ flex: 1, minHeight: 0 }}>
         <aside className="shrink-0" style={{ width: 260, borderRight: `1px solid ${C.line}`, padding: "18px 12px", overflowY: "auto" }}>
-          <button onClick={() => setSelectedId(null)} className="w-full text-left px-2 py-1.5 rounded mb-1" style={{ background: selectedId === null && !showAllowance && !showTags ? C.paperDim : "transparent", fontSize: 13, fontWeight: 600, color: C.inkSoft }}>
+          <button onClick={() => setSelectedId(null)} className="w-full text-left px-2 py-1.5 rounded mb-1" style={{ background: selectedId === null && !showAllowance && !showTags && !showReferenceData ? C.paperDim : "transparent", fontSize: 13, fontWeight: 600, color: C.inkSoft }}>
             Overview
           </button>
           <button
@@ -423,10 +437,17 @@ export default function App() {
           </button>
           <button
             onClick={goToTags}
-            className="w-full text-left px-2 py-1.5 rounded mb-3"
+            className="w-full text-left px-2 py-1.5 rounded mb-1"
             style={{ background: showTags ? C.paperDim : "transparent", fontSize: 13, fontWeight: 600, color: C.inkSoft }}
           >
             Tags
+          </button>
+          <button
+            onClick={goToReferenceData}
+            className="w-full text-left px-2 py-1.5 rounded mb-3"
+            style={{ background: showReferenceData ? C.paperDim : "transparent", fontSize: 13, fontWeight: 600, color: C.inkSoft }}
+          >
+            Reference Data
           </button>
 
           <div className="mb-3">
@@ -493,7 +514,9 @@ export default function App() {
 
 
         <main className="flex-1 p-6" style={{ overflowY: "auto" }}>
-          {showTags ? (
+          {showReferenceData ? (
+            <ReferenceDataView currencies={currencies} symbols={symbols} onRefresh={refreshReferenceData} />
+          ) : showTags ? (
             <TagsView knownTags={knownTags} onSelect={setSelectedId} />
           ) : showAllowance ? (
             <AllowanceView accounts={accounts} settings={settings} onSaveSettings={saveSettings} onSelect={setSelectedId} activeTaxYearStart={activeTaxYearStart} />
