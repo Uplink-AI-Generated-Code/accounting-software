@@ -156,7 +156,7 @@ export default function App() {
   }
 
   function refreshReferenceData() {
-    return Promise.all([api.getCurrencies(), api.getSymbols()]).then(([cur, sym]) => {
+    return Promise.all([api.getCurrencies(), api.getSymbols(), refreshAccounts()]).then(([cur, sym]) => {
       setCurrencies(cur);
       setSymbols(sym);
       setCurrencyScales(cur);
