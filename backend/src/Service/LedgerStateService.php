@@ -49,6 +49,17 @@ use Doctrine\ORM\EntityManagerInterface;
  */
 class LedgerStateService
 {
+    /**
+     * JS's Number.MAX_SAFE_INTEGER (2^53). A rescale increase that would
+     * push any existing stored amount's magnitude past this is refused —
+     * see rescaleCurrency()/rescaleSymbol()'s increase-branch headroom
+     * check. This app's amounts cross the JSON API boundary as plain
+     * integers, read back into JS numbers on the frontend (see CLAUDE.md's
+     * "Amounts, currencies, and reference data") — PHP's own 64-bit ints
+     * have far more headroom than this, but the frontend doesn't.
+     */
+    private const JS_MAX_SAFE_INTEGER = 9007199254740992;
+
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly SettingsService $settingsService,
@@ -832,11 +843,16 @@ class LedgerStateService
         $account->setCurrency($this->resolveCurrency($data['currency'] ?? null));
         $account->setOpeningBalance(isset($data['openingBalance']) ? (int) $data['openingBalance'] : null);
         $account->setOpeningBalanceCashValue(isset($data['openingBalanceCashValue']) ? (int) $data['openingBalanceCashValue'] : null);
-        $account->setSymbol($this->resolveSymbol($data['symbolTicker'] ?? null, $data['symbolCurrency'] ?? null));
+        $symbol = $this->resolveSymbol($data['symbolTicker'] ?? null, $data['symbolCurrency'] ?? null);
+        $account->setSymbol($symbol);
         $account->setCounterparty($this->resolveCounterparty($data['counterparty'] ?? null));
         $account->setSubtype(isset($data['subtype']) ? (string) $data['subtype'] : null);
         $account->setIsaKind($data['isaKind'] ?? null);
         $account->setFlexible(isset($data['flexible']) ? (bool) $data['flexible'] : null);
+
+        if ('investment' === $account->getType() && null === $symbol) {
+            throw new \InvalidArgumentException('An investment account must have a symbol.');
+        }
 
         if (!$withParent) {
             return $account;
@@ -922,6 +938,16 @@ class LedgerStateService
                 if ($lossy > 0) {
                     throw new \InvalidArgumentException(sprintf('Decreasing %s\'s scale would lose precision on %d existing amount(s) — refused.', $code, $lossy));
                 }
+            } else {
+                foreach ($targets as $t) {
+                    $max = $conn->fetchOne(
+                        "SELECT MAX(ABS({$t['column']})) FROM {$t['table']} WHERE {$t['sql']}",
+                        $t['params']
+                    );
+                    if (null !== $max && ((float) $max) * $divisor > self::JS_MAX_SAFE_INTEGER) {
+                        throw new \InvalidArgumentException(sprintf('Increasing %s\'s scale to %d would push %s.%s past the safe-integer range for at least one existing amount — refused.', $code, $newScale, $t['table'], $t['column']));
+                    }
+                }
             }
 
             $rowsTouched = 0;
@@ -993,6 +1019,16 @@ class LedgerStateService
                 }
                 if ($lossy > 0) {
                     throw new \InvalidArgumentException(sprintf('Decreasing %s (%s)\'s scale would lose precision on %d existing amount(s) — refused.', $ticker, $tradingCurrencyCode, $lossy));
+                }
+            } else {
+                foreach ($targets as $t) {
+                    $max = $conn->fetchOne(
+                        "SELECT MAX(ABS({$t['column']})) FROM {$t['table']} WHERE {$t['sql']}",
+                        $t['params']
+                    );
+                    if (null !== $max && ((float) $max) * $divisor > self::JS_MAX_SAFE_INTEGER) {
+                        throw new \InvalidArgumentException(sprintf('Increasing %s (%s)\'s scale to %d would push %s.%s past the safe-integer range for at least one existing amount — refused.', $ticker, $tradingCurrencyCode, $newScale, $t['table'], $t['column']));
+                    }
                 }
             }
 

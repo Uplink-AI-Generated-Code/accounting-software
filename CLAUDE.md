@@ -353,24 +353,40 @@ it covers and why); no test suite and no linter on the frontend.
     below.
   - `GET /api/currencies` / `GET /api/symbols` / `GET /api/counterparties`
     (`CurrencyController`/`SymbolController`/`CounterpartyController`) —
-    read-only lists of the three reference entities, fetched once by
+    list all rows of the three reference entities, fetched once by
     `App.jsx` alongside the account list (see "Amounts, currencies, and
-    reference data" below). `POST /api/symbols` is the one exception —
-    see below — everything else here is still deliberately out of scope
-    until a real admin area is built; don't add another `POST`/`PUT`
-    here without discussing scope first.
-  - `POST /api/symbols` (`SymbolController::create`) — the one write
-    endpoint among these three, added specifically because Symbol
-    (unlike Counterparty) is a closed set with no find-or-create and no
-    seed command like `app:currencies:seed`: a blank database starts
-    with zero symbols, which made it impossible to create the *first*
-    investment/Stocks & Shares ISA account at all. Body
-    `{ticker, name, scale, tradingCurrency}`; 400 on a missing/invalid
-    field or unknown `tradingCurrency`, 409 if the ticker already exists
-    (never silently overwrites an existing symbol's scale). Used by
-    `AccountFormModal.jsx`'s inline "+ Add a new symbol" flow, which
-    opens automatically wherever the Symbol picker would otherwise be a
-    dead end.
+    reference data" below). `Currency` and `Symbol` now have full admin
+    CRUD (`POST`/`PATCH`/`DELETE`, see below and
+    `src/components/ReferenceDataView.jsx`); `Counterparty` remains the
+    one that's genuinely read-only/find-or-create-only — see
+    `resolveCounterparty()` under "Amounts, currencies, and reference
+    data" below.
+  - `POST`/`PATCH`/`DELETE /api/currencies[/{code}]` (`CurrencyController`)
+    and `POST`/`PATCH`/`DELETE /api/symbols[/{ticker}/{tradingCurrency}]`
+    (`SymbolController`) — full admin CRUD for these two closed-set
+    reference entities (Symbol's identity is the pair `(ticker,
+    tradingCurrency)`, not the ticker alone — see "Amounts, currencies,
+    and reference data" below — so its duplicate check on create, and its
+    `PATCH`/`DELETE` routes, key on the pair). `code`/`(ticker,
+    tradingCurrency)` are immutable once created; `PATCH` can change
+    `name` and/or `scale`. Editing `scale` runs
+    `LedgerStateService::rescaleCurrency()`/`rescaleSymbol()`, rewriting
+    every stored amount denominated in that currency/symbol to the new
+    scale in one transaction — refused (`400`) if a decrease would lose
+    precision on any existing row, or if an increase would push any
+    existing row's magnitude past the JS safe-integer range; `scale`
+    itself is capped at 12. `DELETE` relies on the schema's own
+    foreign-key enforcement to refuse a still-referenced row, translated
+    into a clean `409`. `POST /api/symbols` was added first, specifically
+    because Symbol (unlike Counterparty) is a closed set with no
+    find-or-create and no seed command like `app:currencies:seed`: a
+    blank database starts with zero symbols, which made it impossible to
+    create the *first* investment/Stocks & Shares ISA account at all —
+    used by `AccountFormModal.jsx`'s inline "+ Add a new symbol" flow,
+    which opens automatically wherever the Symbol picker would otherwise
+    be a dead end. See
+    docs/superpowers/specs/2026-09-26-currency-symbol-admin-design.md for
+    the full design.
 - **None of the write handlers are optimistic on the frontend** except
   `saveAccount`/`saveSettings` in `App.jsx` (plain replaces with no
   cascading effect elsewhere). Account deletion and every transaction
@@ -501,13 +517,17 @@ it covers and why); no test suite and no linter on the frontend.
   standalone line has no counterpart to check and is always treated as
   external (see `isExternalLine()`'s docblock), so it would incorrectly
   count towards the allowance.
-- **Investment accounts hold exactly one security**, referenced via
-  `account.symbol` (a `Symbol` entity — see below). Trading currency
-  lives on the `Symbol`, not the account: an investment account's own
-  `currency` field is unused/absent — always derive trading currency via
-  `symbol.tradingCurrency`, never `account.currency`, for an investment
-  account. `amount` on an investment line is *units* (scaled by the
-  symbol's own `scale`, a different scale from any currency's), not cash.
+- **Investment accounts hold exactly one security**, referenced via two
+  columns, `account.symbolTicker`/`account.symbolCurrency` (a composite FK
+  into `Symbol`'s own composite `(ticker, tradingCurrency)` key — see
+  "Amounts, currencies, and reference data" below). Trading currency lives
+  on this pair, not on the account's own `currency` field, which is
+  unused/absent for an investment account: `symbolCurrency` **is** the
+  trading currency, readable directly off the account object — no
+  separate `Symbol` lookup needed, and never `account.currency`, for an
+  investment account. `amount` on an investment line is *units* (scaled by
+  the symbol's own `scale`, a different scale from any currency's), not
+  cash.
 - **Never store a price-per-unit field.** Price is always derived as
   `cashValue / units` on demand. This has come up multiple times — resist
   adding a stored price field even when it seems convenient.
@@ -597,11 +617,13 @@ integers in both directions, JSON like `"amount": 2000`.
   `resolveCounterparty()`** are where a JSON payload's currency
   code/ticker/counterparty name gets turned into the actual entity on
   write. `resolveCurrency`/`resolveSymbol`
-  **hard-error** (`InvalidArgumentException`) on an unknown code/ticker —
-  Currency and Symbol are deliberately curated, closed sets; a new one
-  needs a real `scale` decided, which is exactly what a future "add
-  symbol" admin flow (asking for name + scale) would exist to do.
-  `resolveCounterparty` **find-or-creates** instead — institution/
+  **hard-error** (`InvalidArgumentException`) on an unknown code, or an
+  unknown `(ticker, tradingCurrency)` pair — Currency and Symbol are
+  deliberately curated, closed sets; a new one needs a real `scale`
+  decided, which is exactly what the `Currency`/`Symbol` admin CRUD
+  (`ReferenceDataView.jsx`, `CurrencyController`/`SymbolController` — see
+  "Backend" above) exists to do. `resolveCounterparty` **find-or-creates**
+  instead — institution/
   counterparty names were always free text before this schema existed
   (any bank, or any payee, not used yet is fine to type in
   `AccountFormModal`), and there's no meaningful extra data a first use
@@ -1070,10 +1092,10 @@ year's file are now all done from inside the running app — see
 - No live market price feed / real "current value".
 - No multi-currency conversion beyond the per-line exchange tag.
 - No JISA, no LISA bonus modeling, no flexible-ISA partial-year handling.
-- No general admin UI/write endpoints for currencies, symbols, or
-  counterparties — `GET /api/currencies`/`/api/counterparties` stay
-  read-only by design, and `/api/symbols` gains only the one narrow
-  `POST` described under "Backend" (creating a symbol from scratch, not
-  editing or deleting one). A future real admin area — editing/deleting
-  any of the three, not just adding a symbol — is planned but not
-  started; don't build further ahead of that conversation.
+- No general admin UI/write endpoints for counterparties — `Currency` and
+  `Symbol` now have full admin CRUD (`ReferenceDataView.jsx`,
+  `CurrencyController`/`SymbolController` — see "Backend" above), but
+  `Counterparty` stays read-only/find-or-create-only by design (see
+  `resolveCounterparty()` under "Amounts, currencies, and reference data"
+  below) — don't build a write surface for it without discussing scope
+  first.

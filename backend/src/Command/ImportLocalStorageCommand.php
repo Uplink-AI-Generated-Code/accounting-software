@@ -2,7 +2,9 @@
 
 namespace App\Command;
 
+use App\Entity\Symbol;
 use App\Service\LedgerStateService;
+use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
@@ -46,8 +48,10 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 )]
 class ImportLocalStorageCommand extends Command
 {
-    public function __construct(private readonly LedgerStateService $state)
-    {
+    public function __construct(
+        private readonly LedgerStateService $state,
+        private readonly EntityManagerInterface $em,
+    ) {
         parent::__construct();
     }
 
@@ -98,7 +102,13 @@ class ImportLocalStorageCommand extends Command
 
             return Command::FAILURE;
         }
-        $accounts = $this->upgradeLegacyAccountShape($accounts);
+        try {
+            $accounts = $this->upgradeLegacyAccountShape($accounts);
+        } catch (\InvalidArgumentException $e) {
+            $io->error($e->getMessage());
+
+            return Command::FAILURE;
+        }
 
         if (isset($data['records']) && \is_array($data['records'])) {
             $records = $data['records'];
@@ -180,13 +190,30 @@ class ImportLocalStorageCommand extends Command
      * unrecognized `type: "isa-parent"` row. A no-op on any export already
      * in the current shape (no `isa-parent` type, no `isaParentId` key).
      *
+     * Also upgrades the pre-composite-key Symbol shape: every export made
+     * before Symbol's identity became (ticker, tradingCurrency) carries a
+     * plain `"symbol": "AAPL"` on an investment account, with no
+     * `symbolCurrency` — the ticker alone was unambiguous back then. This
+     * maps it to `symbolTicker`/`symbolCurrency` by looking up which
+     * `Symbol` row(s) currently exist for that ticker: exactly one match
+     * resolves unambiguously to that Symbol's own `tradingCurrency`; zero
+     * or more than one match means the reference can no longer be resolved
+     * automatically (the ticker either doesn't exist yet, or has since
+     * become ambiguous across more than one trading currency) and is a
+     * hard error rather than a silent guess — see CLAUDE.md's
+     * resolveCurrency()/resolveSymbol() "hard-error on unknown reference"
+     * convention, which this mirrors.
+     *
      * @param array<int, array<string, mixed>> $accounts
      *
      * @return array<int, array<string, mixed>>
+     *
+     * @throws \InvalidArgumentException when a legacy `symbol` ticker
+     *                                    can't be resolved unambiguously
      */
     private function upgradeLegacyAccountShape(array $accounts): array
     {
-        return array_map(static function ($a) {
+        return array_map(function ($a) {
             if (!\is_array($a)) {
                 return $a;
             }
@@ -201,6 +228,31 @@ class ImportLocalStorageCommand extends Command
                     $a['parentId'] = $a['isaParentId'];
                 }
                 unset($a['isaParentId']);
+            }
+
+            if (\array_key_exists('symbol', $a) && !\array_key_exists('symbolTicker', $a)) {
+                $ticker = $a['symbol'];
+                unset($a['symbol']);
+
+                if (null !== $ticker && '' !== $ticker) {
+                    $matches = $this->em->getRepository(Symbol::class)->createQueryBuilder('s')
+                        ->where('s.ticker = :t')
+                        ->setParameter('t', $ticker)
+                        ->getQuery()
+                        ->getResult();
+
+                    if (1 !== \count($matches)) {
+                        throw new \InvalidArgumentException(\sprintf(
+                            'Account "%s" references legacy symbol "%s", which %s — can\'t resolve its trading currency automatically. Fix this account\'s data manually (set an explicit "symbolCurrency") before importing.',
+                            $a['name'] ?? $a['id'] ?? '?',
+                            $ticker,
+                            0 === \count($matches) ? 'doesn\'t exist in this database' : \sprintf('is ambiguous (%d symbols share this ticker across different trading currencies)', \count($matches))
+                        ));
+                    }
+
+                    $a['symbolTicker'] = $ticker;
+                    $a['symbolCurrency'] = $matches[0]->getTradingCurrency()->getCode();
+                }
             }
 
             return $a;

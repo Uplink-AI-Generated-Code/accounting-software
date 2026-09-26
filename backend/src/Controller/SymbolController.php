@@ -68,8 +68,8 @@ class SymbolController
             return new JsonResponse(['error' => 'Scale must be a non-negative integer'], 400);
         }
         $scale = (int) $scale;
-        if ($scale < 0) {
-            return new JsonResponse(['error' => 'Scale must be a non-negative integer'], 400);
+        if ($scale < 0 || $scale > 12) {
+            return new JsonResponse(['error' => 'Scale must be between 0 and 12'], 400);
         }
 
         $tradingCurrency = $this->em->getRepository(Currency::class)->find($tradingCurrencyCode);
@@ -119,8 +119,8 @@ class SymbolController
                     return new JsonResponse(['error' => 'Scale must be a non-negative integer'], 400);
                 }
                 $scale = (int) $scale;
-                if ($scale < 0) {
-                    return new JsonResponse(['error' => 'Scale must be a non-negative integer'], 400);
+                if ($scale < 0 || $scale > 12) {
+                    return new JsonResponse(['error' => 'Scale must be between 0 and 12'], 400);
                 }
                 $rowsTouched = $this->state->rescaleSymbol($ticker, $tradingCurrency, $scale);
             }

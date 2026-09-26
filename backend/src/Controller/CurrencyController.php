@@ -63,8 +63,8 @@ class CurrencyController
             return new JsonResponse(['error' => 'Scale must be a non-negative integer'], 400);
         }
         $scale = (int) $scale;
-        if ($scale < 0) {
-            return new JsonResponse(['error' => 'Scale must be a non-negative integer'], 400);
+        if ($scale < 0 || $scale > 12) {
+            return new JsonResponse(['error' => 'Scale must be between 0 and 12'], 400);
         }
         if (null !== $this->em->getRepository(Currency::class)->find($code)) {
             return new JsonResponse(['error' => sprintf('Currency "%s" already exists', $code)], 409);
@@ -102,8 +102,8 @@ class CurrencyController
                     return new JsonResponse(['error' => 'Scale must be a non-negative integer'], 400);
                 }
                 $scale = (int) $scale;
-                if ($scale < 0) {
-                    return new JsonResponse(['error' => 'Scale must be a non-negative integer'], 400);
+                if ($scale < 0 || $scale > 12) {
+                    return new JsonResponse(['error' => 'Scale must be between 0 and 12'], 400);
                 }
                 $rowsTouched = $this->state->rescaleCurrency($code, $scale);
             }

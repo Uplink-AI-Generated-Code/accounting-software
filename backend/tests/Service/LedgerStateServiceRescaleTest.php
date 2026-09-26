@@ -2,12 +2,15 @@
 
 namespace App\Tests\Service;
 
+use App\Controller\CurrencyController;
+use App\Controller\SymbolController;
 use App\Entity\Account;
 use App\Entity\Currency;
 use App\Entity\Line;
 use App\Service\LedgerStateService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
+use Symfony\Component\HttpFoundation\Request;
 
 class LedgerStateServiceRescaleTest extends KernelTestCase
 {
@@ -175,5 +178,67 @@ class LedgerStateServiceRescaleTest extends KernelTestCase
         $refreshed = $this->em->getRepository(Line::class)->find($line->getId());
         $this->assertSame(750000, $refreshed->getCashValue(), 'cashValue is currency-scaled, not symbol-scaled — a Symbol rescale must never touch it');
         $this->assertSame(50000000, $refreshed->getAmount());
+    }
+
+    // --- Final-review findings: scale ceiling + increase-branch headroom check ---
+
+    public function testCurrencyPatchRejectsScaleAbove12BeforeTouchingAnything(): void
+    {
+        $this->makeCurrency('GBP', 2);
+        $controller = new CurrencyController($this->em, $this->service);
+
+        $response = $controller->patch('GBP', new Request([], [], [], [], [], [], (string) json_encode(['scale' => 13])));
+
+        $this->assertSame(400, $response->getStatusCode());
+        $this->em->clear();
+        $this->assertSame(2, $this->em->getRepository(Currency::class)->find('GBP')->getScale(), 'a rejected scale must never be applied');
+    }
+
+    public function testSymbolPatchRejectsScaleAbove12BeforeTouchingAnything(): void
+    {
+        $usd = $this->makeCurrency('USD', 2);
+        $this->makeSymbol('AAPL', $usd, 6);
+        $controller = new SymbolController($this->em, $this->service);
+
+        $response = $controller->patch('AAPL', 'USD', new Request([], [], [], [], [], [], (string) json_encode(['scale' => 13])));
+
+        $this->assertSame(400, $response->getStatusCode());
+        $this->em->clear();
+        $this->assertSame(6, $this->em->getRepository(\App\Entity\Symbol::class)->find(['ticker' => 'AAPL', 'tradingCurrency' => $this->em->getRepository(Currency::class)->find('USD')])->getScale());
+    }
+
+    public function testIncreasingCurrencyScaleIsRefusedWhenItWouldExceedTheSafeIntegerRange(): void
+    {
+        $gbp = $this->makeCurrency('GBP', 2);
+        // 900719925474100 * 10 = 9007199254741000, just over 2^53 (9007199254740992).
+        $acc = $this->makeAccount('a1', $gbp, 900719925474100);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessageMatches('/safe-integer range/');
+        try {
+            $this->service->rescaleCurrency('GBP', 3);
+        } finally {
+            $this->em->clear();
+            $this->assertSame(900719925474100, $this->em->getRepository(Account::class)->find('a1')->getOpeningBalance(), 'refused rescale must not partially apply');
+            $this->assertSame(2, $this->em->getRepository(Currency::class)->find('GBP')->getScale(), 'refused rescale must not touch the scale itself');
+        }
+    }
+
+    public function testIncreasingSymbolScaleIsRefusedWhenItWouldExceedTheSafeIntegerRange(): void
+    {
+        $usd = $this->makeCurrency('USD', 2);
+        $aapl = $this->makeSymbol('AAPL', $usd, 2);
+        // 900719925474100 * 10 = 9007199254741000, just over 2^53.
+        $acc = $this->makeInvestmentAccount('aapl-acc', $aapl, 900719925474100);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessageMatches('/safe-integer range/');
+        try {
+            $this->service->rescaleSymbol('AAPL', 'USD', 3);
+        } finally {
+            $this->em->clear();
+            $this->assertSame(900719925474100, $this->em->getRepository(Account::class)->find('aapl-acc')->getOpeningBalance(), 'refused rescale must not partially apply');
+            $this->assertSame(2, $this->em->getRepository(\App\Entity\Symbol::class)->find(['ticker' => 'AAPL', 'tradingCurrency' => $usd])->getScale(), 'refused rescale must not touch the scale itself');
+        }
     }
 }

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { C, ISA_KINDS } from "../lib/theme";
 import { fmt, todayISO, displayAccountName } from "../lib/format";
 import { taxYearStartYearFor, taxYearBounds, isaRulesFor, isaProducts } from "../lib/isa";
+import { toMinorUnits } from "../lib/scale";
 import { getIsaAllowance } from "../api";
 
 /* ---------------------------------------------------------
@@ -15,19 +16,24 @@ import { getIsaAllowance } from "../api";
    page otherwise has. isaProducts()/isaRulesFor() stay client-side: pure,
    and only need the account list already loaded.
 --------------------------------------------------------- */
-export function AllowanceView({ accounts, settings, onSaveSettings, onSelect, activeTaxYearStart }) {
+export function AllowanceView({ accounts, settings, onSaveSettings, onSelect, activeTaxYearStart, currencies }) {
   const currentStartYear = activeTaxYearStart ?? taxYearStartYearFor(todayISO());
   const [startYear, setStartYear] = useState(currentStartYear);
 
   const { label } = taxYearBounds(startYear);
   const rules = isaRulesFor(startYear, settings.over65);
   // ISA amounts are GBP-only by design (see CLAUDE.md) — `usage` from the
-  // backend is already scaled pence, but the static ISA_RULE_TABLE in
-  // lib/isa.js is deliberately kept as plain whole pounds (legislative
-  // language, never user data, never round-tripped) — so caps get scaled
-  // up to pence here, at the one point they're compared/displayed
-  // alongside usage, rather than scaling the source table itself.
-  const toPence = (pounds) => Math.round(pounds * 100);
+  // backend is already scaled to GBP's own minor unit, but the static
+  // ISA_RULE_TABLE in lib/isa.js is deliberately kept as plain whole
+  // pounds (legislative language, never user data, never round-tripped) —
+  // so caps get scaled up here, at the one point they're compared/
+  // displayed alongside usage, rather than scaling the source table
+  // itself. GBP's scale is normally 2 (pence) but is now editable via the
+  // Currency admin view, so this can't hardcode ×100 — it looks up GBP's
+  // current scale and converts through the same toMinorUnits() every
+  // other amount field uses (see lib/scale.js).
+  const gbpScale = currencies?.find((c) => c.code === "GBP")?.scale ?? 2;
+  const toPence = (pounds) => toMinorUnits(String(pounds), gbpScale);
   const [usage, setUsage] = useState({ byKind: {}, total: 0 });
   useEffect(() => {
     let cancelled = false;
