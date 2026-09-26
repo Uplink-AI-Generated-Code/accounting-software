@@ -4,6 +4,7 @@ import { C, TYPES, ISA_KINDS } from "../lib/theme";
 import { toMinorUnits, fromMinorUnits } from "../lib/scale";
 import { ModalShell, Field, inputStyle } from "./ui";
 import { createSymbol } from "../api";
+import { displayAccountName } from "../lib/format";
 
 /* ---------------------------------------------------------
    Account form modal
@@ -230,7 +231,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
         )}
 
         {!isWrapper && (type === "asset" || type === "investment") && (
-          <Field label={type === "investment" ? "Wrapper" : "ISA"}>
+          <Field label={type === "investment" || isSubaccount ? "Wrapper" : "ISA"}>
             <select value={isaChoice} onChange={(e) => { setIsaChoice(e.target.value); setAttemptedSubmit(false); }} style={inputStyle} disabled={!!initial.isaParentPreset}>
               {type === "investment" && <option value="">Select a wrapper…</option>}
               {type !== "investment" && <option value="">Not an ISA</option>}
@@ -238,7 +239,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
                 <option key={k.key} value={k.key}>{k.label}</option>
               ))}
               {wrappers.map((w) => (
-                <option key={w.id} value={w.id}>{type === "investment" ? "Part of" : "Cash within"}: {w.name}</option>
+                <option key={w.id} value={w.id}>{type === "investment" ? "Part of" : "Cash within"}: {displayAccountName(w)}</option>
               ))}
             </select>
             {type === "investment" && wrappers.length === 0 && (
