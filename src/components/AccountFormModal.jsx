@@ -54,6 +54,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
 
   const isWrapper = type === "investment-parent";
   const isSubaccount = wrappers.some((w) => w.id === isaChoice);
+  const chosenWrapper = wrappers.find((w) => w.id === isaChoice);
   // Flexibility is a property of the ISA product itself (the wrapper, for
   // a Stocks & Shares ISA), not of each subaccount — so the toggle only
   // appears where it actually applies. Counterparty works the same way.
@@ -68,6 +69,19 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
   const knownCounterparties = counterparties.map((c) => c.name).sort();
   const knownSubtypes = Array.from(new Set(accounts.map((a) => a.subtype).filter(Boolean))).sort();
   const tradingCurrency = symbol ? parseSymbolKey(symbol).tradingCurrency : undefined;
+  // ISA allowance tracking (IsaAllowanceService) is GBP-only by design —
+  // it sums every ISA-tagged account's raw amount directly into one
+  // GBP-denominated pool, with no currency conversion (see CLAUDE.md).
+  // Mirrors the backend's own hydrateAccount() check: a flat ISA kind, or
+  // a subaccount of a Stocks & Shares ISA wrapper (cash or investment),
+  // must resolve to GBP — the wrapper itself holds no currency of its own
+  // to check.
+  const isaTagged = !isWrapper && (
+    isaChoice === "cash-isa" || isaChoice === "lifetime-isa" || isaChoice === "innovative-finance-isa"
+    || (isSubaccount && chosenWrapper?.isaKind === "stocks-shares-isa")
+  );
+  const isaOwnCurrency = type === "investment" ? tradingCurrency : currency;
+  const isaCurrencyInvalid = isaTagged && !!isaOwnCurrency && isaOwnCurrency !== "GBP";
 
   // Symbol is a curated, closed set (LedgerStateService::resolveSymbol()
   // hard-errors on an unknown ticker) — a blank database starts with zero
@@ -114,6 +128,10 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
       setAttemptedSubmit(true);
       return;
     }
+    if (isaCurrencyInvalid) {
+      setAttemptedSubmit(true);
+      return;
+    }
     const data = {
       id: initial.id,
       name: name.trim(),
@@ -142,7 +160,6 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
       // checks a counterpart account's own isaKind directly, so setting
       // this unconditionally would make a non-ISA wrapper's subaccounts
       // look like internal ISA transfers to the allowance engine.
-      const chosenWrapper = wrappers.find((w) => w.id === isaChoice);
       if (chosenWrapper?.isaKind === "stocks-shares-isa") {
         data.isaKind = "stocks-shares-isa";
       }
@@ -264,6 +281,13 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
             )}
             {type === "investment" && wrappers.length > 0 && !isSubaccount && attemptedSubmit && (
               <div style={{ fontSize: 11.5, color: C.debit, marginTop: 4 }}>Select a wrapper before saving — every stock/share account must belong to one.</div>
+            )}
+            {isaCurrencyInvalid && attemptedSubmit && (
+              <div style={{ fontSize: 11.5, color: C.debit, marginTop: 4 }}>
+                {type === "investment"
+                  ? `ISA allowance tracking is GBP-only — this symbol trades in ${isaOwnCurrency}, so it can't be part of a Stocks & Shares ISA.`
+                  : `ISA allowance tracking is GBP-only — change the Currency field above to GBP, or pick a different option here.`}
+              </div>
             )}
           </Field>
         )}

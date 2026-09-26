@@ -854,6 +854,29 @@ class LedgerStateService
             throw new \InvalidArgumentException('An investment account must have a symbol.');
         }
 
+        // ISA allowance tracking (IsaAllowanceService) is GBP-only by
+        // design (see CLAUDE.md) — it sums every ISA-tagged account's raw
+        // scaled integer directly into one GBP-denominated pool, with no
+        // currency conversion. A non-GBP ISA-kind account would silently
+        // mix a foreign currency's amounts into that GBP total, the same
+        // class of bug already fixed elsewhere for a genuine scale
+        // mismatch — reject it outright instead. `type: 'investment'`
+        // resolves via its Symbol's own tradingCurrency (an investment
+        // account's own `currency` field is unused — see "Amounts,
+        // currencies, and reference data"); every other ISA-tagged type
+        // (a flat ISA, or a cash subaccount of a Stocks & Shares ISA
+        // wrapper) resolves via its own `currency` directly. The wrapper
+        // itself (`investment-parent` with isaKind 'stocks-shares-isa')
+        // holds no currency of its own, so it has nothing to check here.
+        if ($account->getIsaKind()) {
+            $isaCurrency = 'investment' === $account->getType()
+                ? $symbol?->getTradingCurrency()->getCode()
+                : $account->getCurrency()?->getCode();
+            if (null !== $isaCurrency && 'GBP' !== $isaCurrency) {
+                throw new \InvalidArgumentException('ISA accounts must be denominated in GBP.');
+            }
+        }
+
         if (!$withParent) {
             return $account;
         }
