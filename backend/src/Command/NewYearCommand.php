@@ -71,8 +71,9 @@ class NewYearCommand extends Command
         $table = [];
         foreach ($result['rows'] as [$a, $openingBalance, $openingBalanceCashValue]) {
             if ('investment' === $a['type']) {
-                $unitsScale = $result['symbolScales'][$a['symbol'] ?? ''] ?? 6;
-                $tradingCurrency = $result['symbolTradingCurrency'][$a['symbol'] ?? ''] ?? null;
+                $symbolKey = ($a['symbolTicker'] ?? '').':'.($a['symbolCurrency'] ?? '');
+                $unitsScale = $result['symbolScales'][$symbolKey] ?? 6;
+                $tradingCurrency = $result['symbolTradingCurrency'][$symbolKey] ?? null;
                 $costScale = $result['currencyScales'][$tradingCurrency] ?? 2;
                 $table[] = [
                     $a['name'],

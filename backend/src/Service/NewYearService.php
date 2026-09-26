@@ -39,6 +39,11 @@ class NewYearService
      * file copy itself failed, or the carry-forward write failed).
      *
      * @return array{sourcePath: string, rows: array<int, array{0: array<string, mixed>, 1: int, 2: ?int}>, currencyScales: array<string, int>, symbolScales: array<string, int>, symbolTradingCurrency: array<string, string>}
+     *
+     * symbolScales/symbolTradingCurrency are keyed by "ticker:tradingCurrency"
+     * (Symbol's own composite identity), not by bare ticker — a bare-ticker
+     * key would silently collide once the same ticker exists in more than one
+     * trading currency, with whichever Symbol row is iterated last winning.
      */
     public function createNextYear(string $newDbPath): array
     {
@@ -61,8 +66,9 @@ class NewYearService
         $symbolScales = [];
         $symbolTradingCurrency = [];
         foreach ($this->em->getRepository(Symbol::class)->findAll() as $s) {
-            $symbolScales[$s->getTicker()] = $s->getScale();
-            $symbolTradingCurrency[$s->getTicker()] = $s->getTradingCurrency()->getCode();
+            $symbolKey = $s->getTicker().':'.$s->getTradingCurrency()->getCode();
+            $symbolScales[$symbolKey] = $s->getScale();
+            $symbolTradingCurrency[$symbolKey] = $s->getTradingCurrency()->getCode();
             $currencyScales[$s->getTradingCurrency()->getCode()] ??= $s->getTradingCurrency()->getScale();
         }
 
