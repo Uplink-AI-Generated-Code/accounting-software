@@ -1,5 +1,6 @@
 import { fromMinorUnits } from "./scale";
 import { TYPES } from "./theme";
+import { symbolKey } from "./symbolKey";
 
 // Amounts are scaled integers now (e.g. 2000 = £20.00 at GBP's scale of
 // 2 — see CLAUDE.md), not floats. fmt()/fmtUnits() need each currency's/
@@ -18,7 +19,7 @@ export function setCurrencyScales(currencies) {
   currencyScales = Object.fromEntries((currencies || []).map((c) => [c.code, c.scale]));
 }
 export function setSymbolScales(symbols) {
-  symbolScales = Object.fromEntries((symbols || []).map((s) => [s.ticker, s.scale]));
+  symbolScales = Object.fromEntries((symbols || []).map((s) => [symbolKey(s.ticker, s.tradingCurrency), s.scale]));
 }
 // Falls back to 2 (the common case) / 6 (matching the pre-existing
 // fmtUnits display convention) if the registry hasn't loaded yet or the
@@ -27,8 +28,8 @@ export function setSymbolScales(symbols) {
 function scaleForCurrency(code) {
   return currencyScales[code] ?? 2;
 }
-function scaleForSymbol(ticker) {
-  return symbolScales[ticker] ?? 6;
+function scaleForSymbol(key) {
+  return symbolScales[key] ?? 6;
 }
 
 export function fmt(amount, currency) {
@@ -87,11 +88,12 @@ export function fmtDateShort(iso) {
   return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 // Trims trailing zeros but keeps up to the symbol's own scale of decimal
-// places, for fractional share counts. `symbol` is the ticker (a plain
-// string, e.g. "AAPL") — optional for a caller that doesn't have one
-// handy, falling back to scale 6.
-export function fmtUnits(n, symbol) {
-  const scale = scaleForSymbol(symbol);
+// places, for fractional share counts. `symbolKeyString` is the composite
+// key from lib/symbolKey.js's symbolKey(ticker, tradingCurrency) — not a
+// bare ticker, since the same ticker can now exist under more than one
+// trading currency, each with its own scale.
+export function fmtUnits(n, symbolKeyString) {
+  const scale = scaleForSymbol(symbolKeyString);
   const v = Number.isFinite(n) ? Number(fromMinorUnits(n, scale) || "0") : 0;
   return v.toLocaleString("en-GB", { maximumFractionDigits: scale, minimumFractionDigits: 0 });
 }

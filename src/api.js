@@ -104,19 +104,36 @@ export function getIsaAllowance(taxYearStart) {
 
 // Reference-data lists — currency/symbol/counterparty are lookup entities
 // server-side now, not free text (see CLAUDE.md). Fetched once by
-// App.jsx alongside the account list, not per-component. Read-only for
-// now; a future admin area is where write endpoints would go.
+// App.jsx alongside the account list, not per-component.
 export function getCurrencies() {
   return request("/api/currencies");
+}
+export function createCurrency(currency) {
+  return request("/api/currencies", { method: "POST", ...jsonBody(currency) });
+}
+export function patchCurrency(code, patch) {
+  return request(`/api/currencies/${encodeURIComponent(code)}`, { method: "PATCH", ...jsonBody(patch) });
+}
+export function deleteCurrency(code) {
+  return request(`/api/currencies/${encodeURIComponent(code)}`, { method: "DELETE" });
 }
 export function getSymbols() {
   return request("/api/symbols");
 }
-// The one write endpoint among these three — see SymbolController's
-// docblock for why: a blank database has no symbols at all, so without
-// this there'd be no way to create the very first investment account.
+// createSymbol() predates full admin CRUD — see SymbolController's
+// docblock for why it exists on its own: a blank database has no symbols
+// at all, so without it there'd be no way to create the very first
+// investment account. patchSymbol()/deleteSymbol() key on the pair
+// (ticker, tradingCurrency), not the ticker alone, since the same ticker
+// can exist more than once now.
 export function createSymbol(symbol) {
   return request("/api/symbols", { method: "POST", ...jsonBody(symbol) });
+}
+export function patchSymbol(ticker, tradingCurrency, patch) {
+  return request(`/api/symbols/${encodeURIComponent(ticker)}/${encodeURIComponent(tradingCurrency)}`, { method: "PATCH", ...jsonBody(patch) });
+}
+export function deleteSymbol(ticker, tradingCurrency) {
+  return request(`/api/symbols/${encodeURIComponent(ticker)}/${encodeURIComponent(tradingCurrency)}`, { method: "DELETE" });
 }
 export function getCounterparties() {
   return request("/api/counterparties");
