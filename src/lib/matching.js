@@ -41,6 +41,31 @@ function lineBalanceValue(line, acc) {
   return { value: line.amount, currency: acc ? acc.currency : "???" };
 }
 
+// A ratio between two different currencies' *natural* decimal values is
+// legitimately a display-only float here — it's never persisted or
+// round-tripped, just shown once as an FX rate, so this is exempt from
+// the "no floats" rule the actual stored amounts follow. Each side's raw
+// scaled integer must be converted through its OWN currency's scale
+// first — dividing the raw integers directly would silently assume both
+// sides share one scale, which is wrong the moment one leg is, say, BTC
+// (scale 8) and the other GBP (scale 2): off by a factor of 10^6. Takes
+// the magnitude of each side, so the caller doesn't need to reason about
+// which sign convention (mirrored or natural) either side's raw value
+// follows — only the ratio's size matters for display.
+function impliedRateMessage(valueA, currencyA, valueB, currencyB) {
+  const realA = Number(fromMinorUnits(valueA, scaleForCurrency(currencyA)));
+  const realB = Number(fromMinorUnits(valueB, scaleForCurrency(currencyB)));
+  if (realA === 0) return null;
+  const rate = Math.abs(realB / realA);
+  // A fixed 4 decimal places reads fine for two similarly-scaled
+  // currencies but silently rounds to a meaningless "0.0000" for a pair
+  // as lopsided as BTC/GBP — significant figures stay informative at any
+  // magnitude, and toLocaleString (unlike toPrecision) never drops into
+  // exponential notation.
+  const rateStr = rate.toLocaleString("en-GB", { maximumSignificantDigits: 6, minimumSignificantDigits: 1 });
+  return `Exchange — implied rate 1 ${currencyA} = ${rateStr} ${currencyB}`;
+}
+
 /* ---------------------------------------------------------
    Balance hint for a set of lines.
    Each line.amount is a delta: positive = increase that account,
@@ -60,7 +85,21 @@ export function balanceHint(lines, accounts) {
     .filter(Boolean);
 
   if (enriched.length === 0) return { type: "empty", message: "" };
-  if (enriched.length === 1) return { type: "single", message: "Single-sided — not yet matched to another account" };
+  if (enriched.length === 1) {
+    // An unpaired line can still carry its own currency-exchange tag
+    // (line.exchangeAmount/exchangeCurrency — see CLAUDE.md's "Data
+    // model") recording what it was worth in another currency, even with
+    // no second real ledger line to compare against. Show the same
+    // implied-rate message a genuinely linked FX pair gets, rather than
+    // the generic "not yet matched" text, whenever that tag is present.
+    const x = enriched[0];
+    const { line } = x;
+    if (line.exchangeAmount !== undefined && line.exchangeCurrency && line.exchangeCurrency !== x.currency) {
+      const message = impliedRateMessage(x.value, x.currency, line.exchangeAmount, line.exchangeCurrency);
+      if (message) return { type: "fx", message };
+    }
+    return { type: "single", message: "Single-sided — not yet matched to another account" };
+  }
 
   const byCur = {};
   enriched.forEach((x) => {
@@ -76,25 +115,8 @@ export function balanceHint(lines, accounts) {
   if (curs.length === 2 && enriched.length === 2) {
     const [a, b] = enriched;
     if (Math.sign(a.value) !== Math.sign(b.value)) {
-      // A ratio between two different currencies' *natural* decimal
-      // values is legitimately a display-only float here — it's never
-      // persisted or round-tripped, just shown once as an FX rate, so
-      // this is exempt from the "no floats" rule the actual stored
-      // amounts follow. Each side's raw scaled integer must be converted
-      // through its OWN currency's scale first — dividing the raw
-      // integers directly (as this used to) silently assumes both sides
-      // share one scale, which is wrong the moment one leg is, say, BTC
-      // (scale 8) and the other GBP (scale 2): off by a factor of 10^6.
-      const realA = Number(fromMinorUnits(a.value, scaleForCurrency(a.currency)));
-      const realB = Number(fromMinorUnits(b.value, scaleForCurrency(b.currency)));
-      const rate = Math.abs(realB / realA);
-      // A fixed 4 decimal places reads fine for two similarly-scaled
-      // currencies but silently rounds to a meaningless "0.0000" for a
-      // pair as lopsided as BTC/GBP — significant figures stay
-      // informative at any magnitude, and toLocaleString (unlike
-      // toPrecision) never drops into exponential notation.
-      const rateStr = rate.toLocaleString("en-GB", { maximumSignificantDigits: 6, minimumSignificantDigits: 1 });
-      return { type: "fx", message: `Exchange — implied rate 1 ${a.currency} = ${rateStr} ${b.currency}` };
+      const message = impliedRateMessage(a.value, a.currency, b.value, b.currency);
+      if (message) return { type: "fx", message };
     }
     return { type: "unbalanced", message: "Both legs move the same direction" };
   }
