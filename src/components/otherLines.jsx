@@ -244,7 +244,7 @@ export function OtherLinesEditor({ draft, account, accounts, symbols, groupLevel
               <div key={ol.key} className="flex flex-col gap-1.5">
                 <div className="flex items-center gap-2 flex-wrap">
                   <AccountPicker
-                    accounts={accounts.filter((a) => a.id !== account.id)}
+                    accounts={accounts.filter((a) => a.id !== account.id && a.type !== "investment-parent")}
                     allAccounts={accounts}
                     symbols={symbols}
                     groupLevels={groupLevels}
