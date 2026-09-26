@@ -118,4 +118,62 @@ class LedgerStateServiceRescaleTest extends KernelTestCase
         $this->assertSame(20000, $this->em->getRepository(Account::class)->find('gbp-acc')->getOpeningBalance());
         $this->assertSame(5000, $this->em->getRepository(Account::class)->find('usd-acc')->getOpeningBalance(), 'USD must be untouched by a GBP rescale');
     }
+
+    private function makeSymbol(string $ticker, Currency $tradingCurrency, int $scale): \App\Entity\Symbol
+    {
+        $s = (new \App\Entity\Symbol())->setTicker($ticker)->setName($ticker)->setScale($scale)->setTradingCurrency($tradingCurrency);
+        $this->em->persist($s);
+        $this->em->flush();
+
+        return $s;
+    }
+
+    private function makeInvestmentAccount(string $id, \App\Entity\Symbol $symbol, int $openingBalance): Account
+    {
+        $a = (new Account())->setName($id)->setType('investment')->setSymbol($symbol)->setOpeningBalance($openingBalance);
+        $a->setId($id);
+        $this->em->persist($a);
+        $this->em->flush();
+
+        return $a;
+    }
+
+    public function testRescalingASymbolOnlyTouchesThatExactTradingCurrencyVariant(): void
+    {
+        $usd = $this->makeCurrency('USD', 2);
+        $gbp = $this->makeCurrency('GBP', 2);
+        $aaplUsd = $this->makeSymbol('AAPL', $usd, 6);
+        $aaplGbp = $this->makeSymbol('AAPL', $gbp, 6);
+        $usdAcc = $this->makeInvestmentAccount('aapl-usd-acc', $aaplUsd, 1500000);
+        $gbpAcc = $this->makeInvestmentAccount('aapl-gbp-acc', $aaplGbp, 2500000);
+        $this->makeLine($usdAcc, 500000);
+
+        $touched = $this->service->rescaleSymbol('AAPL', 'USD', 3);
+
+        $this->assertSame(2, $touched); // usdAcc's opening balance + its one line
+        $this->em->clear();
+        // Scale goes 6 -> 3 (a decrease), so existing amounts are divided by 10^3, not multiplied.
+        $this->assertSame(1500, $this->em->getRepository(Account::class)->find('aapl-usd-acc')->getOpeningBalance());
+        $this->assertSame(2500000, $this->em->getRepository(Account::class)->find('aapl-gbp-acc')->getOpeningBalance(), 'the GBP variant of the same ticker must be untouched');
+        $line = $this->em->getRepository(Line::class)->findBy(['account' => $this->em->getRepository(Account::class)->find('aapl-usd-acc')])[0];
+        $this->assertSame(500, $line->getAmount());
+    }
+
+    public function testRescalingASymbolLeavesCashValueUntouched(): void
+    {
+        $usd = $this->makeCurrency('USD', 2);
+        $aapl = $this->makeSymbol('AAPL', $usd, 6);
+        $acc = $this->makeInvestmentAccount('aapl-acc', $aapl, 1000000);
+        $line = $this->makeLine($acc, 500000);
+        $line->setCashValue(750000);
+        $this->em->persist($line);
+        $this->em->flush();
+
+        $this->service->rescaleSymbol('AAPL', 'USD', 8);
+
+        $this->em->clear();
+        $refreshed = $this->em->getRepository(Line::class)->find($line->getId());
+        $this->assertSame(750000, $refreshed->getCashValue(), 'cashValue is currency-scaled, not symbol-scaled — a Symbol rescale must never touch it');
+        $this->assertSame(50000000, $refreshed->getAmount());
+    }
 }

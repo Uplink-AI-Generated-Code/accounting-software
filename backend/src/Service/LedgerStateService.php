@@ -941,6 +941,78 @@ class LedgerStateService
     }
 
     /**
+     * Same shape as rescaleCurrency(), but only touches unit-denominated
+     * amounts for this exact (ticker, tradingCurrency) variant — a
+     * Symbol's own scale never affects cash-side amounts (those are
+     * currency-scaled, via tradingCurrency, which can't change — see
+     * Symbol's docblock).
+     */
+    public function rescaleSymbol(string $ticker, string $tradingCurrencyCode, int $newScale): int
+    {
+        $currency = $this->em->getRepository(Currency::class)->find($tradingCurrencyCode);
+        if (!$currency) {
+            throw new \InvalidArgumentException(sprintf('Unknown currency code "%s".', $tradingCurrencyCode));
+        }
+        $symbol = $this->em->getRepository(Symbol::class)->find(['ticker' => $ticker, 'tradingCurrency' => $currency]);
+        if (!$symbol) {
+            throw new \InvalidArgumentException(sprintf('Unknown symbol "%s" in %s.', $ticker, $tradingCurrencyCode));
+        }
+        $delta = $newScale - $symbol->getScale();
+        if (0 === $delta) {
+            return 0;
+        }
+
+        return $this->em->wrapInTransaction(function () use ($symbol, $ticker, $tradingCurrencyCode, $delta, $newScale) {
+            $conn = $this->em->getConnection();
+            $divisor = 10 ** abs($delta);
+            $op = $delta > 0 ? '*' : '/';
+
+            /** @var array<int, array{sql: string, table: string, column: string, params: array<int, mixed>}> $targets */
+            $targets = [
+                [
+                    'sql' => 'opening_balance IS NOT NULL AND symbol_ticker = ? AND symbol_currency = ?',
+                    'table' => 'account',
+                    'column' => 'opening_balance',
+                    'params' => [$ticker, $tradingCurrencyCode],
+                ],
+                [
+                    'sql' => 'account_id IN (SELECT id FROM account WHERE symbol_ticker = ? AND symbol_currency = ?)',
+                    'table' => 'line',
+                    'column' => 'amount',
+                    'params' => [$ticker, $tradingCurrencyCode],
+                ],
+            ];
+
+            if ($delta < 0) {
+                $lossy = 0;
+                foreach ($targets as $t) {
+                    $lossy += (int) $conn->fetchOne(
+                        "SELECT COUNT(*) FROM {$t['table']} WHERE {$t['column']} % ? != 0 AND ({$t['sql']})",
+                        [$divisor, ...$t['params']]
+                    );
+                }
+                if ($lossy > 0) {
+                    throw new \InvalidArgumentException(sprintf('Decreasing %s (%s)\'s scale would lose precision on %d existing amount(s) — refused.', $ticker, $tradingCurrencyCode, $lossy));
+                }
+            }
+
+            $rowsTouched = 0;
+            foreach ($targets as $t) {
+                $rowsTouched += $conn->executeStatement(
+                    "UPDATE {$t['table']} SET {$t['column']} = {$t['column']} {$op} ? WHERE {$t['sql']}",
+                    [$divisor, ...$t['params']]
+                );
+            }
+
+            $symbol->setScale($newScale);
+            $this->em->persist($symbol);
+            $this->em->flush();
+
+            return $rowsTouched;
+        });
+    }
+
+    /**
      * Looks up a Currency/Symbol/Counterparty by its natural key. Throws a
      * clear error naming the missing code rather than silently
      * fabricating a row with a guessed scale — these are reference data,
