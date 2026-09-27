@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
 import { LineChart, ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { C } from "../lib/theme";
-import { fmt, fmtUnits, fmtDateShort, todayISO, addYears } from "../lib/format";
-import { toNumber, fromNumber } from "../lib/decimal";
+import { fmt, fmtUnits, fmtDateShort, todayISO, addYears, maxPlaces, scaleForCurrency, scaleForSymbol } from "../lib/format";
+import { toNumber, fromNumber, round } from "../lib/decimal";
 import { CHART_INTERVALS, intervalRange, buildDailySeries } from "../lib/chartSeries";
 import { taxYearBounds } from "../lib/isa";
-import { buildCostBasisSeries, buildPortfolioValueSeries } from "../lib/stockMath";
+import { buildCostBasisSeries, buildPortfolioValueSeries, stockPlaces } from "../lib/stockMath";
 import { miniInput } from "./ui";
 import { symbolKey } from "../lib/symbolKey";
 
@@ -145,6 +145,11 @@ export function BalanceChart({ account, transactions, activeTaxYearStart }) {
   const rangeCtx = { taxYearStart: activeTaxYearStart, customStart, customEnd };
   const merged = useChartSeries(account.openingBalance ?? "0", lines, interval, compareYoY, rangeCtx);
 
+  // Recharts hands floats back to the formatters; round to the most decimals
+  // this account's own data uses, so labels never show float noise.
+  const balancePlaces = maxPlaces(scaleForCurrency(account.currency), [account.openingBalance, ...lines.map((l) => l.amount)]);
+  const formatMoney = (v) => fmt(round(fromNumber(v), balancePlaces), account.currency);
+
   if (lines.length === 0) {
     return <div style={{ padding: "40px 0", textAlign: "center", color: C.inkFaint, fontSize: 13 }}>Not enough entries yet to chart.</div>;
   }
@@ -164,8 +169,8 @@ export function BalanceChart({ account, transactions, activeTaxYearStart }) {
           <LineChart data={merged} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
             <CartesianGrid stroke={C.lineSoft} vertical={false} />
             <XAxis dataKey="offset" tickFormatter={(o) => (merged[o] ? fmtDateShort(merged[o].date) : "")} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={{ stroke: C.line }} tickLine={false} minTickGap={40} />
-            <YAxis tickFormatter={(v) => fmt(fromNumber(v), account.currency)} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={80} />
-            <Tooltip content={<ChartTooltip formatValue={(v) => fmt(fromNumber(v), account.currency)} compareYoY={compareYoY} />} />
+            <YAxis tickFormatter={formatMoney} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={80} />
+            <Tooltip content={<ChartTooltip formatValue={formatMoney} compareYoY={compareYoY} />} />
             {compareYoY && <Legend wrapperStyle={{ fontSize: 12 }} />}
             {compareYoY && <Line type="stepAfter" dataKey="previous" name="Same period last year" stroke={C.goldDim} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
             <Line type="stepAfter" dataKey="current" name="Balance" stroke={C.gold} strokeWidth={2} dot={false} isAnimationActive={false} />
@@ -176,7 +181,7 @@ export function BalanceChart({ account, transactions, activeTaxYearStart }) {
   );
 }
 
-function StockChartTooltip({ active, payload, account, tradingCurrency, compareYoY }) {
+function StockChartTooltip({ active, payload, account, tradingCurrency, compareYoY, formatMoney, formatUnits }) {
   if (!active || !payload || !payload.length) return null;
   const byKey = {};
   payload.forEach((p) => { byKey[p.dataKey] = p; });
@@ -191,14 +196,14 @@ function StockChartTooltip({ active, payload, account, tradingCurrency, compareY
   return (
     <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 6, padding: "8px 10px", fontSize: 12.5, lineHeight: 1.7 }}>
       <div style={{ fontWeight: 600, marginBottom: 3 }}>{fmtDateShort(date)}</div>
-      {row(C.gold, "Units", byKey.units && byKey.units.value, (v) => `${fmtUnits(fromNumber(v), symbolKey(account.symbolTicker, account.symbolCurrency))} ${account.symbolTicker}`)}
-      {row(C.credit, "Cost basis", byKey.cost && byKey.cost.value, (v) => fmt(fromNumber(v), tradingCurrency))}
-      {row(C.plum, "Worth", byKey.value && byKey.value.value, (v) => fmt(fromNumber(v), tradingCurrency))}
+      {row(C.gold, "Units", byKey.units && byKey.units.value, (v) => `${formatUnits(v)} ${account.symbolTicker}`)}
+      {row(C.credit, "Cost basis", byKey.cost && byKey.cost.value, formatMoney)}
+      {row(C.plum, "Worth", byKey.value && byKey.value.value, formatMoney)}
       {compareYoY && (
         <div style={{ marginTop: 4, paddingTop: 4, borderTop: `1px solid ${C.lineSoft}`, color: C.inkFaint }}>
-          {row(C.goldDim, "Units, last year", byKey.unitsPrev && byKey.unitsPrev.value, (v) => `${fmtUnits(fromNumber(v), symbolKey(account.symbolTicker, account.symbolCurrency))} ${account.symbolTicker}`)}
-          {row(C.credit, "Cost, last year", byKey.costPrev && byKey.costPrev.value, (v) => fmt(fromNumber(v), tradingCurrency))}
-          {row(C.plum, "Worth, last year", byKey.valuePrev && byKey.valuePrev.value, (v) => fmt(fromNumber(v), tradingCurrency))}
+          {row(C.goldDim, "Units, last year", byKey.unitsPrev && byKey.unitsPrev.value, (v) => `${formatUnits(v)} ${account.symbolTicker}`)}
+          {row(C.credit, "Cost, last year", byKey.costPrev && byKey.costPrev.value, formatMoney)}
+          {row(C.plum, "Worth, last year", byKey.valuePrev && byKey.valuePrev.value, formatMoney)}
         </div>
       )}
     </div>
@@ -215,6 +220,12 @@ export function UnitsChart({ account, transactions, tradingCurrency, activeTaxYe
     () => transactions.map((t) => t.lines.find((l) => l.accountId === account.id)).filter(Boolean).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
     [transactions, account]
   );
+
+  const places = stockPlaces(scaleForCurrency(tradingCurrency), account, rawLines);
+  const unitsKey = symbolKey(account.symbolTicker, account.symbolCurrency);
+  const unitLabelPlaces = Math.max(places.unitPlaces, scaleForSymbol(unitsKey));
+  const formatMoney = (v) => fmt(round(fromNumber(v), places.moneyPlaces), tradingCurrency);
+  const formatUnits = (v) => fmtUnits(round(fromNumber(v), unitLabelPlaces), unitsKey);
 
   // All three share the same underlying lines, so they land on identical
   // date/offset grids and can be zipped together into one dataset below.
@@ -269,9 +280,9 @@ export function UnitsChart({ account, transactions, tradingCurrency, activeTaxYe
           <ComposedChart data={merged} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
             <CartesianGrid stroke={C.lineSoft} vertical={false} />
             <XAxis dataKey="offset" tickFormatter={(o) => (merged[o] ? fmtDateShort(merged[o].date) : "")} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={{ stroke: C.line }} tickLine={false} minTickGap={40} />
-            <YAxis yAxisId="units" tickFormatter={(v) => fmtUnits(fromNumber(v), symbolKey(account.symbolTicker, account.symbolCurrency))} tick={{ fontSize: 11, fill: C.gold }} axisLine={false} tickLine={false} width={55} />
-            <YAxis yAxisId="money" orientation="right" tickFormatter={(v) => fmt(fromNumber(v), tradingCurrency)} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={80} />
-            <Tooltip content={<StockChartTooltip account={account} tradingCurrency={tradingCurrency} compareYoY={compareYoY} />} />
+            <YAxis yAxisId="units" tickFormatter={formatUnits} tick={{ fontSize: 11, fill: C.gold }} axisLine={false} tickLine={false} width={55} />
+            <YAxis yAxisId="money" orientation="right" tickFormatter={formatMoney} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={80} />
+            <Tooltip content={<StockChartTooltip account={account} tradingCurrency={tradingCurrency} compareYoY={compareYoY} formatMoney={formatMoney} formatUnits={formatUnits} />} />
             <Legend wrapperStyle={{ fontSize: 12 }} />
             {compareYoY && <Line yAxisId="units" type="stepAfter" dataKey="unitsPrev" name="Units (last year)" stroke={C.goldDim} strokeWidth={1.5} strokeDasharray="4 3" dot={false} isAnimationActive={false} />}
             <Bar yAxisId="units" dataKey="units" name={`${account.symbolTicker} units`} fill={C.gold} fillOpacity={0.3} isAnimationActive={false} />

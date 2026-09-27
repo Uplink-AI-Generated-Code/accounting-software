@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, Check, X, AlertTriangle, Pencil, Unlink2, TrendingUp, TableProperties, ChevronUp, ChevronDown } from "lucide-react";
 import { C } from "../lib/theme";
-import { fmt, fmtPlain, fmtUnits, todayISO, fmtDate, displayAccountName } from "../lib/format";
+import { fmt, fmtPlain, fmtUnits, todayISO, fmtDate, displayAccountName, fracWidth } from "../lib/format";
 import { parseDecimal, parseOrZero, add, sub, neg, abs, isZero, isNegative, isPositive, isNonZero, divide, round } from "../lib/decimal";
 import { reorderSameDate } from "../lib/grouping";
-import { applyCostBasisLine, applyPortfolioValueLine } from "../lib/stockMath";
+import { applyCostBasisLine, applyPortfolioValueLine, stockPlaces } from "../lib/stockMath";
 import { formatCandidateAmount, candidateIsNegative } from "../lib/matching";
 import { dateOutsideTaxYear, taxYearBounds } from "../lib/isa";
 import { buildSaveOperations, buildUnlinkOperations, buildDeleteOperations, buildReorderOperations } from "../lib/ledgerOperations";
@@ -13,7 +13,7 @@ import { useAccountLedger } from "./useAccountLedger";
 import { useMatchCandidates } from "./useMatchCandidates";
 import { useLedgerRowAnimation } from "./useLedgerRowAnimation";
 import { UnitsChart } from "./charts";
-import { iconBtn, miniInput, ImbalanceBadge, TagChips, TagsEditor } from "./ui";
+import { iconBtn, miniInput, ImbalanceBadge, TagChips, TagsEditor, Amount } from "./ui";
 import { symbolKey } from "../lib/symbolKey";
 
 /* ---------------------------------------------------------
@@ -175,18 +175,30 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
 
   const { rowRefs, pendingSettleId } = useLedgerRowAnimation(rows, editingKey);
 
+  // Adaptive precision for computed money (see lib/stockMath.js's
+  // stockPlaces) — must agree with the backend's costBasis/portfolioValue.
+  const places = useMemo(() => stockPlaces(cashScale, account, rows.map((r) => r.line)), [rows, cashScale, account]);
+  const unitsKey = symbolKey(account.symbolTicker, account.symbolCurrency);
+  const unitsWidth = useMemo(
+    () => fracWidth([account.openingBalance, ...rows.flatMap((r) => [r.line.amount, r.running])].map((value) => ({ value, code: unitsKey, kind: "units" }))),
+    [rows, account.openingBalance, unitsKey]
+  );
+
   // Current cost basis, portfolio value, and the average price cost basis
   // implies — all read straight off the ledger's own running totals, so
   // the header, each row, and the chart are always telling the same story.
   // Falls back to the account's own carried-forward opening position (not
   // a hardcoded 0) when there are no trades yet, so a freshly rolled-over
   // investment account's header agrees with the sidebar's costBasis.
-  const costBasis = rows.length ? rows[rows.length - 1].runningCost : account.openingBalanceCashValue ?? "0";
-  const portfolioValue = rows.length ? rows[rows.length - 1].runningValue : account.openingBalanceCashValue ?? "0";
-  // Cost per whole unit, rounded to the trading currency's scale — the
-  // same result the old divRoundHalfUp(costBasis × 10^unitScale, balance)
-  // produced on minor units.
-  const avgCost = isPositive(balance) ? round(divide(costBasis, balance), cashScale) : null;
+  // Rounded to `places` (may carry 20-dp division dust from divide()) —
+  // this is the only place costBasis/portfolioValue are used unrounded, so
+  // rounding here at definition is safe (confirmed by grep).
+  const costBasis = round(rows.length ? rows[rows.length - 1].runningCost : account.openingBalanceCashValue ?? "0", places.moneyPlaces);
+  const portfolioValue = round(rows.length ? rows[rows.length - 1].runningValue : account.openingBalanceCashValue ?? "0", places.moneyPlaces);
+  // Cost per whole unit — the same result the old divRoundHalfUp(costBasis
+  // × 10^unitScale, balance) produced on minor units, now at adaptive
+  // precision instead of a fixed currency scale.
+  const avgCost = isPositive(balance) ? round(divide(costBasis, balance), places.pricePlaces) : null;
 
   function buildDraftFromRecord(record) {
     const line = record.lines.find((l) => l.accountId === account.id);
@@ -360,9 +372,9 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
             <div className="grid items-center" style={{ gridTemplateColumns: gridCols, fontSize: 13.5, color: C.inkFaint }}>
               <div style={{ fontSize: 12.5 }}>—</div>
               <div style={{ fontStyle: "italic" }}>Opening balance</div>
-              <div className="ll-mono text-right">{isNegative(account.openingBalance) ? fmtUnits(neg(account.openingBalance), symbolKey(account.symbolTicker, account.symbolCurrency)) : "—"}</div>
-              <div className="ll-mono text-right">{isPositive(account.openingBalance) ? fmtUnits(account.openingBalance, symbolKey(account.symbolTicker, account.symbolCurrency)) : "—"}</div>
-              <div className="ll-mono text-right" style={{ fontWeight: 600 }}>{fmtUnits(account.openingBalance, symbolKey(account.symbolTicker, account.symbolCurrency))}</div>
+              <div className="ll-mono text-right">{isNegative(account.openingBalance) ? <Amount value={neg(account.openingBalance)} code={unitsKey} kind="units" fracWidth={unitsWidth} /> : "—"}</div>
+              <div className="ll-mono text-right">{isPositive(account.openingBalance) ? <Amount value={account.openingBalance} code={unitsKey} kind="units" fracWidth={unitsWidth} /> : "—"}</div>
+              <div className="ll-mono text-right" style={{ fontWeight: 600 }}><Amount value={account.openingBalance} code={unitsKey} kind="units" fracWidth={unitsWidth} /></div>
               <div />
             </div>
             <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 3, paddingLeft: 118 }}>
@@ -402,7 +414,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
                     className="ll-mono text-right" style={{ ...miniInput, color: C.credit }}
                     onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }}
                   />
-                  <div className="ll-mono text-right" style={{ fontWeight: 600, fontSize: 13.5 }}>{fmtUnits(r.running, symbolKey(account.symbolTicker, account.symbolCurrency))}</div>
+                  <div className="ll-mono text-right" style={{ fontWeight: 600, fontSize: 13.5 }}><Amount value={r.running} code={unitsKey} kind="units" fracWidth={unitsWidth} /></div>
                   <div className="flex gap-1 justify-end">
                     <button onClick={commit} title="Save" style={iconBtn(C.credit)}><Check size={15} /></button>
                     <button onClick={cancel} title="Cancel" style={iconBtn(C.inkFaint)}><X size={15} /></button>
@@ -502,9 +514,9 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
                   {unmatched && <span title="Value side not yet matched to another account"><AlertTriangle size={12} color={C.gold} /></span>}
                   <TagChips tags={r.line.tags} />
                 </div>
-                <div className="ll-mono text-right" style={{ color: unitsOut ? C.debit : C.inkFaint }}>{unitsOut ? fmtUnits(unitsOut, symbolKey(account.symbolTicker, account.symbolCurrency)) : "—"}</div>
-                <div className="ll-mono text-right" style={{ color: unitsIn ? C.credit : C.inkFaint }}>{unitsIn ? fmtUnits(unitsIn, symbolKey(account.symbolTicker, account.symbolCurrency)) : "—"}</div>
-                <div className="ll-mono text-right" style={{ fontWeight: 600 }}>{fmtUnits(r.running, symbolKey(account.symbolTicker, account.symbolCurrency))}</div>
+                <div className="ll-mono text-right" style={{ color: unitsOut ? C.debit : C.inkFaint }}>{unitsOut ? <Amount value={unitsOut} code={unitsKey} kind="units" fracWidth={unitsWidth} /> : "—"}</div>
+                <div className="ll-mono text-right" style={{ color: unitsIn ? C.credit : C.inkFaint }}>{unitsIn ? <Amount value={unitsIn} code={unitsKey} kind="units" fracWidth={unitsWidth} /> : "—"}</div>
+                <div className="ll-mono text-right" style={{ fontWeight: 600 }}><Amount value={r.running} code={unitsKey} kind="units" fracWidth={unitsWidth} /></div>
                 <div className="flex justify-end items-center gap-0.5">
                   {hasAbove && (
                     <button onClick={(e) => { e.stopPropagation(); moveRow(idx, -1); }} title="Move earlier among same-date entries" style={{ padding: 2 }}>
@@ -521,7 +533,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
               </div>
               <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 3, paddingLeft: 118 }}>
                 {natural !== null && <>Value {fmtPlain(natural, r.line.cashCurrency)} · </>}
-                Cost {fmtPlain(r.runningCost, tradingCurrency)} · Worth {fmtPlain(r.runningValue, tradingCurrency)}
+                Cost {fmtPlain(round(r.runningCost, places.moneyPlaces), tradingCurrency)} · Worth {fmtPlain(round(r.runningValue, places.moneyPlaces), tradingCurrency)}
                 {r.others.length > 0 ? ` · ${r.others.map((a) => displayAccountName(a)).join(", ")}` : " · unmatched"}
               </div>
             </div>

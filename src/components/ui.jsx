@@ -1,8 +1,23 @@
 import { useState } from "react";
 import { X, AlertTriangle, Plus } from "lucide-react";
 import { C } from "../lib/theme";
-import { fmt } from "../lib/format";
+import { fmt, fmtParts } from "../lib/format";
 import { isPositive } from "../lib/decimal";
+
+// A right-aligned amount whose fraction is padded to `fracWidth` digits of
+// blank space, so a column of amounts lines up on the decimal point — CSS
+// text-align:"<string>" isn't implemented in any browser. Relies on the
+// ll-mono font, where 1ch is exactly one digit's width. Compute fracWidth
+// once per column with lib/format.js's fracWidth().
+export function Amount({ value, code, kind = "plain", fracWidth = 0 }) {
+  const { int, frac } = fmtParts(value, code, kind);
+  return (
+    <span style={{ whiteSpace: "nowrap" }}>
+      {int}
+      <span style={{ display: "inline-block", textAlign: "left", minWidth: fracWidth > 0 ? `${fracWidth + 1}ch` : 0 }}>{frac}</span>
+    </span>
+  );
+}
 
 export function iconBtn(color) { return { padding: 6, borderRadius: 4, border: `1px solid ${C.line}`, color, background: C.card }; }
 export const miniInput = { width: "100%", padding: "7px 8px", borderRadius: 4, border: `1px solid ${C.line}`, background: C.paper, fontSize: 13, color: C.ink, outline: "none" };
