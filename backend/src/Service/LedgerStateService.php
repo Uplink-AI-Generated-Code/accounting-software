@@ -695,6 +695,7 @@ class LedgerStateService
                     'deleteTransaction' => $this->opDeleteTransaction($op),
                     'upsertLine' => $this->opUpsertLine($op),
                     'upsertTransaction' => $this->opUpsertTransaction($op),
+                    'linkLines' => $this->opLinkLines($op, $tempIds),
                     default => null,
                 };
             }
@@ -786,6 +787,61 @@ class LedgerStateService
         $this->em->remove($line);
         $this->em->flush();
         $this->demoteOrDeleteTransactionIfBelowMinimum($transactionId);
+    }
+
+    /**
+     * Puts 2+ lines in one Transaction, creating a fresh one only if none of
+     * them already has one. Never merges two *different* pre-existing
+     * Transactions — a caller that genuinely needs that unlinks first (see
+     * the design spec's "linkLines" section). Idempotent when every given
+     * line already belongs to the one target Transaction.
+     *
+     * @param array<string, mixed> $op
+     */
+    private function opLinkLines(array $op, array &$tempIds): void
+    {
+        $rawIds = $op['lineIds'] ?? null;
+        if (!\is_array($rawIds) || \count($rawIds) < 2) {
+            throw new \InvalidArgumentException('linkLines requires at least 2 line ids.');
+        }
+        $resolvedIds = array_map(fn ($ref) => $this->resolveLineRef($ref, $tempIds), $rawIds);
+        if (\count($resolvedIds) !== \count(array_unique($resolvedIds))) {
+            throw new \InvalidArgumentException('linkLines given duplicate line ids.');
+        }
+
+        $lines = [];
+        foreach ($resolvedIds as $id) {
+            $line = $this->em->getRepository(Line::class)->find($id);
+            if (!$line) {
+                throw new \InvalidArgumentException(sprintf('Unknown line id "%s".', $id));
+            }
+            $lines[] = $line;
+        }
+
+        $existingTransactionIds = [];
+        foreach ($lines as $line) {
+            $t = $line->getTransaction();
+            if ($t) {
+                $existingTransactionIds[$t->getId()] = true;
+            }
+        }
+        if (\count($existingTransactionIds) > 1) {
+            throw new \InvalidArgumentException('linkLines cannot span two different existing transactions.');
+        }
+
+        if (1 === \count($existingTransactionIds)) {
+            $transaction = $this->em->getRepository(Transaction::class)->find(array_key_first($existingTransactionIds));
+        } else {
+            $transaction = new Transaction();
+            $transaction->setId(bin2hex(random_bytes(8)));
+            $this->em->persist($transaction);
+        }
+
+        foreach ($lines as $line) {
+            $transaction->addLine($line);
+            $this->em->persist($line);
+        }
+        $this->em->flush();
     }
 
     /**

@@ -174,4 +174,134 @@ class LedgerOperationsTest extends KernelTestCase
         $this->expectException(\InvalidArgumentException::class);
         $this->state->applyLedgerOperations([['op' => 'deleteLine', 'lineId' => 999999]]);
     }
+
+    public function testLinkLinesCreatesANewTransactionFromTwoStandaloneLines(): void
+    {
+        $this->state->applyLedgerOperations([
+            $this->createOp('a', 'cash', '10', '2026-05-01'),
+            $this->createOp('b', 'savings', '-10', '2026-05-01'),
+            $this->linkOp(['a', 'b']),
+        ]);
+
+        self::assertSame(['lines' => 2, 'transactions' => 1], $this->rowCounts());
+    }
+
+    public function testLinkLinesExtendsAnExistingTransactionWithAStandaloneLine(): void
+    {
+        $this->state->applyLedgerOperations([
+            $this->createOp('a', 'cash', '10', '2026-05-01'),
+            $this->createOp('b', 'savings', '-6', '2026-05-01'),
+            $this->linkOp(['a', 'b']),
+            $this->createOp('c', 'wages', '-4', '2026-05-01'),
+        ]);
+        $conn = $this->em->getConnection();
+        $cashId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'cash'");
+        $wagesId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'wages'");
+        $transactionId = $conn->fetchOne('SELECT transaction_id FROM line WHERE id = ?', [$cashId]);
+
+        $this->state->applyLedgerOperations([$this->linkOp([$cashId, $wagesId])]);
+
+        self::assertSame(['lines' => 3, 'transactions' => 1], $this->rowCounts());
+        self::assertSame($transactionId, $this->lineRow($wagesId)['transaction_id']);
+    }
+
+    public function testLinkLinesIsANoOpWhenAllGivenLinesAlreadyShareTheSameTransaction(): void
+    {
+        $this->state->applyLedgerOperations([
+            $this->createOp('a', 'cash', '10', '2026-05-01'),
+            $this->createOp('b', 'savings', '-10', '2026-05-01'),
+            $this->linkOp(['a', 'b']),
+        ]);
+        $conn = $this->em->getConnection();
+        $cashId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'cash'");
+        $savingsId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'savings'");
+
+        $this->state->applyLedgerOperations([$this->linkOp([$cashId, $savingsId])]);
+
+        self::assertSame(['lines' => 2, 'transactions' => 1], $this->rowCounts());
+    }
+
+    // Regression coverage for updateLine (Task 1) now that linkLines
+    // makes a genuinely-linked line constructible: editing one leg's own
+    // fields must never disturb its Transaction membership.
+    public function testUpdateLineOnAnAlreadyLinkedLineDoesNotChangeItsTransaction(): void
+    {
+        $this->state->applyLedgerOperations([
+            $this->createOp('a', 'cash', '10', '2026-05-01'),
+            $this->createOp('b', 'savings', '-10', '2026-05-01'),
+            $this->linkOp(['a', 'b']),
+        ]);
+        $conn = $this->em->getConnection();
+        $cashId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'cash'");
+        $transactionIdBefore = $conn->fetchOne('SELECT transaction_id FROM line WHERE id = ?', [$cashId]);
+        self::assertNotNull($transactionIdBefore);
+
+        $this->state->applyLedgerOperations([
+            ['op' => 'updateLine', 'lineId' => $cashId, 'accountId' => 'cash', 'amount' => '15', 'date' => '2026-05-01', 'description' => 'edited'],
+        ]);
+
+        $row = $this->lineRow($cashId);
+        self::assertSame('15', $row['amount']);
+        self::assertSame($transactionIdBefore, $row['transaction_id']);
+        self::assertSame(['lines' => 2, 'transactions' => 1], $this->rowCounts());
+    }
+
+    public function testLinkLinesAcrossTwoDifferentExistingTransactionsThrowsAndWritesNothing(): void
+    {
+        $this->state->applyLedgerOperations([
+            $this->createOp('a', 'cash', '10', '2026-05-01'),
+            $this->createOp('b', 'savings', '-10', '2026-05-01'),
+            $this->linkOp(['a', 'b']),
+            $this->createOp('c', 'cash', '5', '2026-05-02'),
+            $this->createOp('d', 'wages', '-5', '2026-05-02'),
+            $this->linkOp(['c', 'd']),
+        ]);
+        $conn = $this->em->getConnection();
+        $lineAId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'cash' AND date = '2026-05-01'");
+        $lineCId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'cash' AND date = '2026-05-02'");
+        $before = $this->rowCounts();
+
+        try {
+            $this->state->applyLedgerOperations([$this->linkOp([$lineAId, $lineCId])]);
+            self::fail('expected InvalidArgumentException');
+        } catch (\InvalidArgumentException $e) {
+            self::assertSame('linkLines cannot span two different existing transactions.', $e->getMessage());
+        }
+
+        self::assertSame($before, $this->rowCounts());
+    }
+
+    public function testLinkLinesGivenFewerThanTwoIdsThrows(): void
+    {
+        $this->state->applyLedgerOperations([$this->createOp('a', 'cash', '10', '2026-05-01')]);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->state->applyLedgerOperations([$this->linkOp(['a'])]);
+    }
+
+    public function testLinkLinesGivenADuplicateIdThrows(): void
+    {
+        $this->state->applyLedgerOperations([$this->createOp('a', 'cash', '10', '2026-05-01')]);
+        $lineId = $this->firstLineId();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->state->applyLedgerOperations([$this->linkOp([$lineId, $lineId])]);
+    }
+
+    public function testLinkLinesWithAnUnresolvedTempIdThrowsAndWritesNothing(): void
+    {
+        $before = $this->rowCounts();
+
+        try {
+            $this->state->applyLedgerOperations([
+                $this->createOp('a', 'cash', '10', '2026-05-01'),
+                $this->linkOp(['a', 'never-created']),
+            ]);
+            self::fail('expected InvalidArgumentException');
+        } catch (\InvalidArgumentException $e) {
+            self::assertSame('Unresolved line reference "never-created".', $e->getMessage());
+        }
+
+        self::assertSame($before, $this->rowCounts());
+    }
 }
