@@ -117,4 +117,61 @@ class LedgerOperationsTest extends KernelTestCase
 
         self::assertSame($before, $this->rowCounts());
     }
+
+    private function linkOp(array $ids): array
+    {
+        return ['op' => 'linkLines', 'lineIds' => $ids];
+    }
+
+    public function testDeleteLineOnAStandaloneLineJustRemovesIt(): void
+    {
+        $this->state->applyLedgerOperations([$this->createOp('a', 'cash', '10', '2026-05-01')]);
+        $lineId = $this->firstLineId();
+
+        $this->state->applyLedgerOperations([['op' => 'deleteLine', 'lineId' => $lineId]]);
+
+        self::assertSame(['lines' => 0, 'transactions' => 0], $this->rowCounts());
+    }
+
+    public function testDeleteLineOnATwoLineTransactionDissolvesItAndDemotesTheSurvivor(): void
+    {
+        $this->state->applyLedgerOperations([
+            $this->createOp('a', 'cash', '10', '2026-05-01'),
+            $this->createOp('b', 'savings', '-10', '2026-05-01'),
+            $this->linkOp(['a', 'b']),
+        ]);
+        $conn = $this->em->getConnection();
+        $cashId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'cash'");
+        $savingsId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'savings'");
+
+        $this->state->applyLedgerOperations([['op' => 'deleteLine', 'lineId' => $cashId]]);
+
+        self::assertSame(['lines' => 1, 'transactions' => 0], $this->rowCounts());
+        self::assertNull($this->lineRow($savingsId)['transaction_id']);
+    }
+
+    public function testDeleteLineOnAThreeLineTransactionLeavesItIntact(): void
+    {
+        $this->state->applyLedgerOperations([
+            $this->createOp('a', 'cash', '10', '2026-05-01'),
+            $this->createOp('b', 'savings', '-6', '2026-05-01'),
+            $this->createOp('c', 'wages', '-4', '2026-05-01'),
+            $this->linkOp(['a', 'b', 'c']),
+        ]);
+        $conn = $this->em->getConnection();
+        $wagesId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'wages'");
+        $savingsId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'savings'");
+        $transactionIdBefore = $conn->fetchOne('SELECT transaction_id FROM line WHERE id = ?', [$savingsId]);
+
+        $this->state->applyLedgerOperations([['op' => 'deleteLine', 'lineId' => $wagesId]]);
+
+        self::assertSame(['lines' => 2, 'transactions' => 1], $this->rowCounts());
+        self::assertSame($transactionIdBefore, $this->lineRow($savingsId)['transaction_id']);
+    }
+
+    public function testDeleteLineWithUnknownLineIdThrows(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->state->applyLedgerOperations([['op' => 'deleteLine', 'lineId' => 999999]]);
+    }
 }

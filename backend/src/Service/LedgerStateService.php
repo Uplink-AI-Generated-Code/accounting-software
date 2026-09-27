@@ -691,7 +691,7 @@ class LedgerStateService
                 match ($op['op'] ?? null) {
                     'createLine' => $this->opCreateLine($op, $tempIds),
                     'updateLine' => $this->opUpdateLine($op, $tempIds),
-                    'deleteLine' => $this->opDeleteLine($op),
+                    'deleteLine' => $this->opDeleteLine($op, $tempIds),
                     'deleteTransaction' => $this->opDeleteTransaction($op),
                     'upsertLine' => $this->opUpsertLine($op),
                     'upsertTransaction' => $this->opUpsertTransaction($op),
@@ -775,16 +775,56 @@ class LedgerStateService
     }
 
     /** @param array<string, mixed> $op */
-    private function opDeleteLine(array $op): void
+    private function opDeleteLine(array $op, array &$tempIds): void
     {
-        if (!isset($op['lineId'])) {
+        $lineId = $this->resolveLineRef($op['lineId'] ?? null, $tempIds);
+        $line = $this->em->getRepository(Line::class)->find($lineId);
+        if (!$line) {
+            throw new \InvalidArgumentException(sprintf('Unknown line id "%s".', $lineId));
+        }
+        $transactionId = $line->getTransaction()?->getId();
+        $this->em->remove($line);
+        $this->em->flush();
+        $this->demoteOrDeleteTransactionIfBelowMinimum($transactionId);
+    }
+
+    /**
+     * Shared by deleteLine and unlinkLine: after a line leaves a Transaction
+     * (removed outright, or detached to standalone), checks whether that
+     * Transaction now has fewer than the 2 lines a real linked Transaction
+     * always requires (see CLAUDE.md's "Data model"). At exactly 1 remaining
+     * line, that survivor is demoted to standalone *before* the Transaction
+     * row is removed — Line.transaction is ON DELETE CASCADE at the database
+     * level, so removing the Transaction first would delete the survivor too.
+     * The Transaction itself is always removed via a bulk DQL DELETE, never
+     * $em->remove() on the loaded entity — that would trigger the ORM's own
+     * cascade/orphanRemoval semantics against its (possibly stale) in-memory
+     * `lines` collection, which is exactly the trap Transaction::removeLine()
+     * sets (see this plan's Global Constraints).
+     */
+    private function demoteOrDeleteTransactionIfBelowMinimum(?string $transactionId): void
+    {
+        if (null === $transactionId) {
             return;
         }
-        $line = $this->em->getRepository(Line::class)->find((int) $op['lineId']);
-        if ($line) {
-            $this->em->remove($line);
-            $this->em->flush();
+        $remainingIds = $this->em->getConnection()->fetchFirstColumn(
+            'SELECT id FROM line WHERE transaction_id = ?',
+            [$transactionId]
+        );
+        if (\count($remainingIds) >= 2) {
+            return;
         }
+        foreach ($remainingIds as $survivorId) {
+            $survivor = $this->em->getRepository(Line::class)->find((int) $survivorId);
+            if ($survivor) {
+                $survivor->setTransaction(null);
+                $this->em->persist($survivor);
+            }
+        }
+        $this->em->flush();
+        $this->em->createQuery('DELETE FROM App\Entity\Transaction t WHERE t.id = :id')
+            ->setParameter('id', $transactionId)
+            ->execute();
     }
 
     /** @param array<string, mixed> $op */
