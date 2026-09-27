@@ -301,7 +301,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
 
   function deleteEntry() {
     if (!draft || !draft.originalRecord) return;
-    onLedgerOperations(buildDeleteOperations(draft.originalRecord)).then(reload);
+    onLedgerOperations(buildDeleteOperations(draft.originalRecord, account.id)).then(reload);
     setDraft(null);
     setDraftError("");
   }

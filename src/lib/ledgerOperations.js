@@ -48,10 +48,26 @@ export function buildUnlinkOperations(transactionId, lines) {
   ];
 }
 
-export function buildDeleteOperations(record) {
-  return record.transactionId
-    ? [{ op: "deleteTransaction", transactionId: record.transactionId }]
-    : [{ op: "deleteLine", lineId: record.lines[0].id }];
+// Deletes only the calling account's own leg(s) of a record. A standalone
+// line just goes. A linked transaction is deleted outright, but any other
+// account's line(s) it held are never discarded with it — mirroring
+// removeOtherLine()'s "removing a leg never deletes the other side's data"
+// rule (see CLAUDE.md's "Matching and linking") — they're recreated as
+// their own standalone line(s) (one remaining line) or a fresh linked
+// transaction (2+ remaining lines), the same newLines.length branch
+// buildSaveOperations already uses.
+export function buildDeleteOperations(record, accountId) {
+  if (!record.transactionId) {
+    return [{ op: "deleteLine", lineId: record.lines[0].id }];
+  }
+  const remaining = record.lines.filter((l) => l.accountId !== accountId);
+  const ops = [{ op: "deleteTransaction", transactionId: record.transactionId }];
+  if (remaining.length >= 2) {
+    ops.push({ op: "upsertTransaction", transactionId: uid(), lines: remaining });
+  } else if (remaining.length === 1) {
+    ops.push({ op: "upsertLine", lineId: null, line: remaining[0] });
+  }
+  return ops;
 }
 
 // One operation per patched record — see lib/grouping.js's
