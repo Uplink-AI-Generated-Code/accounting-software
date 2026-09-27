@@ -143,6 +143,15 @@ final class Decimal
 
     private static function out(Number $n): string
     {
-        return self::parse((string) $n) ?? '0';
+        $s = self::parse((string) $n);
+        if (null === $s) {
+            // Number's own string form is always a plain decimal (it never
+            // emits "+", exponents, etc.), so parse() failing here means
+            // something is badly wrong — silently returning "0" would turn
+            // that bug into a wrong money value instead of a loud failure.
+            throw new \LogicException(sprintf('BcMath\Number produced a non-decimal string: "%s".', (string) $n));
+        }
+
+        return $s;
     }
 }

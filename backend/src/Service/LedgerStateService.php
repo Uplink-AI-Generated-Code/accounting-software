@@ -725,9 +725,10 @@ class LedgerStateService
         if (!\is_array($lineData) || !isset($lineData['accountId'])) {
             return;
         }
-        $account = $this->em->getRepository(Account::class)->find((string) $lineData['accountId']);
+        $accountId = (string) $lineData['accountId'];
+        $account = $this->em->getRepository(Account::class)->find($accountId);
         if (!$account) {
-            return;
+            throw new \InvalidArgumentException(sprintf('Unknown account "%s".', $accountId));
         }
         $lineId = isset($op['lineId']) ? (int) $op['lineId'] : null;
         $line = $lineId ? $this->em->getRepository(Line::class)->find($lineId) : null;
@@ -749,11 +750,15 @@ class LedgerStateService
         $this->em->persist($transaction);
 
         foreach ($op['lines'] ?? [] as $lineData) {
-            $account = $this->em->getRepository(Account::class)->find((string) ($lineData['accountId'] ?? ''));
+            $accountId = (string) ($lineData['accountId'] ?? '');
+            $account = $this->em->getRepository(Account::class)->find($accountId);
             if (!$account) {
-                // A line pointing nowhere is malformed input, skip it
-                // rather than fail the whole batch.
-                continue;
+                // A line pointing nowhere is malformed input. Unlike
+                // writeState()'s deliberate best-effort import skip, the
+                // live batch path must fail the whole operation rather
+                // than silently persist a transaction with a dropped
+                // line (which could even leave a 1-line Transaction).
+                throw new \InvalidArgumentException(sprintf('Unknown account "%s".', $accountId));
             }
             $line = $this->hydrateLine(new Line(), $lineData, $transaction, $account);
             $this->em->persist($line);
