@@ -89,10 +89,12 @@ Frontend: Vite + React, `yarn.lock` is the checked-in lockfile (no
   override the proxy target (e.g. `LEDGER_API=http://127.0.0.1:8001 yarn
   dev`), for pointing a dev server at a backend running on a different
   port than the default :8000.
-- Test: `yarn test` (Vitest) — covers `src/lib/decimal.js` (`decimal.test.js`)
-  and `src/lib/format.js` (`format.test.js`: the precision-guard rule,
-  plus `fmt`/`fmtPlain`/`fmtUnits` exactness at each currency's/symbol's
-  own scale) only; see "Amounts, currencies, and reference data" below.
+- Test: `yarn test` (Vitest) — covers `src/lib/decimal.js`
+  (`decimal.test.js`, run against the shared `tests/fixtures/
+  decimal-cases.json`) and `src/lib/format.js` (`format.test.js`:
+  `fmt`/`fmtPlain`/`fmtUnits` exactness at each currency's/symbol's own
+  display scale) only; see "Amounts, currencies, and reference data"
+  below.
 - Build: `yarn build`
 - Preview a production build: `yarn preview`
 
@@ -129,17 +131,28 @@ SQLite. All commands run from `backend/`.
   database (never the live file — see the testing-isolation memory) by
   running the actual `doctrine:migrations:migrate` command and comparing
   row counts before/after, not just by reasoning about the SQL.
+  **Known quirk:** `doctrine:migrations:diff` currently also proposes a
+  spurious `line_tag.line_id` column rebuild on a fully up-to-date schema
+  — a DBAL SQLite introspection quirk that predates the decimal-storage
+  work. Don't commit that piece of a generated diff; review what
+  `migrations:diff` proposes before accepting it wholesale.
 - One-time import of existing browser data: export it from devtools
   (`copy(localStorage.getItem('ledger-storage:personal:ledger-data'))`),
   save it as a JSON file, then `php bin/console app:import-local-storage
   path/to/file.json` — see `src/Command/ImportLocalStorageCommand.php`.
   **This replaces the whole database's accounts/lines/transactions** (not
   a merge) **and upserts whatever `currencies` the file declares** — see
-  "Amounts, currencies, and reference data" below.
+  "Amounts, currencies, and reference data" below. Amounts in the file can
+  be either canonical decimal strings (the current export format) or the
+  older pre-phase-2 scaled integers — `App\Money\LegacyIntegerAmounts::
+  upgrade()` detects and converts the latter using each account's own
+  currency/symbol scale at the time of conversion; a JSON float is
+  ambiguous and rejected outright rather than guessed at.
 - Backup/export the current database: `php bin/console app:export-state
   path/to/file.json` — see `src/Command/ExportStateCommand.php`. Writes
-  the same shape `LedgerStateService::readState()` produces internally, so
-  the file round-trips straight back through `app:import-local-storage`.
+  the same shape `LedgerStateService::readState()` produces internally
+  (amounts as canonical decimal strings), so the file round-trips
+  straight back through `app:import-local-storage`.
 - Fresh database bootstrap: `php bin/console app:currencies:seed` populates
   a baseline currency list (GBP/USD/EUR/JPY/CHF/CAD/AUD/RON/INR) — see
   `src/Command/SeedCurrenciesCommand.php`. Idempotent, safe to re-run.
@@ -176,10 +189,37 @@ SQLite. All commands run from `backend/`.
   `test` environment's own SQLite file — run `php bin/console
   doctrine:migrations:migrate --env=test` once after a fresh clone or a new
   migration, same as for `dev`.
+- **Migrating every tax-year database after pulling a schema change**
+  (e.g. after merging the phase-2 decimal-storage migration): `backend/
+  databases/` typically holds more than one `.sqlite3` file (one per tax
+  year — see below), and only whichever one is currently active gets
+  migrated by an ordinary `doctrine:migrations:migrate` run against the
+  dev connection. Migrate all of them, each targeted directly via
+  `ACTIVE_DATABASE_PATH_OVERRIDE` (the same override
+  `ActiveDatabasePathResolver`/`DatabaseController::create()` use — see
+  below) rather than switching the active database back and forth:
+
+  ```bash
+  cd backend
+  mkdir -p ../db-backups && cp databases/*.sqlite3 ../db-backups/
+  for f in databases/*.sqlite3; do ACTIVE_DATABASE_PATH_OVERRIDE="$PWD/$f" php bin/console doctrine:migrations:migrate --no-interaction || break; done
+  ```
+
+  Back up first, unconditionally — the backup is the undo, since a
+  migration like the phase-2 one rewrites every stored amount in place.
+  `MigrationStatusListener` refuses every `/api/*` request against any
+  database whose schema isn't caught up (see "Backend" below), so a file
+  left unmigrated simply can't be selected as active until this is run
+  against it; and a migration's own `down()` can refuse to run — the
+  phase-2 migration's `down()` in particular refuses to convert a value
+  back to a scaled integer if it now has more decimal places than its
+  currency's/symbol's `scale`, or would need more than 18 total digits,
+  since either would silently lose data going back to the old
+  representation.
 
 There is a small PHPUnit suite for the backend (see "Backend" below for what
 it covers and why); the frontend has a small Vitest suite scoped to
-`src/lib/decimal.js`/the precision-guard rule (`yarn test`, see "Amounts,
+`src/lib/decimal.js`/`src/lib/format.js` (`yarn test`, see "Amounts,
 currencies, and reference data" below) and no linter, but otherwise no test
 suite.
 
@@ -286,7 +326,11 @@ suite.
 - **Endpoints, grouped by what the frontend uses them for:**
   - `GET /api/accounts` (`AccountController::list`) — the lightweight,
     app-wide list. `LedgerStateService::accountsWithStats()` computes each
-    account's `balance` (a SQL `SUM`) and `entryCount`, plus — for
+    account's `balance` and `entryCount` — via `lineSumsByAccount()`,
+    which sums every line's `amount` exactly in PHP with
+    `Decimal::add()`, not a SQL `SUM(amount)` (SQLite's `SUM` on a `TEXT`
+    column coerces to floats, which is exactly what storing exact decimal
+    strings exists to avoid) — plus, for
     investment accounts — `costBasis`/`portfolioValue` by walking that
     one account's own lines in the same order the frontend's ledger rows
     use (see "Stock valuation" below), plus `imbalancedLineCount`/
@@ -382,18 +426,12 @@ suite.
     and reference data" below — so its duplicate check on create, and its
     `PATCH`/`DELETE` routes, key on the pair). `code`/`(ticker,
     tradingCurrency)` are immutable once created; `PATCH` can change
-    `name` and/or `scale`. Editing `scale` runs
-    `LedgerStateService::rescaleCurrency()`/`rescaleSymbol()`, rewriting
-    every stored amount denominated in that currency/symbol to the new
-    scale in one transaction — refused (`400`) if a decrease would lose
-    precision on any existing row, or if an increase would push any
-    existing row's magnitude past the JS safe-integer range (the frontend
-    no longer holds amounts as JS `Number`s at all now that they're
-    decimal strings — see "Amounts, currencies, and reference data"
-    below — so this cap is now a conservative belt-and-braces limit
-    rather than a real correctness requirement; it goes away along with
-    the rest of `rescale*()` once phase 2 removes scaled-integer storage
-    and rescaling has nothing left to do); `scale`
+    `name` and/or `scale`. Now that storage is arbitrary-precision decimal
+    strings (see "Amounts, currencies, and reference data" below), `scale`
+    is just the minimum number of decimals *displayed* — editing it is a
+    plain field update on the `Currency`/`Symbol` row and never touches a
+    single stored amount; there is no rescale/rewrite step and no
+    precision-loss check to fail. `scale`
     itself is capped at 12. `DELETE` relies on the schema's own
     foreign-key enforcement to refuse a still-referenced row, translated
     into a clean `409`. `POST /api/symbols` was added first, specifically
@@ -491,9 +529,9 @@ suite.
   transaction-level date/description.
 - A **line** is `{ accountId, amount, date, description, order?, ... }`,
   plus a backend-assigned `id` once persisted (see the id-exposure note
-  under "Backend" above). `amount` is a **canonical decimal string** on
-  the wire (a scaled integer in storage — see "Amounts, currencies, and
-  reference data" below), signed: positive = increase, negative =
+  under "Backend" above). `amount` is a **canonical decimal string**, on
+  the wire and in storage alike (see "Amounts, currencies, and reference
+  data" below), signed: positive = increase, negative =
   decrease, regardless of account type. There is no separate debit/credit;
   the UI just labels positive/negative as "In"/"Out".
 - `src/lib/ledgerOperations.js` is where every UI transition (plain edit,
@@ -564,26 +602,40 @@ suite.
 
 ## Amounts, currencies, and reference data
 
-Amounts used to be plain floats, then became scaled integers (ported from
-a related legacy project specifically to eliminate floating-point drift).
-**Phase 1 of `docs/superpowers/specs/2026-09-27-arbitrary-precision-decimals-design.md`
-moved the wire format and the frontend to canonical decimal strings —
-storage is still scaled integers until phase 2.** A canonical string has
-no `+` sign, no leading zeros, no trailing fractional zeros, and spells
-zero as `"0"` (e.g. `"20.50"` → `"20.5"`, `".5"` → `"0.5"`) — see the
-spec's "Canonical form" for the exact grammar. This touches every
-amount-like field: `Line.amount`, `Line.cashValue`, `Line.exchangeAmount`,
-`Account.openingBalance`, and the computed `balance`/`costBasis`/
-`portfolioValue`/`imbalanceIn`/`imbalanceOut` fields. The database column
-types are unchanged — `backend/src/Money/` (`ScaledAmount`,
-`ScaleRegistry`, `WireAmounts`) converts integer⟷decimal-string only at
-the five controllers that touch amounts (Account, Ledger, Match, Tag,
-IsaAllowance); every service, `readState()`/`writeState()`
-(export/import), and `NewYearService` still speak scaled integers
-internally, and `LedgerStateService::divRoundHalfUp()` is unchanged. So
-JSON now looks like `"amount": "20.5"`, not `"amount": 2000` — a decimal
-string in both directions across the API, never a raw integer and never
-a float.
+Amounts used to be plain floats, then scaled integers, then (phase 1 of
+`docs/superpowers/specs/2026-09-27-arbitrary-precision-decimals-design.md`)
+canonical decimal strings on the wire only, with storage still scaled
+integers underneath. **Phase 2 finished the move: storage itself is now
+canonical decimal strings, end to end, with no precision limit on either
+side of the decimal point.** A canonical string has no `+` sign, no
+leading zeros, no trailing fractional zeros, and spells zero as `"0"`
+(e.g. `"20.50"` → `"20.5"`, `".5"` → `"0.5"`) — see the spec's "Canonical
+form" for the exact grammar. This touches every amount-like field:
+`Line.amount`, `Line.cashValue`, `Line.exchangeAmount`,
+`Account.openingBalance`, `Account.openingBalanceCashValue`, and the
+computed `balance`/`costBasis`/`portfolioValue`/`imbalanceIn`/
+`imbalanceOut` fields. Every one of those columns is `TEXT`, via the
+Doctrine type `decimal_text` (`backend/src/Doctrine/DecimalTextType.php`,
+registered in `config/packages/doctrine.yaml`) — **never Doctrine's own
+`decimal` type**, which on SQLite becomes `NUMERIC(p,s)`: SQLite's
+`NUMERIC` affinity silently converts a stored string like `"20.50"` into
+a float, exactly the drift this whole effort exists to eliminate.
+`decimal_text` declares its column via `getClobTypeDeclarationSQL`
+(`CLOB`, which — like `TEXT` — carries `TEXT` affinity in SQLite, so
+nothing gets converted), and its `convertToDatabaseValue()` refuses to
+write anything that isn't already a canonical string (`App\Money\Decimal::
+isCanonical()`), so a stray float or a non-canonical string like
+`"20.50"` can never reach the database. `App\Money\Decimal`
+(`backend/src/Money/Decimal.php`) is the backend's arithmetic core —
+static methods over `BcMath\Number`, mirroring `src/lib/decimal.js`
+function for function; every service (`LedgerStateService`,
+`IsaAllowanceService`, `MatchingService`, `TagService`, `NewYearService`)
+and every controller works in canonical decimal strings throughout, with
+no integer⟷decimal conversion layer left anywhere. So JSON looks like
+`"amount": "20.5"`, not `"amount": 2000` — a decimal string in both
+directions across the API, never a raw integer and never a float.
+`readState()`/`writeState()` (export/import) and `NewYearService` all
+speak decimal strings too, not scaled integers.
 
 - **`Currency`, `Symbol`, `Counterparty` are natural-key reference
   entities** (`backend/src/Entity/`), each with the business key itself
@@ -663,14 +715,14 @@ a float.
   `SymbolController`, `src/components/ReferenceDataView.jsx`) — `POST`
   create, `PATCH` edit `name`/`scale`, `DELETE`. `code`/`(ticker,
   tradingCurrency)` are immutable once created — a different one is a new
-  row, not a rename. Editing `scale` runs
-  `LedgerStateService::rescaleCurrency()`/`rescaleSymbol()`, which
-  rewrites every stored amount denominated in that currency/symbol to the
-  new scale in one transaction; a decrease that would lose precision on
-  any existing row is refused outright (`400`, naming how many rows would
-  be affected), never silently rounded — see
-  docs/superpowers/specs/2026-09-26-currency-symbol-admin-design.md.
-  Deleting a still-referenced currency/symbol already fails at the
+  row, not a rename. `scale` is display-only now (see "Amounts,
+  currencies, and reference data" above) — editing it is a plain field
+  update with no data rewrite and no precision-loss check; see
+  docs/superpowers/specs/2026-09-26-currency-symbol-admin-design.md for
+  the original (phase-1) design this superseded. `ReferenceDataView.jsx`
+  no longer warns about rescaling before a scale edit — there's nothing
+  left to warn about. Deleting a still-referenced currency/symbol already
+  fails at the
   database level (every FK into `currency`/`symbol` is `NOT DEFERRABLE
   INITIALLY IMMEDIATE`, and `foreign_keys` enforcement is on everywhere)
   — both controllers just translate that into a clean `409`, the same
@@ -689,20 +741,21 @@ a float.
   read-only and find-or-create only.
 - **`src/lib/decimal.js`** (replaces the old `src/lib/scale.js`) is the
   frontend's decimal arithmetic core, built on big.js, with its own
-  Vitest suite (`decimal.test.js`, plus `format.test.js` for the
-  precision guard below — `yarn test`) run against
+  Vitest suite (`decimal.test.js`, plus `format.test.js` for display
+  formatting — `yarn test`) run against
   `tests/fixtures/decimal-cases.json`. Four rules govern it everywhere in
   this codebase:
   1. Amounts are canonical decimal strings everywhere outside
-     `src/lib/decimal.js`. The backend's phase-1 equivalent is
-     `App\Money\ScaledAmount`/`WireAmounts` (`backend/src/Money/`),
-     converting to/from the still-integer storage at the controller
-     boundary — there's no `App\Money\Decimal` yet; that class, and
-     arbitrary-precision storage itself, are phase 2 (see
-     `docs/superpowers/specs/2026-09-27-arbitrary-precision-decimals-design.md`).
+     `src/lib/decimal.js`, all the way down to storage now — the
+     backend's counterpart is `App\Money\Decimal`
+     (`backend/src/Money/Decimal.php`), static methods over
+     `BcMath\Number` mirroring this module function for function, used
+     throughout every service and controller with no integer conversion
+     layer left anywhere (see "Amounts, currencies, and reference data"
+     above).
   2. Nothing divides amounts except `divide()` (20dp, round half-up,
-     returns `"0"` for a zero divisor — the same contract the old
-     `divRoundHalfUp` had).
+     returns `"0"` for a zero divisor) — `Decimal::divide()` on the PHP
+     side has the identical contract.
   3. A float appears only at a handful of named renderer boundaries,
      never in arithmetic: `toNumber()`/`fromNumber()` for Recharts'
      series data and its tick/tooltip formatters (`charts.jsx`), the ISA
@@ -710,12 +763,12 @@ a float.
      the FX-rate display's `Intl` significant-digit formatting
      (`lib/matching.js`'s rate string). Each of these is display-only —
      none of their outputs ever get parsed back into an amount.
-  4. The PHP and JS implementations must agree — but there's no shared
-     fixture enforcing that yet. `tests/fixtures/decimal-cases.json` is
-     currently consumed by `decimal.test.js` alone; nothing on the PHP
-     side reads it. Phase 2's `App\Money\Decimal` is expected to close
-     this gap by running the same fixture; until then, agreement between
-     the two is manual — re-check both sides by hand if you touch either.
+  4. **The PHP and JS implementations must agree, and this is now
+     enforced.** `tests/fixtures/decimal-cases.json` is the shared
+     fixture: `decimal.test.js` (JS) and `backend/tests/Money/
+     DecimalTest.php` (PHP) both run it, via `yarn test` and `php
+     bin/phpunit` respectively — a case added to the fixture is checked
+     on both sides automatically, not just by hand.
   `parseDecimal(str)`/`parseOrZero(str)` replace `toMinorUnits` for
   turning typed input into a canonical string (returning `null`/`"0"`
   respectively for invalid input, rather than `NaN`); `canonical`,
@@ -732,13 +785,14 @@ a float.
   returns plain canonical strings, so React state, props, `===`, and
   JSON stay plain; don't leak a `Big` instance into a component or into
   state.
-- **`divRoundHalfUp`**: the old integer-`BigInt` JS copy in `scale.js` is
-  gone — `decimal.js`'s `divide()` + `round()` replaced it. The PHP copy,
-  a private method on `LedgerStateService`, remains for now: internal
-  cost-basis/portfolio-value math is still integer arithmetic in phase 1
-  (see "Stock valuation" below), only converted to a decimal string at
-  the controller boundary. It will be replaced by `App\Money\Decimal` in
-  phase 2 when storage itself moves off scaled integers.
+- **`divRoundHalfUp` is gone from both sides.** The old integer-`BigInt`
+  JS copy in `scale.js` was replaced by `decimal.js`'s `divide()` +
+  `round()` in phase 1; the PHP copy, formerly a private method on
+  `LedgerStateService` doing integer cross-multiply-then-divide, is gone
+  too now that internal cost-basis/portfolio-value math runs on
+  `App\Money\Decimal` throughout (see "Stock valuation" below) — both
+  sides now divide the same way, at 20 decimal places via
+  `Decimal::divide()`/`divide()`.
 - **`src/lib/format.js`'s `fmt(amount, currencyCode)`/`fmtUnits(n,
   symbolKeyString)`** keep their 2-argument call-site shape everywhere in
   the app — they don't take a `scale` parameter directly, and both now
@@ -756,24 +810,20 @@ a float.
   prop-drilled parameter for something that's genuinely global, read-only,
   loaded-once data. If a value's scale genuinely isn't in the registry yet
   (e.g. mid-load), `fmt`/`fmtUnits` fall back to a plausible default (2 / 6)
-  places rather than crashing. `format.js` also exports
-  `precisionError(lines, accounts)`, a **phase-1-only guard**: since
-  storage is still a scaled integer, a typed value with more fractional
-  digits than its account's currency/symbol scale is **rejected outright
-  by the backend with a `400`**, not silently truncated (the old
-  `toMinorUnits` used to truncate — that behavior is gone) — so the
-  frontend rejects it client-side first with a named-account error,
-  keeping the edit open rather than saving. Two other spots run the same
-  kind of guard for the same reason: `AccountFormModal.jsx`'s save
-  handler checks the opening-balance field's own precision before
-  calling `onSave` (so `App.jsx`'s optimistic `saveAccount()` never
-  closes the modal on a value the backend would reject), and
-  `useMatchCandidates.js`/`otherLines.jsx`'s per-leg search skips firing
-  a match search whose typed amount already has too many decimal places
-  for the target currency, rather than letting it 400 and log console
-  noise. All of these (and the `400` they mirror in
-  `ScaledAmount::fromDecimal()`) go away in phase 2 once storage itself
-  is arbitrary-precision.
+  places rather than crashing. **`scale` no longer constrains what can be
+  typed or stored** — it's purely how many decimals `fmt`/`fmtUnits`
+  display (still rounding to exactly `scale` for now; an adaptive
+  display precision is phase 3). Now that storage is arbitrary-precision,
+  there is no precision limit tied to an account's currency/symbol scale:
+  `format.js`'s old `precisionError(lines, accounts)` guard, and the
+  matching client-side checks in `AccountFormModal.jsx`'s save handler
+  and `useMatchCandidates.js`/`otherLines.jsx`'s per-leg search, are gone
+  — a typed value simply saves at whatever precision it was entered with.
+  The one remaining validation is shape, not precision: the backend
+  (`amountOrNull()` on `LedgerStateService`, and `MatchController`'s
+  query-param handling) rejects a non-string/non-decimal JSON `amount`
+  with a `400` via `Decimal::parse()`, the same posture `resolveCurrency()`/
+  `resolveSymbol()` already take for other malformed input.
 
 ## Matching and linking — two different comparison modes, on purpose
 
@@ -919,10 +969,13 @@ Counterparty and were dropped — don't reintroduce them as tags.
     (`{lineId, line, account}`, shaped like `GET /api/match-candidates`'s
     own candidates) — the drill-down behind a tag total.
   - `GET /api/tag-totals?dimension=Car[&excludeTag=Status:Refunded]` —
-    server-side `SUM` grouped by `(value, currency)` (each row's summed
-    field is named `amount`, a decimal string like every other amount on
-    the wire), same "never sum bulk line data client-side" posture as
-    `accountsWithStats()`'s own balance `SUM`. A line carrying more than
+    server-side total grouped by `(value, currency)`, summed exactly with
+    `Decimal::add()` (`TagService::computeTagTotals()`) rather than a SQL
+    `SUM(amount)`, for the same float-coercion reason as
+    `lineSumsByAccount()` above — each row's summed field is named
+    `amount`, a decimal string like every other amount on the wire — same
+    "never sum bulk line data client-side" posture as
+    `accountsWithStats()`'s own balance total. A line carrying more than
     one value of the requested dimension contributes to each value's
     total, not just one. **Scope cut: never sums investment lines** — an
     investment line's `amount` is units, not cash, so mixing it into a
@@ -1069,32 +1122,30 @@ year's file are now all done from inside the running app — see
   situation, → `portfolioValue`): "mark to last trade" — the most recent
   trade's own implied price, applied to the *whole* current holding.
   Rather than storing a rounded price, the state keeps the last trade's
-  raw `cashValue`/`units` pair and divides only once per computation
-  (`divRoundHalfUp`) — avoids compounding rounding error across many
-  trades. The old `1e-9` float-epsilon "snap to zero" is gone entirely:
-  with exact integers, units hits exactly `0` when fully sold; the only
-  thing zeroed defensively now is `cost`, to absorb ±1-minor-unit
-  rounding dust from `divRoundHalfUp`, not float fuzz.
+  raw `cashValue`/`units` pair and divides only once per computation, at
+  20 decimal places via `Decimal::divide()`/`divide()` with no per-step
+  rounding — avoids compounding rounding error across many trades. Units
+  hits exactly `0` when fully sold, since the arithmetic is exact on both
+  sides now; `cost` is still zeroed defensively when units reaches zero,
+  to absorb any residual rounding dust from the one division, not float
+  fuzz (there never was float fuzz here even in the scaled-integer days,
+  but the defensive zeroing is cheap insurance).
 - Cost basis / portfolio value math mixes **two different scales** —
-  `cost`/`cashValue` are currency-scale amounts, `units`/`amount` are
-  symbol-scale amounts. This is still true integer-side: the PHP port
-  cross-multiplies then divides via `divRoundHalfUp` (see "Amounts,
-  currencies, and reference data" above), keeping every intermediate
-  value an exact integer of the correct implied scale without either
-  function ever needing to know either scale explicitly — don't
-  "simplify" that to a plain `/` division. The JS side no longer works
-  this way now that amounts are decimal strings: `src/lib/stockMath.js`
-  cross-multiplies with `mul()` and then divides with `divide()`
-  (`lib/decimal.js`'s one division helper, 20dp) followed by an explicit
-  `round(…, state.cashPlaces)` — so unlike the PHP port, **`cashPlaces`
-  (the trading currency's own scale) has to be threaded in explicitly**,
-  or every intermediate rounds to the wrong number of places for a
-  non-2-decimal trading currency. `StockLedger.jsx` passes its own
-  `cashScale` (looked up from `currencies`); `charts.jsx` passes
-  `scaleForCurrency(tradingCurrency)`; both default to `2` when the seed
-  `opening` object doesn't specify one. Phase 2 moves both the PHP and JS
-  sides to the same 20dp-internal-division approach, at which point this
-  scale-threading requirement goes away on the JS side too.
+  `cost`/`cashValue` are currency amounts, `units`/`amount` are symbol
+  (unit) amounts, and the running state itself is kept as exact,
+  unrounded decimal strings throughout the walk on both sides
+  (`App\Money\Decimal` in PHP, `src/lib/decimal.js` in JS — no more
+  integer cross-multiply-then-divide, no more `cashPlaces` threaded
+  through `stockMath.js`'s division calls). Rounding happens exactly
+  once, on the way out: the backend rounds `costBasis`/`portfolioValue`
+  to the trading currency's own scale before putting them on the
+  `GET /api/accounts` response (`Decimal::round(…, $cashScale)` in
+  `stockStatsFor()`) — an **adaptive display precision that doesn't clip
+  the running state is phase 3's job**, not this one's; for now the API
+  output is still rounded the same way the old scaled-integer version
+  was. `src/lib/stockMath.js`'s client-side running column and chart
+  builders (`buildCostBasisSeries`/`buildPortfolioValueSeries`) divide
+  the same 20dp way and no longer round each step either.
 - Both live in **two places now**: `src/lib/stockMath.js` still has
   `applyCostBasisLine`/`applyPortfolioValueLine`/`buildCostBasisSeries`/
   `buildPortfolioValueSeries`, used client-side for a stock ledger's own
