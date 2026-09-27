@@ -1,4 +1,4 @@
-import { add, sub, mul, neg, abs, min, sign, isZero, divide } from "./decimal";
+import { add, sub, mul, neg, abs, min, sign, isZero, divide, fractionDigits } from "./decimal";
 
 // Applies one line's effect to a running {units, cost} position using the
 // average-cost method — shared by the chart series builder below, the
@@ -107,4 +107,22 @@ export function buildPortfolioValueSeries(sortedLines, startISO, endISO, opening
     safety++;
   }
   return points;
+}
+
+// Adaptive precision for a stock account's computed values — mirrored
+// exactly by App\Money\StockPrecision and pinned by the shared fixture.
+// Money (cost basis, portfolio value) shows as many decimals as the
+// account's own cash inputs ever used, never fewer than the trading
+// currency's scale; a price (money ÷ units) adds the units' own decimals so
+// price × units reproduces a cash value to its own precision.
+export function stockPlaces(cashScale, opening, lines) {
+  let money = cashScale;
+  let units = 0;
+  if (opening.openingBalanceCashValue != null) money = Math.max(money, fractionDigits(opening.openingBalanceCashValue));
+  if (opening.openingBalance != null) units = Math.max(units, fractionDigits(opening.openingBalance));
+  for (const l of lines) {
+    units = Math.max(units, fractionDigits(l.amount));
+    if (l.cashValue != null) money = Math.max(money, fractionDigits(l.cashValue));
+  }
+  return { moneyPlaces: money, unitPlaces: units, pricePlaces: money + units };
 }

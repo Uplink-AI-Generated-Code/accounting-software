@@ -33,5 +33,11 @@
     ["5", 2, "5"],
     ["0.5", 0, "1"],
     ["-0.5", 0, "-1"]
+  ],
+  "stockPlaces": [
+    { "cashScale": 2, "openingBalance": null, "openingBalanceCashValue": null, "lines": [{ "amount": "3", "cashValue": "100" }, { "amount": "-1", "cashValue": "-40" }], "money": 2, "units": 0, "price": 2 },
+    { "cashScale": 2, "openingBalance": null, "openingBalanceCashValue": null, "lines": [{ "amount": "3", "cashValue": "100" }, { "amount": "0.12345", "cashValue": "123.4567" }], "money": 4, "units": 5, "price": 9 },
+    { "cashScale": 0, "openingBalance": "1.5", "openingBalanceCashValue": "10.25", "lines": [], "money": 2, "units": 1, "price": 3 },
+    { "cashScale": 2, "openingBalance": null, "openingBalanceCashValue": null, "lines": [{ "amount": "2", "cashValue": null }], "money": 2, "units": 0, "price": 2 }
   ]
 }

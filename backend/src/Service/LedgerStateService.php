@@ -10,6 +10,7 @@ use App\Entity\Symbol;
 use App\Entity\Tag;
 use App\Entity\Transaction;
 use App\Money\Decimal;
+use App\Money\StockPrecision;
 use App\Service\AppSettingsRepository;
 use App\Service\SettingKeys;
 use App\Service\SettingsService;
@@ -373,7 +374,8 @@ class LedgerStateService
         $costState = ['units' => $openingUnits, 'cost' => $openingCost];
         $valueState = ['units' => $openingUnits, 'lastCashValue' => $openingCost, 'lastUnits' => $openingUnits];
 
-        foreach ($this->orderedLinesFor($a) as $line) {
+        $lines = $this->orderedLinesFor($a);
+        foreach ($lines as $line) {
             $this->applyCostBasisLine($costState, $line);
             $this->applyPortfolioValueLine($valueState, $line);
         }
@@ -381,11 +383,17 @@ class LedgerStateService
         $value = Decimal::isZero($valueState['lastUnits'])
             ? '0'
             : Decimal::divide(Decimal::mul($valueState['units'], $valueState['lastCashValue']), $valueState['lastUnits']);
-        // Phase 2: API output rounded to the trading currency's scale, exactly
-        // what phase 1 sent. Phase 3 replaces this with adaptive precision.
-        $cashScale = $a->getSymbol()?->getTradingCurrency()->getScale() ?? 2;
+        // Adaptive output precision (phase 3): as many decimals as this
+        // account's own cash inputs used, never fewer than the trading
+        // currency's scale — see App\Money\StockPrecision.
+        $places = StockPrecision::places(
+            $a->getSymbol()?->getTradingCurrency()->getScale() ?? 2,
+            $a->getOpeningBalance(),
+            $a->getOpeningBalanceCashValue(),
+            array_map(static fn (Line $l) => ['amount' => $l->getAmount(), 'cashValue' => $l->getCashValue()], $lines),
+        );
 
-        return ['cost' => Decimal::round($costState['cost'], $cashScale), 'value' => Decimal::round($value, $cashScale)];
+        return ['cost' => Decimal::round($costState['cost'], $places['money']), 'value' => Decimal::round($value, $places['money'])];
     }
 
     /** @param array{units: string, cost: string} $state */

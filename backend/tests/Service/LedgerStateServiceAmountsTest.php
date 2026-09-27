@@ -4,6 +4,7 @@ namespace App\Tests\Service;
 
 use App\Entity\Currency;
 use App\Entity\Symbol;
+use App\Money\Decimal;
 use App\Service\LedgerStateService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
@@ -169,5 +170,23 @@ class LedgerStateServiceAmountsTest extends KernelTestCase
         // applied to the whole remaining holding of 2 units:
         // divide(2 * 50, 1) = divide(100, 1) = 100.
         self::assertSame('100', $s['portfolioValue']);
+    }
+
+    public function testComputedStockValuesUseAdaptivePrecision(): void
+    {
+        $this->state->upsertAccount('wrap', ['name' => 'W', 'type' => 'investment-parent']);
+        $this->state->upsertAccount('inv', ['name' => 'S', 'type' => 'investment', 'symbolTicker' => 'TST', 'symbolCurrency' => 'GBP', 'parentId' => 'wrap']);
+        $this->state->applyLedgerOperations([
+            $this->line('inv', '3', '2026-05-01', ['cashValue' => '100', 'cashCurrency' => 'GBP']),
+            $this->line('inv', '-1', '2026-06-01', ['cashValue' => '-40', 'cashCurrency' => 'GBP']),
+            $this->line('inv', '0.12345', '2026-07-01', ['cashValue' => '123.4567', 'cashCurrency' => 'GBP']),
+        ]);
+
+        $s = $this->stats('inv');
+        // money places = max(GBP 2, 0, 0, 4) = 4.
+        // cost: 100 − 100/3 = 66.6666…67; + 123.4567 = 190.1233666…67 → 190.1234
+        self::assertSame('190.1234', $s['costBasis']);
+        // value: units 2.12345 × (123.4567 / 0.12345) = 2123.5626…; → 4 dp
+        self::assertSame(Decimal::round(Decimal::divide(Decimal::mul('2.12345', '123.4567'), '0.12345'), 4), $s['portfolioValue']);
     }
 }
