@@ -3,6 +3,7 @@ import { C, TYPES, ISA_KINDS } from "../lib/theme";
 import { fmt, fmtUnits, displayAccountName } from "../lib/format";
 import { symbolKey } from "../lib/symbolKey";
 import { isPositive, isNegative } from "../lib/decimal";
+import { Amount } from "./ui";
 
 // One line per account in the chart of accounts — replaces the earlier
 // card grid (AccountCard) specifically to fit far more accounts in the
@@ -14,7 +15,7 @@ import { isPositive, isNegative } from "../lib/decimal";
 // group path (counterparty/subtype/currency/...), shown faint beneath the
 // name since the search flattens away the grouping headers that would
 // otherwise make that context visible.
-export function AccountRow({ a, accounts, symbols, onSelect, subtitle, groupLevels = [] }) {
+export function AccountRow({ a, accounts, symbols, onSelect, subtitle, groupLevels = [], fracWidth = 0 }) {
   // Trading currency lives on the Symbol now, not the account — see
   // CLAUDE.md.
   const tradingCurrency = a.symbolCurrency;
@@ -87,7 +88,7 @@ export function AccountRow({ a, accounts, symbols, onSelect, subtitle, groupLeve
             <span style={{ color: C.ink, fontWeight: 600 }}>{fmt(a.portfolioValue ?? "0", tradingCurrency)}</span>
           </>
         ) : (
-          <span style={{ color: isNegative(a.balance) ? C.debit : C.ink, fontWeight: 600 }}>{fmt(a.balance ?? "0", a.currency)}</span>
+          <span style={{ color: isNegative(a.balance) ? C.debit : C.ink, fontWeight: 600 }}><Amount value={a.balance ?? "0"} code={a.currency} kind="currency" fracWidth={fracWidth} /></span>
         )}
       </span>
     </button>

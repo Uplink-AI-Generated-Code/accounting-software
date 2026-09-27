@@ -1,8 +1,9 @@
 import { Plus } from "lucide-react";
 import { C } from "../lib/theme";
-import { fmt, fmtUnits, displayAccountName } from "../lib/format";
+import { fmt, fmtUnits, displayAccountName, fracWidth } from "../lib/format";
 import { symbolKey } from "../lib/symbolKey";
 import { isNegative } from "../lib/decimal";
+import { Amount } from "./ui";
 
 /* ---------------------------------------------------------
    Investment wrapper (Stocks & Shares ISA or a plain organizational
@@ -34,12 +35,15 @@ export function IsaParentView({ account, accounts, symbols, onEditAccount, onSel
           <div style={{ fontSize: 13, color: C.inkFaint, padding: "8px 0" }}>No cash subaccounts yet.</div>
         ) : (
           <div className="flex flex-col gap-1.5">
-            {cashSubs.map((a) => (
-              <button key={a.id} onClick={() => onSelect(a.id)} className="flex items-center justify-between px-3 py-2.5 rounded text-left" style={{ background: C.card, border: `1px solid ${C.line}` }}>
-                <span style={{ fontSize: 13.5 }}>{displayAccountName(a)} <span style={{ color: C.inkFaint, fontSize: 12 }}>({a.currency})</span></span>
-                <span className="ll-mono" style={{ fontSize: 13.5, color: isNegative(a.balance) ? C.debit : C.ink }}>{fmt(a.balance ?? "0", a.currency)}</span>
-              </button>
-            ))}
+            {(() => {
+              const cashWidth = fracWidth(cashSubs.map((a) => ({ value: a.balance ?? "0", code: a.currency, kind: "currency" })));
+              return cashSubs.map((a) => (
+                <button key={a.id} onClick={() => onSelect(a.id)} className="flex items-center justify-between px-3 py-2.5 rounded text-left" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+                  <span style={{ fontSize: 13.5 }}>{displayAccountName(a)} <span style={{ color: C.inkFaint, fontSize: 12 }}>({a.currency})</span></span>
+                  <span className="ll-mono" style={{ fontSize: 13.5, color: isNegative(a.balance) ? C.debit : C.ink }}><Amount value={a.balance ?? "0"} code={a.currency} kind="currency" fracWidth={cashWidth} /></span>
+                </button>
+              ));
+            })()}
           </div>
         )}
       </div>

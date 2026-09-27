@@ -17,7 +17,6 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
   const [type, setType] = useState(initial.typePreset || initial.type || "asset");
   const [currency, setCurrency] = useState(initial.currency || "GBP");
   const [symbol, setSymbol] = useState(initial.symbolTicker && initial.symbolCurrency ? symbolKey(initial.symbolTicker, initial.symbolCurrency) : "");
-  const currencyScale = currencies.find((c) => c.code === currency)?.scale ?? 2;
   // There's no UI to edit this for an investment account (see "Stock
   // valuation" — openingBalance/openingBalanceCashValue are only ever set
   // by app:new-year), but the value still round-trips through this state
@@ -237,7 +236,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
                   <input autoFocus value={newTicker} onChange={(e) => setNewTicker(e.target.value)} style={inputStyle} placeholder="Ticker, e.g. AAPL" />
                   <input value={newSymbolName} onChange={(e) => setNewSymbolName(e.target.value)} style={inputStyle} placeholder="Name, e.g. Apple Inc" />
                   <div className="flex gap-2">
-                    <input type="number" min="0" step="1" value={newSymbolScale} onChange={(e) => setNewSymbolScale(e.target.value)} style={{ ...inputStyle, flex: 1 }} placeholder="Unit scale, e.g. 6" />
+                    <input type="number" min="0" step="1" value={newSymbolScale} onChange={(e) => setNewSymbolScale(e.target.value)} style={{ ...inputStyle, flex: 1 }} placeholder="Minimum decimals shown for units, e.g. 0" />
                     <select value={newSymbolCurrency} onChange={(e) => setNewSymbolCurrency(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
                       {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
                     </select>
@@ -273,7 +272,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
         )}
         {!isWrapper && type !== "investment" && (
           <Field label="Opening balance">
-            <input type="number" step={10 ** -currencyScale} value={opening} onChange={(e) => setOpening(e.target.value)} style={inputStyle} />
+            <input type="number" step="any" value={opening} onChange={(e) => setOpening(e.target.value)} style={inputStyle} />
             {openingUnparseable && attemptedSubmit && (
               <div style={{ fontSize: 11.5, color: C.debit, marginTop: 4 }}>Enter a valid opening balance.</div>
             )}

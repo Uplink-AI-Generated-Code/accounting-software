@@ -1,5 +1,5 @@
 import { C } from "../lib/theme";
-import { fmt } from "../lib/format";
+import { fmt, fracWidth } from "../lib/format";
 import { subtotalsForItems } from "../lib/grouping";
 import { AccountRow } from "./AccountRow";
 
@@ -18,7 +18,14 @@ export function OverviewGroupTree({ groups, depth, accounts, symbols, onSelect, 
         </div>
         {g.leaf ? (
           <div className="ll-rowlist flex flex-col" style={{ border: `1px solid ${C.line}`, borderRadius: 6, background: C.card }}>
-            {g.items.map((a) => <AccountRow key={a.id} a={a} accounts={accounts} symbols={symbols} onSelect={onSelect} groupLevels={groupLevels} />)}
+            {(() => {
+              const cashWidth = fracWidth(
+                g.items
+                  .filter((a) => a.type !== "investment" && a.type !== "investment-parent")
+                  .map((a) => ({ value: a.balance ?? "0", code: a.currency, kind: "currency" }))
+              );
+              return g.items.map((a) => <AccountRow key={a.id} a={a} accounts={accounts} symbols={symbols} onSelect={onSelect} groupLevels={groupLevels} fracWidth={cashWidth} />);
+            })()}
           </div>
         ) : (
           <OverviewGroupTree groups={g.children} depth={depth + 1} accounts={accounts} symbols={symbols} onSelect={onSelect} groupLevels={groupLevels} />

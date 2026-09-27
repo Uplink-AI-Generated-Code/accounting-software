@@ -261,7 +261,7 @@ export function OtherLinesEditor({ draft, account, accounts, symbols, groupLevel
                         ))}
                       </div>
                       <input
-                        type="number" step="0.000001" placeholder="Units" value={ol.unitsStr}
+                        type="number" step="any" placeholder="Units" value={ol.unitsStr}
                         onChange={(e) => updateOtherLine(ol.key, { unitsStr: e.target.value })}
                         className="ll-mono" style={{ ...miniInput, width: 80 }}
                       />
@@ -274,7 +274,7 @@ export function OtherLinesEditor({ draft, account, accounts, symbols, groupLevel
                         ))}
                       </div>
                       <input
-                        type="number" step="0.01" placeholder="Cost" value={ol.cashStr}
+                        type="number" step="any" placeholder="Cost" value={ol.cashStr}
                         onChange={(e) => updateOtherLine(ol.key, { cashStr: e.target.value })}
                         className="ll-mono" style={{ ...miniInput, width: 90 }}
                       />
@@ -291,7 +291,7 @@ export function OtherLinesEditor({ draft, account, accounts, symbols, groupLevel
                         ))}
                       </div>
                       <input
-                        type="number" step="0.0001" placeholder={olAcc ? olAcc.currency : "0.00"} value={ol.amountStr}
+                        type="number" step="any" placeholder={olAcc ? olAcc.currency : "0.00"} value={ol.amountStr}
                         onChange={(e) => updateOtherLine(ol.key, { amountStr: e.target.value })}
                         className="ll-mono" style={{ ...miniInput, width: 100 }}
                       />

@@ -51,11 +51,6 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
   // after this ledger's own mutations succeed.
   const { records, loaded, reload } = useAccountLedger(account.id);
 
-  const accountScale = currencies.find((c) => c.code === account.currency)?.scale ?? 2;
-  function scaleFor(currencyCode) {
-    return currencies.find((c) => c.code === currencyCode)?.scale ?? accountScale;
-  }
-
   // If both In and Out are filled, the saved line is their difference —
   // e.g. In 50 / Out 20 saves as an increase of 30. Amounts are canonical
   // decimal strings (see CLAUDE.md); blank or unparseable counts as zero.
@@ -415,13 +410,13 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
                     {draft.otherLines.length === 0 ? "unmatched" : draft.otherLines.length === 1 ? "linked below" : `${draft.otherLines.length}-way split below`}
                   </div>
                   <input
-                    type="number" step={10 ** -accountScale} placeholder="Out" value={draft.outAmountStr}
+                    type="number" step="any" placeholder="Out" value={draft.outAmountStr}
                     onChange={(e) => setDraft({ ...draft, outAmountStr: e.target.value })}
                     className="ll-mono text-right" style={{ ...miniInput, color: C.debit }}
                     onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }}
                   />
                   <input
-                    type="number" step={10 ** -accountScale} placeholder="In" value={draft.inAmountStr}
+                    type="number" step="any" placeholder="In" value={draft.inAmountStr}
                     onChange={(e) => setDraft({ ...draft, inAmountStr: e.target.value })}
                     className="ll-mono text-right" style={{ ...miniInput, color: C.credit }}
                     onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }}
@@ -470,12 +465,12 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
                       </select>
                       <div />
                       <input
-                        type="number" step={10 ** -scaleFor(draft.exchangeCurrency)} placeholder="Out" value={draft.exchangeOutStr}
+                        type="number" step="any" placeholder="Out" value={draft.exchangeOutStr}
                         onChange={(e) => setDraft({ ...draft, exchangeOutStr: e.target.value })}
                         className="ll-mono text-right" style={{ ...miniInput, color: C.debit }}
                       />
                       <input
-                        type="number" step={10 ** -scaleFor(draft.exchangeCurrency)} placeholder="In" value={draft.exchangeInStr}
+                        type="number" step="any" placeholder="In" value={draft.exchangeInStr}
                         onChange={(e) => setDraft({ ...draft, exchangeInStr: e.target.value })}
                         className="ll-mono text-right" style={{ ...miniInput, color: C.credit }}
                       />

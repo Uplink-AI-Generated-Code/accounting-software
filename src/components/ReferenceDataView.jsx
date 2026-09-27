@@ -60,7 +60,7 @@ function CurrencySection({ currencies, onMutate }) {
       <div className="flex items-center gap-2 mt-3">
         <input value={newCode} onChange={(e) => setNewCode(e.target.value)} placeholder="Code, e.g. NZD" style={{ ...inputStyle, width: 90 }} />
         <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Name (optional)" style={{ ...inputStyle, width: 200 }} />
-        <input type="number" min="0" step="1" value={newScale} onChange={(e) => setNewScale(e.target.value)} placeholder="Scale" style={{ ...inputStyle, width: 70 }} />
+        <input type="number" min="0" step="1" value={newScale} onChange={(e) => setNewScale(e.target.value)} placeholder="Min. decimals" style={{ ...inputStyle, width: 70 }} />
         <button type="button" onClick={submitNew} className="flex items-center gap-1" style={{ fontSize: 12.5, color: C.gold }}><Plus size={13} /> Add currency</button>
       </div>
     </section>
@@ -71,7 +71,7 @@ function CurrencyRow({ currency, onPatchName, onChangeScale, onDelete }) {
   const [name, setName] = useState(currency.name || "");
 
   function changeScale() {
-    const next = window.prompt(`New scale for ${currency.code} (currently ${currency.scale}):`, String(currency.scale));
+    const next = window.prompt(`Minimum decimals shown for ${currency.code} (currently ${currency.scale}):`, String(currency.scale));
     if (null === next || next.trim() === "") return;
     const parsed = parseInt(next, 10);
     if (!Number.isInteger(parsed) || parsed < 0) return;
@@ -90,7 +90,7 @@ function CurrencyRow({ currency, onPatchName, onChangeScale, onDelete }) {
         style={{ ...inputStyle, width: 200 }}
       />
       <button type="button" onClick={changeScale} style={{ fontSize: 12, color: C.inkSoft, background: "none", border: `1px solid ${C.line}`, borderRadius: 4, padding: "3px 8px", cursor: "pointer" }}>
-        Scale: {currency.scale} — Change…
+        Min. decimals: {currency.scale} — Change…
       </button>
       <button type="button" onClick={onDelete} title="Delete"><Trash2 size={14} color={C.debit} /></button>
     </div>
@@ -130,7 +130,7 @@ function SymbolSection({ symbols, currencies, onMutate }) {
       <div className="flex items-center gap-2 mt-3">
         <input value={newTicker} onChange={(e) => setNewTicker(e.target.value)} placeholder="Ticker, e.g. AAPL" style={{ ...inputStyle, width: 100 }} />
         <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Name" style={{ ...inputStyle, width: 180 }} />
-        <input type="number" min="0" step="1" value={newScale} onChange={(e) => setNewScale(e.target.value)} placeholder="Scale" style={{ ...inputStyle, width: 70 }} />
+        <input type="number" min="0" step="1" value={newScale} onChange={(e) => setNewScale(e.target.value)} placeholder="Min. decimals" style={{ ...inputStyle, width: 70 }} />
         <select value={newTradingCurrency} onChange={(e) => setNewTradingCurrency(e.target.value)} style={{ ...inputStyle, width: 90 }}>
           {currencies.map((c) => <option key={c.code} value={c.code}>{c.code}</option>)}
         </select>
@@ -144,7 +144,7 @@ function SymbolRow({ symbol, onPatchName, onChangeScale, onDelete }) {
   const [name, setName] = useState(symbol.name);
 
   function changeScale() {
-    const next = window.prompt(`New scale for ${symbol.ticker} (${symbol.tradingCurrency}) (currently ${symbol.scale}):`, String(symbol.scale));
+    const next = window.prompt(`Minimum decimals shown for ${symbol.ticker} (${symbol.tradingCurrency}) units (currently ${symbol.scale}):`, String(symbol.scale));
     if (null === next || next.trim() === "") return;
     const parsed = parseInt(next, 10);
     if (!Number.isInteger(parsed) || parsed < 0) return;
@@ -164,7 +164,7 @@ function SymbolRow({ symbol, onPatchName, onChangeScale, onDelete }) {
         style={{ ...inputStyle, width: 180 }}
       />
       <button type="button" onClick={changeScale} style={{ fontSize: 12, color: C.inkSoft, background: "none", border: `1px solid ${C.line}`, borderRadius: 4, padding: "3px 8px", cursor: "pointer" }}>
-        Scale: {symbol.scale} — Change…
+        Min. decimals: {symbol.scale} — Change…
       </button>
       <button type="button" onClick={onDelete} title="Delete"><Trash2 size={14} color={C.debit} /></button>
     </div>

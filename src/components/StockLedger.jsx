@@ -55,9 +55,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
 
   // Trading currency now lives on the Symbol, not the Account itself —
   // an investment account's own `currency` field is unused, see
-  // CLAUDE.md. Units are scaled by the symbol's own scale, cash by the
-  // trading currency's scale — two different scales, never conflated.
-  const unitScale = symbols.find((s) => s.ticker === account.symbolTicker && s.tradingCurrency === account.symbolCurrency)?.scale ?? 6;
+  // CLAUDE.md.
   const tradingCurrency = account.symbolCurrency;
   const cashScale = currencies.find((c) => c.code === tradingCurrency)?.scale ?? 2;
 
@@ -403,13 +401,13 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
                   <input type="date" autoFocus value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} style={miniInput} />
                   <input type="text" placeholder="Description" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} style={miniInput} />
                   <input
-                    type="number" step={10 ** -unitScale} placeholder="Out" value={draft.unitsOutStr}
+                    type="number" step="any" placeholder="Out" value={draft.unitsOutStr}
                     onChange={(e) => setDraft({ ...draft, unitsOutStr: e.target.value })}
                     className="ll-mono text-right" style={{ ...miniInput, color: C.debit }}
                     onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }}
                   />
                   <input
-                    type="number" step={10 ** -unitScale} placeholder="In" value={draft.unitsInStr}
+                    type="number" step="any" placeholder="In" value={draft.unitsInStr}
                     onChange={(e) => setDraft({ ...draft, unitsInStr: e.target.value })}
                     className="ll-mono text-right" style={{ ...miniInput, color: C.credit }}
                     onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }}
@@ -427,7 +425,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
                   </div>
                   <div className="grid items-center" style={{ gridTemplateColumns: gridCols, gap: 8 }}>
                     <input
-                      type="number" step={10 ** -cashScale} placeholder={tradingCurrency} value={draft.valueStr}
+                      type="number" step="any" placeholder={tradingCurrency} value={draft.valueStr}
                       onChange={(e) => setDraft({ ...draft, valueStr: e.target.value })}
                       className="ll-mono text-right"
                       style={{ ...miniInput, gridColumn: unitsSide === "out" ? 3 : 4, color: unitsSide === "in" ? C.debit : C.credit }}
