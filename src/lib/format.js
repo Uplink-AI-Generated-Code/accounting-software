@@ -62,6 +62,7 @@ export function fmt(amount, currency) {
 // ledger's own per-entry rows and its "Opening balance" row, where the
 // account's (or trading pair's) currency is already shown once in the
 // header/column context, so repeating it on every row is just noise.
+// Precision is maintained exactly like fmt() — only the currency prefix is dropped.
 export function fmtPlain(amount, currency) {
   const v = amount ?? "0";
   return new Intl.NumberFormat("en-GB", fractionOptions(v, scaleForCurrency(currency))).format(v);

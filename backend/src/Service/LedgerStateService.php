@@ -353,9 +353,9 @@ class LedgerStateService
      * their full precision through the whole walk. Portfolio value keeps
      * the last trade's raw cashValue/units pair rather than a pre-divided
      * price, and divides only once, at the end. The output (both numbers)
-     * is rounded to the trading currency's scale for phase 2 — exactly
-     * what phase 1 sent — and phase 3 makes that precision adaptive.
-     * Mirrors src/lib/stockMath.js.
+     * is rounded to the adaptive money places from App\Money\StockPrecision::places() —
+     * as many decimals as the account's own cash inputs used, never fewer than the
+     * trading currency's scale — mirroring src/lib/stockMath.js's stockPlaces().
      *
      * A carried-forward opening position (Account::$openingBalance /
      * $openingBalanceCashValue — set by app:new-year when rolling an
