@@ -135,7 +135,13 @@ all belong to one Transaction:
   `MatchingService::findCandidates()` only ever returns standalone lines
   (`WHERE l.transaction IS NULL`) — so this is a defensive rule, not a
   restriction on any existing user flow.
-- Fewer than 2 ids → `400`.
+- Fewer than 2 **distinct** ids → `400`. Ids are compared after temp-id
+  resolution (two `tempId`s resolving to the same pending line, or a
+  `tempId` and the real `lineId` it resolves to, count as the same id for
+  this check). Any duplicate in the given list → `400` — `linkLines`
+  never silently dedupes down to fewer than the caller asked for; a
+  caller passing the same id twice is a bug, not a shorthand for passing
+  it once.
 
 ### `unlinkLine`
 
@@ -143,11 +149,21 @@ all belong to one Transaction:
 { "op": "unlinkLine", "lineId": 42 }
 ```
 
-Removes this one line from its Transaction, making it standalone. Same
-cascade as `deleteLine`: if the Transaction now has fewer than 2 lines,
-it's deleted and the remaining line (if any) is demoted to standalone
-too. Error if the line is not currently linked to any Transaction, or
-unknown `lineId` → `400`.
+Removes this one line from its Transaction, making it standalone.
+**Idempotent**: if the line is already standalone — whether it started
+that way or an earlier op in the same batch (its own cascade, or another
+`unlinkLine`/`deleteLine` on a sibling line) already demoted it — this is
+a no-op success, not an error. This is what lets a full unlink be
+expressed as one `unlinkLine` per line of the record, all N of them,
+without the caller having to know in advance that removing the
+second-to-last line will cascade-demote the last one for free (see
+"Full unlink" in the frontend-impact table below) — sending only N-1 and
+relying on the cascade still works too, it's just no longer required.
+Cascade on an actual removal is the same as `deleteLine`: if the
+Transaction now has fewer than 2 lines, it's deleted and the remaining
+line (if any) is demoted to standalone. Unknown `lineId` → `400` (that
+case is still a real error — the line was never in scope for this
+edit).
 
 ### Shared cascade helper
 
@@ -190,7 +206,7 @@ are rewritten against the five primitives. What each user action becomes:
 | New linked entry (N new legs) | `upsertTransaction` with a fresh id, all-new lines | `createLine` ×N (tempIds) + one `linkLines([...tempIds])` |
 | Merging an existing standalone line into the current row | delete old line/transaction, `upsertTransaction` rebuilding everything | `linkLines([currentLineOrMemberId, otherLineId])` — no delete, no recreate |
 | Splitting one leg off an existing transaction, keeping it | `deleteTransaction` + `upsertLine` per survivor incl. the split-off one | `unlinkLine(thatLegsLineId)` — cascade handles the rest automatically |
-| Full unlink (record → N standalones) | `deleteTransaction` + `upsertLine` per line | `unlinkLine` for all-but-one line; cascade auto-demotes the last survivor |
+| Full unlink (record → N standalones) | `deleteTransaction` + `upsertLine` per line | `unlinkLine` for every line of the record (simplest, since the frontend doesn't have to hold one back); `unlinkLine` for all-but-one also still works, cascade auto-demotes the last survivor |
 | Deleting this account's own leg(s) from a record | `upsertTransaction` (remaining legs) or `deleteTransaction` + `upsertLine` (survivor) | `deleteLine` for each of this account's own lines; cascade handles Transaction cleanup |
 | Same-date reorder | `upsertTransaction`/`upsertLine` carrying `order` | unchanged in spirit: a loop of `updateLine({ order })` |
 
@@ -243,10 +259,18 @@ code:
   standalone line.
 - `linkLines` given lines from two different existing Transactions →
   `400`, nothing written.
-- `linkLines` given fewer than 2 ids → `400`.
+- `linkLines` given fewer than 2 distinct ids → `400`, including the case
+  of 2+ ids where one is a duplicate (e.g. `[17, 17]`) and the case of a
+  `tempId` duplicating another op's `lineId`/`tempId` after resolution.
 - `unlinkLine` on a 2-line Transaction dissolves it, demoting the
   survivor.
 - `unlinkLine` on a 3+-line Transaction just detaches the one line.
+- `unlinkLine` called on every line of a Transaction in one batch (not
+  holding one back) succeeds: the earlier calls detach normally, the
+  last one hits an already-standalone line via cascade and is a no-op,
+  and the end state matches calling it on all-but-one.
+- `unlinkLine` called on a line that was standalone before the batch even
+  started is also a no-op success, not an error.
 - Unknown `lineId`/unresolved `tempId` on each op → `400`, nothing
   written (mirroring the existing
   `testUpsertLineWithUnknownAccountThrowsAndWritesNothing`-style
