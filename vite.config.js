@@ -9,7 +9,9 @@ export default defineConfig({
       // or `symfony server:start --port=8000` from backend/) — see
       // backend/src/Controller/StateController.php.
       "/api": {
-        target: "http://127.0.0.1:8000",
+        // LEDGER_API lets a second checkout (e.g. a worktree) point at its
+        // own backend without colliding with one already on :8000.
+        target: process.env.LEDGER_API ?? "http://127.0.0.1:8000",
         changeOrigin: true,
       },
     },
