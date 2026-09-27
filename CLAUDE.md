@@ -39,8 +39,10 @@ because they're small or tightly coupled:
   anymore, see "Amounts, currencies, and reference data" below),
   `format.js` (date/currency formatting, `uid`), `decimal.js` (the
   canonical-decimal-string arithmetic core, no floats — see below; the
-  only frontend module with its own tests, `decimal.test.js`/
-  `format.test.js`, run via `yarn test`),
+  frontend modules with their own tests are `decimal.js`
+  (`decimal.test.js`), `format.js` (`format.test.js`), and `stockMath.js`
+  (`stockMath.test.js`, its `stockPlaces` cases only — see "Stock
+  valuation" below), all run via `yarn test`),
   `grouping.js` (sidebar/Overview nesting, `bucketBy`, `reorderSameDate`),
   `isa.js` (the static tax-year rules and `isaProducts` grouping — the
   actual usage computation is server-side now, see below), `stockMath.js`
@@ -91,10 +93,13 @@ Frontend: Vite + React, `yarn.lock` is the checked-in lockfile (no
   port than the default :8000.
 - Test: `yarn test` (Vitest) — covers `src/lib/decimal.js`
   (`decimal.test.js`, run against the shared `tests/fixtures/
-  decimal-cases.json`) and `src/lib/format.js` (`format.test.js`:
-  `fmt`/`fmtPlain`/`fmtUnits` exactness at each currency's/symbol's own
-  display scale) only; see "Amounts, currencies, and reference data"
-  below.
+  decimal-cases.json`), `src/lib/format.js` (`format.test.js`:
+  `fmt`/`fmtPlain`/`fmtUnits` never rounding, always showing at least
+  `scale` decimals and every stored digit beyond it), and
+  `src/lib/stockMath.js` (`stockMath.test.js`: the `stockPlaces` cases of
+  the same shared fixture, cross-checked against the PHP
+  `StockPrecisionTest` — see "Stock valuation" below); see "Amounts,
+  currencies, and reference data" below.
 - Build: `yarn build`
 - Preview a production build: `yarn preview`
 
@@ -234,9 +239,9 @@ SQLite. All commands run from `backend/`.
 
 There is a small PHPUnit suite for the backend (see "Backend" below for what
 it covers and why); the frontend has a small Vitest suite scoped to
-`src/lib/decimal.js`/`src/lib/format.js` (`yarn test`, see "Amounts,
-currencies, and reference data" below) and no linter, but otherwise no test
-suite.
+`src/lib/decimal.js`/`src/lib/format.js`/`src/lib/stockMath.js` (`yarn
+test`, see "Amounts, currencies, and reference data" and "Stock valuation"
+below) and no linter, but otherwise no test suite.
 
 ## Backend
 
@@ -732,7 +737,13 @@ speak decimal strings too, not scaled integers.
   tradingCurrency)` are immutable once created — a different one is a new
   row, not a rename. `scale` is display-only now (see "Amounts,
   currencies, and reference data" above) — editing it is a plain field
-  update with no data rewrite and no precision-loss check; see
+  update with no data rewrite and no precision-loss check.
+  `ReferenceDataView.jsx`/`AccountFormModal.jsx` label the field
+  "Min. decimals"/"Minimum decimals shown" rather than just "Scale",
+  since that's now literally what it controls — a floor on the digits
+  shown, not a stored precision; amount inputs across the app use
+  `step="any"` rather than a scale-derived step, since typed precision is
+  no longer constrained by it either. See
   docs/superpowers/specs/2026-09-26-currency-symbol-admin-design.md for
   the original (phase-1) design this superseded. `ReferenceDataView.jsx`
   no longer warns about rescaling before a scale edit — there's nothing
@@ -827,8 +838,29 @@ speak decimal strings too, not scaled integers.
   (e.g. mid-load), `fmt`/`fmtUnits` fall back to a plausible default (2 / 6)
   places rather than crashing. **`scale` no longer constrains what can be
   typed or stored** — it's purely how many decimals `fmt`/`fmtUnits`
-  display (still rounding to exactly `scale` for now; an adaptive
-  display precision is phase 3). Now that storage is arbitrary-precision,
+  display, and it's a *minimum*, not a fixed count: `fmt`/`fmtPlain`/
+  `fmtUnits` never round, and always show every digit actually stored,
+  padding with trailing zeros only up to `scale` when the stored value has
+  fewer — a caller displaying a *computed* value (anything from `divide()`,
+  or a Recharts float) rounds it first, there's nothing left in `format.js`
+  itself that would round for them. `fmtParts(amount, code, kind)` (`kind`:
+  `"plain"` / `"currency"` / `"units"`, matching `fmtPlain`/`fmt`/`fmtUnits`)
+  splits the formatted string into `{int, frac}` at the decimal point;
+  `maxPlaces(minPlaces, values)` is the most fractional digits among a set
+  of stored values, never fewer than `minPlaces`; `fracWidth(entries)`
+  (each entry `{value, code, kind}`) is the widest fraction a column of
+  those entries will ever show. `src/components/ui.jsx`'s `<Amount value
+  code kind fracWidth />` uses `fmtParts` to render the integer part and a
+  right-aligned fraction span padded (with blank space, not zeros) to
+  `fracWidth` characters, so a column of amounts lines up on the decimal
+  point — relies on the `ll-mono` font, where `1ch` is exactly one digit's
+  width. `<Amount>` is used for the actual ledger numbers: the
+  `AccountLedger`/`StockLedger` table columns (including the opening-balance
+  row and the editing row's running-total cell), the cash balances
+  `SidebarGroupTree`/`OverviewGroupTree`/`AccountRow` show per group, and
+  `IsaParentView`'s cash list — not for badges, headers, charts, or the
+  compound "units @ price" investment text, which stay plain `fmt`/
+  `fmtUnits` calls. Now that storage is arbitrary-precision,
   there is no precision limit tied to an account's currency/symbol scale:
   `format.js`'s old `precisionError(lines, accounts)` guard, and the
   matching client-side checks in `AccountFormModal.jsx`'s save handler
@@ -1153,15 +1185,38 @@ year's file are now all done from inside the running app — see
   (`App\Money\Decimal` in PHP, `src/lib/decimal.js` in JS — no more
   integer cross-multiply-then-divide, no more `cashPlaces` threaded
   through `stockMath.js`'s division calls). Rounding happens exactly
-  once, on the way out: the backend rounds `costBasis`/`portfolioValue`
-  to the trading currency's own scale before putting them on the
-  `GET /api/accounts` response (`Decimal::round(…, $cashScale)` in
-  `stockStatsFor()`) — an **adaptive display precision that doesn't clip
-  the running state is phase 3's job**, not this one's; for now the API
-  output is still rounded the same way the old scaled-integer version
-  was. `src/lib/stockMath.js`'s client-side running column and chart
-  builders (`buildCostBasisSeries`/`buildPortfolioValueSeries`) divide
-  the same 20dp way and no longer round each step either.
+  once, on the way out, and at an **adaptive** number of places rather
+  than a fixed `scale` — `stockPlaces(cashScale, opening, lines)`
+  (`src/lib/stockMath.js`) and its PHP mirror `App\Money\StockPrecision::
+  places()` (`backend/src/Money/StockPrecision.php`) both derive
+  `{moneyPlaces, unitPlaces, pricePlaces}` from the account's own data:
+  `moneyPlaces` is the most decimals any `cashValue` (or
+  `openingBalanceCashValue`) on the account has ever used, never fewer
+  than the trading currency's own `scale`; `unitPlaces` is the most
+  decimals any unit `amount` (or `openingBalance`) has used; `pricePlaces`
+  is `moneyPlaces + unitPlaces`, so a displayed price × units reproduces
+  a cash value to its own precision. The two implementations are pinned
+  together by the `"stockPlaces"` cases in the shared
+  `tests/fixtures/decimal-cases.json` fixture, run by
+  `src/lib/stockMath.test.js` (JS) and
+  `backend/tests/Money/StockPrecisionTest.php` (PHP) — the same
+  cross-checked-fixture pattern `Decimal`/`decimal.js` already use (see
+  above). The backend rounds `costBasis`/`portfolioValue` to
+  `moneyPlaces` before putting them on the `GET /api/accounts` response
+  (`stockStatsFor()`); `StockLedger.jsx`'s header rounds the same way —
+  cost basis and portfolio value to `moneyPlaces`, average price to
+  `pricePlaces` — and each row's Cost/Worth sub-line rounds its running
+  cost/value to `moneyPlaces` too, so the header, the running column, and
+  the backend's own totals never disagree on precision.
+  `src/components/charts.jsx` rounds chart labels the same way: a stock
+  chart's money series to `moneyPlaces` and its units series to
+  `max(unitPlaces, symbol scale)`; a cash-balance chart (no `stockPlaces`
+  involved) rounds to `maxPlaces(currency scale, the account's own
+  amounts)` — in every case a Recharts tooltip/axis value is rounded
+  before formatting, since Recharts always hands back a float and
+  `fmt`/`fmtUnits` never round on their own (see "Amounts, currencies,
+  and reference data" above) — this is what keeps a chart label from
+  ever showing float noise like `66.66666666666667`.
 - Both live in **two places now**: `src/lib/stockMath.js` still has
   `applyCostBasisLine`/`applyPortfolioValueLine`/`buildCostBasisSeries`/
   `buildPortfolioValueSeries`, used client-side for a stock ledger's own
