@@ -2,7 +2,10 @@
 
 namespace App\Controller;
 
+use App\Money\ScaleRegistry;
+use App\Money\WireAmounts;
 use App\Service\LedgerStateService;
+use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;
@@ -19,7 +22,7 @@ use Symfony\Component\Routing\Attribute\Route;
 #[Route('/api/ledger')]
 class LedgerController
 {
-    public function __construct(private readonly LedgerStateService $state)
+    public function __construct(private readonly LedgerStateService $state, private readonly EntityManagerInterface $em)
     {
     }
 
@@ -33,12 +36,13 @@ class LedgerController
         }
 
         try {
-            $this->state->applyLedgerOperations($operations);
+            $this->state->applyLedgerOperations(WireAmounts::operationsIn($operations, ScaleRegistry::fromEntityManager($this->em)));
         } catch (\InvalidArgumentException $e) {
-            // Currently only thrown by the active-tax-year date check —
-            // a clear 400 instead of an uncaught 500, since this is a
-            // real, expected rejection path (a stale tab, a fat-fingered
-            // date), not a bug.
+            // Thrown by the active-tax-year date check, or by an
+            // amount-format rejection from WireAmounts::operationsIn() —
+            // a clear 400 instead of an uncaught 500, since these are
+            // real, expected rejection paths (a stale tab, a fat-fingered
+            // date or amount), not bugs.
             return new JsonResponse(['error' => $e->getMessage()], 400);
         }
 
