@@ -327,7 +327,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
           </div>
           <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{displayAccountName(account)} <span style={{ color: C.gold }}>{account.symbolTicker}</span></h2>
           <div className="ll-mono" style={{ fontSize: 22, marginTop: 6 }}>
-            {fmtUnits(balance, symbolKey(account.symbolTicker, account.symbolCurrency))} <span style={{ fontSize: 14, color: C.inkFaint }}>units</span>
+            {fmtUnits(balance, unitsKey)} <span style={{ fontSize: 14, color: C.inkFaint }}>units</span>
             <span style={{ fontSize: 15, color: C.ink, marginLeft: 10 }}>{fmt(portfolioValue, tradingCurrency)}</span>
             {avgCost !== null && <span style={{ fontSize: 13, color: C.inkFaint, marginLeft: 10 }}>avg {fmt(avgCost, tradingCurrency)}/unit</span>}
           </div>

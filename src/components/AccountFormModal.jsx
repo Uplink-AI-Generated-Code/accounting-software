@@ -96,7 +96,7 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
   const [addingSymbol, setAddingSymbol] = useState(false);
   const [newTicker, setNewTicker] = useState("");
   const [newSymbolName, setNewSymbolName] = useState("");
-  const [newSymbolScale, setNewSymbolScale] = useState("6");
+  const [newSymbolScale, setNewSymbolScale] = useState("0");
   const [newSymbolCurrency, setNewSymbolCurrency] = useState(currencies[0]?.code || "GBP");
   const [symbolError, setSymbolError] = useState("");
   const [creatingSymbol, setCreatingSymbol] = useState(false);

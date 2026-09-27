@@ -100,7 +100,7 @@ function CurrencyRow({ currency, onPatchName, onChangeScale, onDelete }) {
 function SymbolSection({ symbols, currencies, onMutate }) {
   const [newTicker, setNewTicker] = useState("");
   const [newName, setNewName] = useState("");
-  const [newScale, setNewScale] = useState("6");
+  const [newScale, setNewScale] = useState("0");
   const [newTradingCurrency, setNewTradingCurrency] = useState(currencies[0]?.code || "");
 
   const create = onMutate(() => api.createSymbol({ ticker: newTicker.trim().toUpperCase(), name: newName.trim(), scale: parseInt(newScale, 10), tradingCurrency: newTradingCurrency }));
@@ -110,7 +110,7 @@ function SymbolSection({ symbols, currencies, onMutate }) {
 
   function submitNew() {
     if (!newTicker.trim() || !newName.trim() || !newTradingCurrency) return;
-    create().then(() => { setNewTicker(""); setNewName(""); setNewScale("6"); });
+    create().then(() => { setNewTicker(""); setNewName(""); setNewScale("0"); });
   }
 
   return (

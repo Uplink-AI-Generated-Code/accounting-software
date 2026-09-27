@@ -4,7 +4,6 @@ namespace App\Tests\Service;
 
 use App\Entity\Currency;
 use App\Entity\Symbol;
-use App\Money\Decimal;
 use App\Service\LedgerStateService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
@@ -186,7 +185,7 @@ class LedgerStateServiceAmountsTest extends KernelTestCase
         // money places = max(GBP 2, 0, 0, 4) = 4.
         // cost: 100 − 100/3 = 66.6666…67; + 123.4567 = 190.1233666…67 → 190.1234
         self::assertSame('190.1234', $s['costBasis']);
-        // value: units 2.12345 × (123.4567 / 0.12345) = 2123.5626…; → 4 dp
-        self::assertSame(Decimal::round(Decimal::divide(Decimal::mul('2.12345', '123.4567'), '0.12345'), 4), $s['portfolioValue']);
+        // value: units 2.12345 × (123.4567 / 0.12345) = 2123.56524597…; → 4 dp
+        self::assertSame('2123.5652', $s['portfolioValue']);
     }
 }

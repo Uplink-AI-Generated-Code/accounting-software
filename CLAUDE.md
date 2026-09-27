@@ -524,13 +524,33 @@ below) and no linter, but otherwise no test suite.
   becomes a standalone record) — kept specifically so a differently-shaped
   external database can still be imported later; don't remove that
   upgrade path without checking it's no longer needed.
-- **Test suite** (`backend/tests/`, run via `php bin/phpunit`): covers
-  `IsaAllowanceService` specifically — the flexible-ISA lot-tracking
-  simulation is the one piece of logic in this app subtle enough to have
-  produced a real bug before (see "ISA allowance engine"), so it gets a
-  safety net where everything else relies on manual browser verification.
-  Add a case there before changing that algorithm; don't feel obliged to
-  add tests elsewhere in the backend to match.
+- **Test suite** (`backend/tests/`, run via `php bin/phpunit`):
+  `Money/DecimalTest` cross-checks `App\Money\Decimal` against the shared
+  `tests/fixtures/decimal-cases.json` fixture (also run from the JS side
+  by `decimal.test.js` — see "Amounts, currencies, and reference data"
+  above); `Money/StockPrecisionTest` does the same for
+  `App\Money\StockPrecision::places()` against that fixture's
+  `"stockPlaces"` cases (mirrored by `stockMath.test.js`); `Money/
+  LegacyIntegerAmountsTest` covers `LegacyIntegerAmounts::upgrade()`'s
+  scaled-integer→decimal-string conversion used by
+  `app:import-local-storage` on an older export; `Money/ScaledAmountTest`
+  covers the older `toDecimal()` conversion helper directly;
+  `Doctrine/DecimalTextTypeTest` covers the `decimal_text` Doctrine type
+  — `TEXT`/`CLOB` affinity, refusing to write a non-canonical string, and
+  round-tripping a value back out unchanged (see "Amounts, currencies,
+  and reference data" above for why this matters on SQLite);
+  `Service/LedgerStateServiceAmountsTest` covers exact-decimal balance
+  summation beyond a currency's own scale, the stock walk dividing
+  exactly and rounding only its output (including a repeating-quotient
+  case), adaptive stock precision end-to-end, and that a bad write (an
+  unknown account, a non-decimal JSON amount) throws and leaves nothing
+  written; `Service/IsaAllowanceServiceTest` covers `IsaAllowanceService`
+  specifically — the flexible-ISA lot-tracking simulation is the one
+  piece of business logic in this app subtle enough to have produced a
+  real bug before (see "ISA allowance engine"), so it gets a safety net
+  where everything else relies on manual browser verification. Add a
+  case to the relevant file before changing the logic it covers; don't
+  feel obliged to add tests elsewhere in the backend to match.
 
 ## Data model — read this before touching transactions
 
@@ -850,17 +870,21 @@ speak decimal strings too, not scaled integers.
   of stored values, never fewer than `minPlaces`; `fracWidth(entries)`
   (each entry `{value, code, kind}`) is the widest fraction a column of
   those entries will ever show. `src/components/ui.jsx`'s `<Amount value
-  code kind fracWidth />` uses `fmtParts` to render the integer part and a
-  right-aligned fraction span padded (with blank space, not zeros) to
-  `fracWidth` characters, so a column of amounts lines up on the decimal
-  point — relies on the `ll-mono` font, where `1ch` is exactly one digit's
-  width. `<Amount>` is used for the actual ledger numbers: the
-  `AccountLedger`/`StockLedger` table columns (including the opening-balance
-  row and the editing row's running-total cell), the cash balances
-  `SidebarGroupTree`/`OverviewGroupTree`/`AccountRow` show per group, and
-  `IsaParentView`'s cash list — not for badges, headers, charts, or the
-  compound "units @ price" investment text, which stay plain `fmt`/
-  `fmtUnits` calls. Now that storage is arbitrary-precision,
+  code kind fracWidth />` uses `fmtParts` to render the integer part plus a
+  fraction span that is itself left-aligned (`text-align: left`) with a
+  `min-width` of `fracWidth + 1` characters (the `+1` is the decimal
+  point) — sitting inside a right-aligned table cell, so a column of
+  amounts lines up on the decimal point regardless of how many fractional
+  digits any one row shows; relies on the `ll-mono` font, where `1ch` is
+  exactly one digit's width. `<Amount>` is used for the actual ledger
+  numbers: the `AccountLedger`/`StockLedger` table columns (including the
+  opening-balance row and the editing row's running-total cell), the cash
+  balances `SidebarGroupTree`/`OverviewGroupTree`/`AccountRow` show per
+  group, and `IsaParentView`'s cash list — not for badges, headers,
+  charts, or the compound investment text (e.g. `App.jsx`'s
+  `accountDisplay()`, rendered as "1.5 AAPL · £150.00" — units, ticker, then
+  portfolio value), which stay plain `fmt`/`fmtUnits` calls. Now that
+  storage is arbitrary-precision,
   there is no precision limit tied to an account's currency/symbol scale:
   `format.js`'s old `precisionError(lines, accounts)` guard, and the
   matching client-side checks in `AccountFormModal.jsx`'s save handler
@@ -1220,14 +1244,20 @@ year's file are now all done from inside the running app — see
 - Both live in **two places now**: `src/lib/stockMath.js` still has
   `applyCostBasisLine`/`applyPortfolioValueLine`/`buildCostBasisSeries`/
   `buildPortfolioValueSeries`, used client-side for a stock ledger's own
-  running-total column and its chart (both operate on the one account's
-  already-fetched lines — cheap, no reason to move). The *current totals*
-  shown in the sidebar/Overview/account header come from the backend's
-  port instead (`LedgerStateService::stockStatsFor()`), computed over
-  that account's lines in the exact same order
-  (`orderedLinesFor()`: date, then `order`, then transaction id) — same-day
-  ordering can change the result, so the tiebreak has to match exactly or
-  the two totals will silently disagree.
+  running-total column *and its own header* (both operate on the one
+  account's already-fetched lines — cheap, no reason to move; see
+  `StockLedger.jsx`'s `costBasis`/`portfolioValue`/`avgCost`, rounded to
+  `stockPlaces()`'s `moneyPlaces`/`pricePlaces`). The totals shown in the
+  sidebar/Overview/an ISA wrapper's totals come from the backend's port
+  instead (`LedgerStateService::stockStatsFor()`), computed over that
+  account's lines in the exact same order (`orderedLinesFor()`: date,
+  then `order`, then transaction id) — same-day ordering can change the
+  result, so the tiebreak has to match exactly or the two totals will
+  silently disagree. The shared `stockPlaces()`/`StockPrecision::places()`
+  fixture and the identical unrounded 20-dp walk on both sides (see above)
+  are what keep the client-computed ledger header and the backend-computed
+  sidebar figure in agreement despite being computed in two different
+  places.
 - None of these is a live market value — there is no price feed anywhere
   in this app. Don't let a future request to "show current value" quietly
   turn into fabricating market prices; surface the distinction to the

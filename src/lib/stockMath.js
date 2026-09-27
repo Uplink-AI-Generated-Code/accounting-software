@@ -8,7 +8,9 @@ import { add, sub, mul, neg, abs, min, sign, isZero, divide, fractionDigits } fr
 // Amounts here are canonical decimal strings, mirrored exactly from the
 // backend's LedgerStateService::applyCostBasisLine() so the two never
 // disagree; see CLAUDE.md. Each division uses divide()'s 20dp with no
-// per-step rounding — display rounds only at the very end, via fmt().
+// per-step rounding — fmt()/fmtUnits() never round, so callers round a
+// computed value using stockPlaces() before displaying it (see
+// CLAUDE.md's "Stock valuation").
 export function applyCostBasisLine(state, l) {
   const s = sign(l.amount ?? "0");
   if (s > 0) {

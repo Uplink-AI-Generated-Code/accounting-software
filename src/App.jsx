@@ -34,8 +34,8 @@ export default function App() {
   // server-side (see CLAUDE.md), fetched once here alongside accounts and
   // passed down to AccountFormModal's pickers. currencies/symbols also
   // feed lib/format.js's setCurrencyScales()/setSymbolScales() so every
-  // fmt()/fmtUnits() call anywhere in the app can convert a scaled
-  // integer to a decimal without each one needing its own scale lookup.
+  // fmt()/fmtUnits() call anywhere in the app knows the minimum number of
+  // decimals to show without each one needing its own scale lookup.
   const [currencies, setCurrencies] = useState([]);
   const [symbols, setSymbols] = useState([]);
   const [counterparties, setCounterparties] = useState([]);
@@ -263,18 +263,17 @@ export default function App() {
   // count. Only the display differs: units and a symbol, not a currency.
   // An ISA wrapper holds no balance of its own — it's shown by how many
   // subaccounts it groups. balance/portfolioValue are computed server-side
-  // now (see GET /api/accounts) rather than derived here.
+  // now (see GET /api/accounts) rather than derived here. Only called for
+  // investment/investment-parent accounts — SidebarGroupTree renders a
+  // plain cash account's balance itself via <Amount>.
   function accountDisplay(a) {
     if (a.type === "investment-parent") {
       const n = accounts.filter((x) => x.parentId === a.id).length;
       return `${n} subaccount${n === 1 ? "" : "s"}`;
     }
     const bal = a.balance ?? "0";
-    if (a.type === "investment") {
-      const tradingCurrency = a.symbolCurrency;
-      return `${fmtUnits(bal, symbolKey(a.symbolTicker, a.symbolCurrency))} ${a.symbolTicker} · ${fmt(a.portfolioValue ?? "0", tradingCurrency)}`;
-    }
-    return fmt(bal, a.currency);
+    const tradingCurrency = a.symbolCurrency;
+    return `${fmtUnits(bal, symbolKey(a.symbolTicker, a.symbolCurrency))} ${a.symbolTicker} · ${fmt(a.portfolioValue ?? "0", tradingCurrency)}`;
   }
 
   function saveAccount(data) {

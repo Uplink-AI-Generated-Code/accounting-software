@@ -21,15 +21,15 @@ export function setCurrencyScales(currencies) {
 export function setSymbolScales(symbols) {
   symbolScales = Object.fromEntries((symbols || []).map((s) => [symbolKey(s.ticker, s.tradingCurrency), s.scale]));
 }
-// Falls back to 2 (the common case) / 6 (matching the pre-existing
-// fmtUnits display convention) if the registry hasn't loaded yet or the
-// code/ticker is unrecognized — better a plausible guess for one frame
-// than a crash.
+// Falls back to 2 (the common case) for a currency, or 0 (no minimum
+// beyond whatever digits are actually stored) for a symbol, if the
+// registry hasn't loaded yet or the code/ticker is unrecognized — better
+// a plausible guess for one frame than a crash.
 export function scaleForCurrency(code) {
   return currencyScales[code] ?? 2;
 }
 export function scaleForSymbol(key) {
-  return symbolScales[key] ?? 6;
+  return symbolScales[key] ?? 0;
 }
 
 // Intl.NumberFormat formats a *string* as an exact decimal (ES2023), so no
@@ -55,7 +55,10 @@ export function fmt(amount, currency) {
     // fraction digits are always set explicitly.
     return new Intl.NumberFormat("en-GB", { style: "currency", currency, ...fractionOptions(v, scale) }).format(v);
   } catch (e) {
-    return `${padFraction(v, scale)} ${currency}`;
+    // Prefix, like Intl's own rendering of an unknown-but-valid 3-letter
+    // code (e.g. "BTC 0.50") — keeps the " CODE" text out of the fraction,
+    // so fmtParts()'s split-at-the-decimal-point stays correct.
+    return `${currency} ${padFraction(v, scale)}`;
   }
 }
 // Same amount as fmt(), without the currency code/symbol prefix — for a

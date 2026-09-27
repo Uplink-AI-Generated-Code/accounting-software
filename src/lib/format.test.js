@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { fmt, fmtPlain, fmtUnits, fmtParts, maxPlaces, fracWidth, setCurrencyScales, setSymbolScales } from "./format";
 
 beforeAll(() => {
-  setCurrencyScales([{ code: "GBP", scale: 2 }, { code: "JPY", scale: 0 }, { code: "XBT", scale: 0 }]);
+  setCurrencyScales([{ code: "GBP", scale: 2 }, { code: "JPY", scale: 0 }, { code: "XBT", scale: 0 }, { code: "USDT", scale: 2 }]);
   setSymbolScales([{ ticker: "AAPL", tradingCurrency: "USD", scale: 6 }, { ticker: "TEST", tradingCurrency: "GBP", scale: 0 }]);
 });
 
@@ -24,6 +24,9 @@ describe("fmt family: scale is the minimum, never a cap", () => {
     expect(fmtUnits("3", "TEST:GBP")).toBe("3");
     expect(fmtUnits("0.12345", "TEST:GBP")).toBe("0.12345");
   });
+  it("falls back to a prefixed code when Intl rejects the currency (e.g. a 4-letter code)", () => {
+    expect(fmt("0.5", "USDT")).toBe("USDT 0.50");
+  });
 });
 
 describe("alignment helpers", () => {
@@ -32,6 +35,7 @@ describe("alignment helpers", () => {
     expect(fmtParts("20", "GBP", "currency")).toEqual({ int: "£20", frac: ".00" });
     expect(fmtParts("1500", "JPY")).toEqual({ int: "1,500", frac: "" });
     expect(fmtParts("0.12345", "TEST:GBP", "units")).toEqual({ int: "0", frac: ".12345" });
+    expect(fmtParts("0.5", "USDT", "currency")).toEqual({ int: "USDT 0", frac: ".50" });
   });
   it("computes the widest displayed fraction", () => {
     expect(maxPlaces(2, ["20", "20.5", "123.4567", undefined, null])).toBe(4);
