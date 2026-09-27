@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, Check, X, AlertTriangle, Pencil, Unlink2, TrendingUp, TableProperties, ChevronUp, ChevronDown } from "lucide-react";
 import { C } from "../lib/theme";
-import { fmt, fmtPlain, fmtUnits, todayISO, fmtDate, displayAccountName } from "../lib/format";
-import { toMinorUnits, fromMinorUnits, divRoundHalfUp } from "../lib/scale";
+import { fmt, fmtPlain, fmtUnits, todayISO, fmtDate, displayAccountName, precisionError } from "../lib/format";
+import { parseDecimal, parseOrZero, add, sub, neg, abs, isZero, isNegative, isPositive, isNonZero, divide, round } from "../lib/decimal";
 import { reorderSameDate } from "../lib/grouping";
 import { applyCostBasisLine, applyPortfolioValueLine } from "../lib/stockMath";
 import { formatCandidateAmount, candidateIsNegative } from "../lib/matching";
@@ -62,32 +62,29 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
   const cashScale = currencies.find((c) => c.code === tradingCurrency)?.scale ?? 2;
 
   function unitsDeltaOf(d) {
-    const i = toMinorUnits(d.unitsInStr, unitScale);
-    const o = toMinorUnits(d.unitsOutStr, unitScale);
-    return (isNaN(i) ? 0 : i) - (isNaN(o) ? 0 : o);
+    return sub(parseOrZero(d.unitsInStr), parseOrZero(d.unitsOutStr));
   }
   // The cash side is never chosen independently — buying (units in)
   // always pays value out, selling (units out) always receives value in.
   // The sign comes from whichever units field is in use, so there's only
   // one number to type instead of two that have to agree with each other.
   function cashDeltaOf(d) {
-    const mag = toMinorUnits(d.valueStr, cashScale);
-    if (isNaN(mag)) return 0;
+    const mag = parseDecimal(d.valueStr);
+    if (mag === null) return "0";
     const delta = unitsDeltaOf(d);
-    if (delta > 0) return -mag;
-    if (delta < 0) return mag;
-    if (d.unitsInStr !== "") return -mag;
+    if (isPositive(delta)) return neg(mag);
+    if (isNegative(delta)) return mag;
+    if (d.unitsInStr !== "") return neg(mag);
     if (d.unitsOutStr !== "") return mag;
-    return 0;
+    return "0";
   }
 
   const { otherLineFromLine, resolveOtherLine, addOtherLine, removeOtherLine, updateOtherLine, otherLineCandidates, selectMatchForOtherLine } = useOtherLines(
     account, accounts, draft, setDraft,
     (d) => {
       const natural = cashDeltaOf(d);
-      return natural !== 0 ? { isOut: natural < 0, amountStr: fromMinorUnits(Math.abs(natural), cashScale) } : null;
-    },
-    currencies, symbols
+      return !isZero(natural) ? { isOut: isNegative(natural), amountStr: abs(natural) } : null;
+    }
   );
 
   function draftLines(d) {
@@ -96,7 +93,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
     const desc = (d.description || "").trim();
     const line1 = { accountId: account.id, amount: unitsDelta, date: d.date || todayISO(), description: desc };
     if (d.valueStr !== "") {
-      line1.cashValue = -cashNatural;
+      line1.cashValue = neg(cashNatural);
       line1.cashCurrency = tradingCurrency;
     }
     if (d.tags && d.tags.length) line1.tags = d.tags;
@@ -118,7 +115,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
   // see api.getMatchCandidates.
   const matchParams = useMemo(() => {
     if (!draft || draft.otherLines.length > 0) return null;
-    if (unitsDeltaOf(draft) === 0 || !draft.date) return null;
+    if (isZero(unitsDeltaOf(draft)) || !draft.date) return null;
     if (draft.valueStr === "") return null;
     const targetAmount = cashDeltaOf(draft); // = -cashValue, i.e. the real counterpart's own amount
     return { currency: tradingCurrency, amount: targetAmount, date: draft.date, excludeAccountIds: [account.id] };
@@ -157,18 +154,18 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
       if (ao !== bo) return ao - bo;
       return rowKey(a.record).localeCompare(rowKey(b.record));
     });
-    let running = account.openingBalance || 0;
+    let running = account.openingBalance ?? "0";
     // Seeded from the account's carried-forward opening position (see
     // CLAUDE.md's "The active tax year"/app:new-year and
     // LedgerStateService::stockStatsFor(), which this mirrors) rather than
     // starting at zero, so this running column agrees with the header's
     // own costBasis/portfolioValue total even before any line exists.
-    const openingUnits = account.openingBalance || 0;
-    const openingCost = account.openingBalanceCashValue || 0;
-    const costState = { units: openingUnits, cost: openingCost };
-    const valueState = { units: openingUnits, lastCashValue: openingCost, lastUnits: openingUnits, value: openingUnits ? openingCost : 0 };
+    const openingUnits = account.openingBalance ?? "0";
+    const openingCost = account.openingBalanceCashValue ?? "0";
+    const costState = { units: openingUnits, cost: openingCost, cashPlaces: cashScale };
+    const valueState = { units: openingUnits, lastCashValue: openingCost, lastUnits: openingUnits, value: isZero(openingUnits) ? "0" : openingCost, cashPlaces: cashScale };
     return sorted.map(({ record, line }) => {
-      running += line.amount || 0;
+      running = add(running, line.amount ?? "0");
       applyCostBasisLine(costState, line);
       applyPortfolioValueLine(valueState, line);
       const others = record.lines.filter((l) => l.accountId !== account.id).map((l) => accounts.find((a) => a.id === l.accountId)).filter(Boolean);
@@ -184,18 +181,17 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
   // Falls back to the account's own carried-forward opening position (not
   // a hardcoded 0) when there are no trades yet, so a freshly rolled-over
   // investment account's header agrees with the sidebar's costBasis.
-  const costBasis = rows.length ? rows[rows.length - 1].runningCost : account.openingBalanceCashValue || 0;
-  const portfolioValue = rows.length ? rows[rows.length - 1].runningValue : account.openingBalanceCashValue || 0;
-  // Cost per *whole* unit, in the trading currency's own minor units —
-  // costBasis and balance are integers of two different scales (cash vs
-  // units), so the unit scale has to be multiplied back in before
-  // dividing, exactly (see divRoundHalfUp — no float division).
-  const avgCost = balance > 0 ? divRoundHalfUp(costBasis * 10 ** unitScale, balance) : null;
+  const costBasis = rows.length ? rows[rows.length - 1].runningCost : account.openingBalanceCashValue ?? "0";
+  const portfolioValue = rows.length ? rows[rows.length - 1].runningValue : account.openingBalanceCashValue ?? "0";
+  // Cost per whole unit, rounded to the trading currency's scale — the
+  // same result the old divRoundHalfUp(costBasis × 10^unitScale, balance)
+  // produced on minor units.
+  const avgCost = isPositive(balance) ? round(divide(costBasis, balance), cashScale) : null;
 
   function buildDraftFromRecord(record) {
     const line = record.lines.find((l) => l.accountId === account.id);
     const others = record.lines.filter((l) => l.accountId !== account.id);
-    const naturalCash = line.cashValue !== undefined ? -line.cashValue : 0;
+    const naturalCash = line.cashValue !== undefined ? neg(line.cashValue) : "0";
     return {
       mode: "edit",
       transactionId: record.transactionId,
@@ -205,9 +201,9 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
       date: line.date,
       description: line.description || "",
       tags: line.tags || [],
-      unitsInStr: line.amount > 0 ? fromMinorUnits(line.amount, unitScale) : "",
-      unitsOutStr: line.amount < 0 ? fromMinorUnits(-line.amount, unitScale) : "",
-      valueStr: line.cashValue !== undefined ? fromMinorUnits(Math.abs(naturalCash), cashScale) : "",
+      unitsInStr: isPositive(line.amount) ? line.amount : "",
+      unitsOutStr: isNegative(line.amount) ? neg(line.amount) : "",
+      valueStr: line.cashValue !== undefined ? abs(naturalCash) : "",
       otherLines: others.map((o) => otherLineFromLine(o, o)),
     };
   }
@@ -264,13 +260,18 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
 
   function commit() {
     if (!draft) return false;
-    if (unitsDeltaOf(draft) === 0) { setDraftError("Enter units in or out."); return false; }
+    if (isZero(unitsDeltaOf(draft))) { setDraftError("Enter units in or out."); return false; }
     const newLines = draftLines(draft);
     // See AccountLedger.jsx's commit() for why every line is checked, not
     // just draft.date, and why this mirrors the backend's own check.
     const offender = newLines.find((l) => dateOutsideTaxYear(l.date, activeTaxYearStart));
     if (offender) {
       setDraftError(`${fmtDate(offender.date)} is outside the ${taxYearBounds(activeTaxYearStart).label} tax year.`);
+      return false;
+    }
+    const precisionMsg = precisionError(newLines, accounts);
+    if (precisionMsg) {
+      setDraftError(precisionMsg);
       return false;
     }
     const absorbedLineIds = draft.otherLines.filter((ol) => ol.matchedLineId).map((ol) => ol.matchedLineId);
@@ -359,18 +360,18 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
 
         {!loaded && <div style={{ padding: "24px 16px", fontSize: 13, color: C.inkFaint }}>Loading…</div>}
 
-        {loaded && !!account.openingBalance && (
+        {loaded && isNonZero(account.openingBalance) && (
           <div style={{ padding: "10px 16px", borderBottom: `1px solid ${C.lineSoft}` }}>
             <div className="grid items-center" style={{ gridTemplateColumns: gridCols, fontSize: 13.5, color: C.inkFaint }}>
               <div style={{ fontSize: 12.5 }}>—</div>
               <div style={{ fontStyle: "italic" }}>Opening balance</div>
-              <div className="ll-mono text-right">{account.openingBalance < 0 ? fmtUnits(-account.openingBalance, symbolKey(account.symbolTicker, account.symbolCurrency)) : "—"}</div>
-              <div className="ll-mono text-right">{account.openingBalance > 0 ? fmtUnits(account.openingBalance, symbolKey(account.symbolTicker, account.symbolCurrency)) : "—"}</div>
+              <div className="ll-mono text-right">{isNegative(account.openingBalance) ? fmtUnits(neg(account.openingBalance), symbolKey(account.symbolTicker, account.symbolCurrency)) : "—"}</div>
+              <div className="ll-mono text-right">{isPositive(account.openingBalance) ? fmtUnits(account.openingBalance, symbolKey(account.symbolTicker, account.symbolCurrency)) : "—"}</div>
               <div className="ll-mono text-right" style={{ fontWeight: 600 }}>{fmtUnits(account.openingBalance, symbolKey(account.symbolTicker, account.symbolCurrency))}</div>
               <div />
             </div>
             <div style={{ fontSize: 11.5, color: C.inkFaint, marginTop: 3, paddingLeft: 118 }}>
-              Cost {fmtPlain(account.openingBalanceCashValue || 0, tradingCurrency)} · Worth {fmtPlain(account.openingBalanceCashValue || 0, tradingCurrency)}
+              Cost {fmtPlain(account.openingBalanceCashValue ?? "0", tradingCurrency)} · Worth {fmtPlain(account.openingBalanceCashValue ?? "0", tradingCurrency)}
             </div>
           </div>
         )}
@@ -380,9 +381,9 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
         {rows.map((r, idx) => {
           const key = r.key;
           const isEditing = key === editingKey;
-          const unitsOut = r.line.amount < 0 ? -r.line.amount : 0;
-          const unitsIn = r.line.amount > 0 ? r.line.amount : 0;
-          const natural = r.line.cashValue !== undefined ? -r.line.cashValue : null;
+          const unitsOut = isNegative(r.line.amount) ? neg(r.line.amount) : null;
+          const unitsIn = isPositive(r.line.amount) ? r.line.amount : null;
+          const natural = r.line.cashValue !== undefined ? neg(r.line.cashValue) : null;
           const unmatched = r.record.transactionId === null;
           const hasAbove = idx > 0 && rows[idx - 1].line.date === r.line.date;
           const hasBelow = idx < rows.length - 1 && rows[idx + 1].line.date === r.line.date;
