@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Plus, X, Check } from "lucide-react";
 import { C } from "../lib/theme";
-import { uid, todayISO, fmtDate, displayAccountName } from "../lib/format";
-import { parseDecimal, parseOrZero, neg, abs, isZero, isNegative } from "../lib/decimal";
+import { uid, todayISO, fmtDate, displayAccountName, scaleForCurrency } from "../lib/format";
+import { parseDecimal, parseOrZero, neg, abs, isZero, isNegative, fractionDigits } from "../lib/decimal";
 import { getMatchCandidates } from "../api";
 import { formatCandidateAmount, candidateIsNegative } from "../lib/matching";
 import { miniInput } from "./ui";
@@ -172,7 +172,13 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
     const pending = draft.otherLines.filter((ol) => {
       if (ol.accountId || ol.matchedLineId) return false;
       const mag = parseDecimal(ol.amountStr);
-      return mag !== null && !isZero(mag);
+      if (mag === null || isZero(mag)) return false;
+      // PHASE 1 ONLY — the backend 400s a search whose `amount` has more
+      // decimal places than the target currency's own scale (storage is
+      // still scaled integers); skip it rather than let the search fire
+      // and log a console error. Phase 2 removes this limit entirely.
+      if (fractionDigits(mag) > scaleForCurrency(primaryCurrency)) return false;
+      return true;
     });
     if (pending.length === 0) {
       setOtherLineCandidates({});

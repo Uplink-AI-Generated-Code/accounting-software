@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { Trash2 } from "lucide-react";
 import { C, TYPES, ISA_KINDS } from "../lib/theme";
-import { parseDecimal } from "../lib/decimal";
+import { parseDecimal, fractionDigits } from "../lib/decimal";
 import { ModalShell, Field, inputStyle } from "./ui";
 import { createSymbol } from "../api";
-import { displayAccountName } from "../lib/format";
+import { displayAccountName, scaleForSymbol } from "../lib/format";
 import { symbolKey, parseSymbolKey } from "../lib/symbolKey";
 
 /* ---------------------------------------------------------
@@ -77,6 +77,24 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
   const isaOwnCurrency = type === "investment" ? tradingCurrency : currency;
   const isaCurrencyInvalid = isaTagged && !!isaOwnCurrency && isaOwnCurrency !== "GBP";
 
+  // PHASE 1 ONLY (see precisionError()'s comment in lib/format.js — phase
+  // 2 removes this limit entirely). Storage is still scaled integers, so
+  // the backend 400s an opening balance with more decimal places than the
+  // account's own scale (the currency's scale, or a Symbol's own scale
+  // for an investment account); App.jsx's saveAccount() is optimistic, so
+  // a rejected save would otherwise leave the modal closed with a ghost
+  // account. Only guarded where `opening` is actually editable through
+  // this form (see the Opening balance Field below, and its own error
+  // message) — a wrapper holds no balance of its own, and an investment
+  // account's value is rolled over verbatim by app:new-year, never
+  // retyped here, so blocking Save on either would have no visible error
+  // to show the user why nothing happened.
+  const openingEditable = !isWrapper && type !== "investment";
+  const openingScale = type === "investment" ? (symbol ? scaleForSymbol(symbol) : null) : currencyScale;
+  const parsedOpening = openingEditable ? parseDecimal(opening) : null;
+  const openingPrecisionInvalid = openingEditable && opening.trim() !== "" && openingScale != null &&
+    (parsedOpening === null || fractionDigits(parsedOpening) > openingScale);
+
   // Symbol is a curated, closed set (LedgerStateService::resolveSymbol()
   // hard-errors on an unknown ticker) — a blank database starts with zero
   // symbols, so without this inline flow there'd be no way to create the
@@ -123,6 +141,10 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
       return;
     }
     if (isaCurrencyInvalid) {
+      setAttemptedSubmit(true);
+      return;
+    }
+    if (openingPrecisionInvalid) {
       setAttemptedSubmit(true);
       return;
     }
@@ -255,7 +277,16 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
           </Field>
         )}
         {!isWrapper && type !== "investment" && (
-          <Field label="Opening balance"><input type="number" step={10 ** -currencyScale} value={opening} onChange={(e) => setOpening(e.target.value)} style={inputStyle} /></Field>
+          <Field label="Opening balance">
+            <input type="number" step={10 ** -currencyScale} value={opening} onChange={(e) => setOpening(e.target.value)} style={inputStyle} />
+            {openingPrecisionInvalid && attemptedSubmit && (
+              <div style={{ fontSize: 11.5, color: C.debit, marginTop: 4 }}>
+                {parsedOpening === null
+                  ? "Enter a valid opening balance."
+                  : `Opening balance can have at most ${openingScale} decimal place${openingScale === 1 ? "" : "s"} for ${currency}.`}
+              </div>
+            )}
+          </Field>
         )}
 
         {!isWrapper && (type === "asset" || type === "investment") && (

@@ -89,9 +89,10 @@ Frontend: Vite + React, `yarn.lock` is the checked-in lockfile (no
   override the proxy target (e.g. `LEDGER_API=http://127.0.0.1:8001 yarn
   dev`), for pointing a dev server at a backend running on a different
   port than the default :8000.
-- Test: `yarn test` (Vitest) — covers `src/lib/decimal.js` and the
-  precision-guard rule in `src/lib/format.js` only; see "Amounts,
-  currencies, and reference data" below.
+- Test: `yarn test` (Vitest) — covers `src/lib/decimal.js` (`decimal.test.js`)
+  and `src/lib/format.js` (`format.test.js`: the precision-guard rule,
+  plus `fmt`/`fmtPlain`/`fmtUnits` exactness at each currency's/symbol's
+  own scale) only; see "Amounts, currencies, and reference data" below.
 - Build: `yarn build`
 - Preview a production build: `yarn preview`
 
@@ -349,9 +350,10 @@ suite.
   - `GET /api/match-candidates` (`MatchController` /
     `MatchingService::findCandidates()`) — replaces the old client-side
     "scan every transaction for a plausible counterpart" search. Query
-    params: `currency`, `amount`, `date`, `mode` (`mirrored` or `direct` —
-    same distinction `getComparableAmount`/`getDirectComparableAmount`
-    used to draw, see "Matching and linking" below), optionally
+    params: `currency`, `amount` (a decimal string, same wire format as
+    every other amount), `date`, `mode` (`mirrored` or `direct` — same
+    distinction `getComparableAmount`/`getDirectComparableAmount` used to
+    draw, see "Matching and linking" below), optionally
     `excludeAccountIds`. Each candidate is `{lineId, line, account}` — a
     standalone line's own id doubles as its candidate identity; there's no
     `excludeTransactionId` param because the current draft's own account
@@ -385,7 +387,13 @@ suite.
     every stored amount denominated in that currency/symbol to the new
     scale in one transaction — refused (`400`) if a decrease would lose
     precision on any existing row, or if an increase would push any
-    existing row's magnitude past the JS safe-integer range; `scale`
+    existing row's magnitude past the JS safe-integer range (the frontend
+    no longer holds amounts as JS `Number`s at all now that they're
+    decimal strings — see "Amounts, currencies, and reference data"
+    below — so this cap is now a conservative belt-and-braces limit
+    rather than a real correctness requirement; it goes away along with
+    the rest of `rescale*()` once phase 2 removes scaled-integer storage
+    and rescaling has nothing left to do); `scale`
     itself is capped at 12. `DELETE` relies on the schema's own
     foreign-key enforcement to refuse a still-referenced row, translated
     into a clean `409`. `POST /api/symbols` was added first, specifically
@@ -682,31 +690,46 @@ a float.
 - **`src/lib/decimal.js`** (replaces the old `src/lib/scale.js`) is the
   frontend's decimal arithmetic core, built on big.js, with its own
   Vitest suite (`decimal.test.js`, plus `format.test.js` for the
-  precision guard below — `yarn test`) run against a fixture shared with
-  the PHP side, `tests/fixtures/decimal-cases.json`. Four rules govern it
-  everywhere in this codebase:
-  1. Amounts are canonical decimal strings everywhere outside the two
-     decimal modules (`src/lib/decimal.js` and `App\Money\Decimal` — see
+  precision guard below — `yarn test`) run against
+  `tests/fixtures/decimal-cases.json`. Four rules govern it everywhere in
+  this codebase:
+  1. Amounts are canonical decimal strings everywhere outside
+     `src/lib/decimal.js`. The backend's phase-1 equivalent is
+     `App\Money\ScaledAmount`/`WireAmounts` (`backend/src/Money/`),
+     converting to/from the still-integer storage at the controller
+     boundary — there's no `App\Money\Decimal` yet; that class, and
+     arbitrary-precision storage itself, are phase 2 (see
      `docs/superpowers/specs/2026-09-27-arbitrary-precision-decimals-design.md`).
   2. Nothing divides amounts except `divide()` (20dp, round half-up,
      returns `"0"` for a zero divisor — the same contract the old
      `divRoundHalfUp` had).
-  3. A float appears only at the Recharts data boundary, via
-     `toNumber()`.
-  4. The PHP and JS implementations must agree, and the shared fixture
-     enforces it.
+  3. A float appears only at a handful of named renderer boundaries,
+     never in arithmetic: `toNumber()`/`fromNumber()` for Recharts'
+     series data and its tick/tooltip formatters (`charts.jsx`), the ISA
+     allowance bar's CSS `width` percentage (`AllowanceView.jsx`), and
+     the FX-rate display's `Intl` significant-digit formatting
+     (`lib/matching.js`'s rate string). Each of these is display-only —
+     none of their outputs ever get parsed back into an amount.
+  4. The PHP and JS implementations must agree — but there's no shared
+     fixture enforcing that yet. `tests/fixtures/decimal-cases.json` is
+     currently consumed by `decimal.test.js` alone; nothing on the PHP
+     side reads it. Phase 2's `App\Money\Decimal` is expected to close
+     this gap by running the same fixture; until then, agreement between
+     the two is manual — re-check both sides by hand if you touch either.
   `parseDecimal(str)`/`parseOrZero(str)` replace `toMinorUnits` for
   turning typed input into a canonical string (returning `null`/`"0"`
   respectively for invalid input, rather than `NaN`); `canonical`,
   `add`/`sub`/`mul`/`neg`/`abs`, `cmp`/`sign`/`isZero`/`isNegative`/
   `isPositive`/`isNonZero`, `min`/`sum`, `divide`, `round`,
-  `fractionDigits`, and `toNumber`/`fromNumber` (the only float
-  conversion, for Recharts) round out the module. Every input field's
-  onChange handler across `AccountLedger.jsx`/`StockLedger.jsx`/
-  `otherLines.jsx`/`AccountFormModal.jsx` goes through these instead of
-  `parseFloat`/`String()` — don't reintroduce either. **Never hold a
-  big.js object outside `decimal.js`** — every exported function takes
-  and returns plain canonical strings, so React state, props, `===`, and
+  `fractionDigits`, and `toNumber`/`fromNumber` (the float boundary, rule
+  3 above) round out the module. An input field's onChange handler
+  (`AccountLedger.jsx`/`StockLedger.jsx`/`otherLines.jsx`/
+  `AccountFormModal.jsx`) just stores the raw typed text in state (e.g.
+  `amountStr`) — parsing happens later, via `parseDecimal`/`parseOrZero`,
+  wherever that value is actually read (a delta computation, a save, a
+  precision check), not in the handler itself. **Never hold a big.js
+  object outside `decimal.js`** — every exported function takes and
+  returns plain canonical strings, so React state, props, `===`, and
   JSON stay plain; don't leak a `Big` instance into a component or into
   state.
 - **`divRoundHalfUp`**: the old integer-`BigInt` JS copy in `scale.js` is
@@ -736,11 +759,21 @@ a float.
   places rather than crashing. `format.js` also exports
   `precisionError(lines, accounts)`, a **phase-1-only guard**: since
   storage is still a scaled integer, a typed value with more fractional
-  digits than its account's currency/symbol scale would be silently
-  truncated server-side, so the frontend rejects it client-side first
-  with a named-account error, keeping the edit open rather than saving.
-  This guard (and the `400` it mirrors in `ScaledAmount::fromDecimal()`)
-  goes away in phase 2 once storage itself is arbitrary-precision.
+  digits than its account's currency/symbol scale is **rejected outright
+  by the backend with a `400`**, not silently truncated (the old
+  `toMinorUnits` used to truncate — that behavior is gone) — so the
+  frontend rejects it client-side first with a named-account error,
+  keeping the edit open rather than saving. Two other spots run the same
+  kind of guard for the same reason: `AccountFormModal.jsx`'s save
+  handler checks the opening-balance field's own precision before
+  calling `onSave` (so `App.jsx`'s optimistic `saveAccount()` never
+  closes the modal on a value the backend would reject), and
+  `useMatchCandidates.js`/`otherLines.jsx`'s per-leg search skips firing
+  a match search whose typed amount already has too many decimal places
+  for the target currency, rather than letting it 400 and log console
+  noise. All of these (and the `400` they mirror in
+  `ScaledAmount::fromDecimal()`) go away in phase 2 once storage itself
+  is arbitrary-precision.
 
 ## Matching and linking — two different comparison modes, on purpose
 
@@ -886,8 +919,9 @@ Counterparty and were dropped — don't reintroduce them as tags.
     (`{lineId, line, account}`, shaped like `GET /api/match-candidates`'s
     own candidates) — the drill-down behind a tag total.
   - `GET /api/tag-totals?dimension=Car[&excludeTag=Status:Refunded]` —
-    server-side `SUM` grouped by `(value, currency)`, same
-    "never sum bulk line data client-side" posture as
+    server-side `SUM` grouped by `(value, currency)` (each row's summed
+    field is named `amount`, a decimal string like every other amount on
+    the wire), same "never sum bulk line data client-side" posture as
     `accountsWithStats()`'s own balance `SUM`. A line carrying more than
     one value of the requested dimension contributes to each value's
     total, not just one. **Scope cut: never sums investment lines** — an
@@ -1042,12 +1076,25 @@ year's file are now all done from inside the running app — see
   thing zeroed defensively now is `cost`, to absorb ±1-minor-unit
   rounding dust from `divRoundHalfUp`, not float fuzz.
 - Cost basis / portfolio value math mixes **two different scales** —
-  `cost`/`cashValue` are currency-scale integers, `units`/`amount` are
-  symbol-scale integers. A cross-multiply-then-divide via
-  `divRoundHalfUp` (see "Amounts, currencies, and reference data" above)
-  keeps every intermediate value an exact integer of the correct implied
-  scale without either function ever needing to know either scale
-  explicitly — don't "simplify" this to a plain `/` division.
+  `cost`/`cashValue` are currency-scale amounts, `units`/`amount` are
+  symbol-scale amounts. This is still true integer-side: the PHP port
+  cross-multiplies then divides via `divRoundHalfUp` (see "Amounts,
+  currencies, and reference data" above), keeping every intermediate
+  value an exact integer of the correct implied scale without either
+  function ever needing to know either scale explicitly — don't
+  "simplify" that to a plain `/` division. The JS side no longer works
+  this way now that amounts are decimal strings: `src/lib/stockMath.js`
+  cross-multiplies with `mul()` and then divides with `divide()`
+  (`lib/decimal.js`'s one division helper, 20dp) followed by an explicit
+  `round(…, state.cashPlaces)` — so unlike the PHP port, **`cashPlaces`
+  (the trading currency's own scale) has to be threaded in explicitly**,
+  or every intermediate rounds to the wrong number of places for a
+  non-2-decimal trading currency. `StockLedger.jsx` passes its own
+  `cashScale` (looked up from `currencies`); `charts.jsx` passes
+  `scaleForCurrency(tradingCurrency)`; both default to `2` when the seed
+  `opening` object doesn't specify one. Phase 2 moves both the PHP and JS
+  sides to the same 20dp-internal-division approach, at which point this
+  scale-threading requirement goes away on the JS side too.
 - Both live in **two places now**: `src/lib/stockMath.js` still has
   `applyCostBasisLine`/`applyPortfolioValueLine`/`buildCostBasisSeries`/
   `buildPortfolioValueSeries`, used client-side for a stock ledger's own

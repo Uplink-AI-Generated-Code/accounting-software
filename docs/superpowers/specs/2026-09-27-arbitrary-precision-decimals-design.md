@@ -157,7 +157,7 @@ integer columns.
 |---|---|
 | Line | `amount`, `cashValue`, `exchangeAmount` |
 | Account | `openingBalance`, `openingBalanceCashValue`, `balance`, `costBasis`, `portfolioValue`, `imbalanceIn`, `imbalanceOut` |
-| `GET /api/tag-totals` | each `total` |
+| `GET /api/tag-totals` | each row's `amount` |
 | `GET /api/isa-allowance` | every usage/amount figure |
 
 `entryCount` and `imbalancedLineCount` are counts and stay JSON numbers.
