@@ -49,25 +49,30 @@ export function buildUnlinkOperations(transactionId, lines) {
 }
 
 // Deletes only the calling account's own leg(s) of a record. A standalone
-// line just goes. A linked transaction is deleted outright, but any other
-// account's line(s) it held are never discarded with it — mirroring
-// removeOtherLine()'s "removing a leg never deletes the other side's data"
-// rule (see CLAUDE.md's "Matching and linking") — they're recreated as
-// their own standalone line(s) (one remaining line) or a fresh linked
-// transaction (2+ remaining lines), the same newLines.length branch
-// buildSaveOperations already uses.
+// line just goes. A linked transaction never has any other account's
+// line(s) discarded with it — mirroring removeOtherLine()'s "removing a
+// leg never deletes the other side's data" rule (see CLAUDE.md's
+// "Matching and linking"). If 2+ other lines remain, this is really just
+// an edit of the same transaction down to fewer lines — one
+// `upsertTransaction` against its existing `transactionId`, same as
+// buildSaveOperations' own oldTransactionId/newLines.length>=2 branch, no
+// separate delete needed. Only when a single line remains does the
+// transaction itself have to go (a Transaction is never fewer than 2
+// lines — see "Data model" in CLAUDE.md), demoting that survivor to a
+// standalone line the same way buildSaveOperations' 2→1 branch already
+// does.
 export function buildDeleteOperations(record, accountId) {
   if (!record.transactionId) {
     return [{ op: "deleteLine", lineId: record.lines[0].id }];
   }
   const remaining = record.lines.filter((l) => l.accountId !== accountId);
-  const ops = [{ op: "deleteTransaction", transactionId: record.transactionId }];
   if (remaining.length >= 2) {
-    ops.push({ op: "upsertTransaction", transactionId: uid(), lines: remaining });
-  } else if (remaining.length === 1) {
-    ops.push({ op: "upsertLine", lineId: null, line: remaining[0] });
+    return [{ op: "upsertTransaction", transactionId: record.transactionId, lines: remaining }];
   }
-  return ops;
+  return [
+    { op: "deleteTransaction", transactionId: record.transactionId },
+    ...remaining.map((line) => ({ op: "upsertLine", lineId: null, line })),
+  ];
 }
 
 // One operation per patched record — see lib/grouping.js's
