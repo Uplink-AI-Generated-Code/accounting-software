@@ -201,12 +201,27 @@ SQLite. All commands run from `backend/`.
 
   ```bash
   cd backend
-  mkdir -p ../db-backups && cp databases/*.sqlite3 ../db-backups/
-  for f in databases/*.sqlite3; do ACTIVE_DATABASE_PATH_OVERRIDE="$PWD/$f" php bin/console doctrine:migrations:migrate --no-interaction || break; done
+  backup="databases/backup-$(date +%Y%m%d-%H%M%S)" && mkdir -p "$backup" && cp -n databases/*.sqlite3 "$backup"/
+  for f in databases/*.sqlite3; do echo "== $f"; ACTIVE_DATABASE_PATH_OVERRIDE="$PWD/$f" php bin/console doctrine:migrations:migrate --no-interaction || break; done
   ```
 
   Back up first, unconditionally — the backup is the undo, since a
   migration like the phase-2 one rewrites every stored amount in place.
+  The backup goes under `databases/backup-<timestamp>/`, inside
+  `backend/databases/` itself: that whole directory is already gitignored
+  (`/databases/` in `backend/.gitignore`, confirmed with `git
+  check-ignore`), so the backup can never end up committed by a stray
+  `git add -A` the way a sibling `../db-backups/` folder could. The
+  timestamp also means re-running this after a partial failure creates a
+  *new* backup folder rather than overwriting the pre-migration one, and
+  `cp -n` refuses to clobber a file that's already there for the same
+  reason. The loop's own glob, `databases/*.sqlite3`, is non-recursive —
+  it only matches files directly under `databases/`, never anything
+  inside `databases/backup-*/`, so the backup folder's own copies are
+  never picked back up as migration targets. Each iteration echoes the
+  file it's about to migrate first, so a failure identifies exactly which
+  database it was.
+
   `MigrationStatusListener` refuses every `/api/*` request against any
   database whose schema isn't caught up (see "Backend" below), so a file
   left unmigrated simply can't be selected as active until this is run
@@ -1130,9 +1145,10 @@ year's file are now all done from inside the running app — see
   to absorb any residual rounding dust from the one division, not float
   fuzz (there never was float fuzz here even in the scaled-integer days,
   but the defensive zeroing is cheap insurance).
-- Cost basis / portfolio value math mixes **two different scales** —
-  `cost`/`cashValue` are currency amounts, `units`/`amount` are symbol
-  (unit) amounts, and the running state itself is kept as exact,
+- Cost basis / portfolio value math **touches two different kinds of
+  amount** — `cost`/`cashValue` are currency amounts, `units`/`amount` are
+  symbol (unit) amounts — but nothing about either one's scale gates or
+  shapes the arithmetic itself: the running state is kept as exact,
   unrounded decimal strings throughout the walk on both sides
   (`App\Money\Decimal` in PHP, `src/lib/decimal.js` in JS — no more
   integer cross-multiply-then-divide, no more `cashPlaces` threaded
