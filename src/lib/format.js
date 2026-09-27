@@ -1,4 +1,4 @@
-import { round, fractionDigits } from "./decimal";
+import { round } from "./decimal";
 import { TYPES } from "./theme";
 import { symbolKey } from "./symbolKey";
 
@@ -33,8 +33,8 @@ export function scaleForSymbol(key) {
 }
 
 // Intl.NumberFormat formats a *string* as an exact decimal (ES2023), so
-// no amount ever passes through a float here. Phase 1: exactly `scale`
-// places (phase 3 changes this to "at least").
+// no amount ever passes through a float here. Exactly `scale` places
+// (phase 3 changes this to "at least").
 function padFraction(v, places) {
   if (places === 0) return v;
   const [whole, frac = ""] = v.split(".");
@@ -116,27 +116,4 @@ export function fmtDateShort(iso) {
 export function fmtUnits(n, symbolKeyString) {
   const scale = scaleForSymbol(symbolKeyString);
   return new Intl.NumberFormat("en-GB", { minimumFractionDigits: 0, maximumFractionDigits: scale }).format(round(n ?? "0", scale));
-}
-
-// PHASE 1 ONLY — delete in phase 2 (docs/superpowers/specs/2026-09-27-
-// arbitrary-precision-decimals-design.md). Storage is still scaled
-// integers, so the backend 400s on a value deeper than its scale; this
-// catches it before the save, so the edit isn't lost to a failed batch.
-export function precisionError(lines, accounts) {
-  for (const l of lines) {
-    const acc = accounts.find((a) => a.id === l.accountId);
-    if (!acc) continue;
-    const amountScale = acc.type === "investment" ? scaleForSymbol(symbolKey(acc.symbolTicker, acc.symbolCurrency)) : scaleForCurrency(acc.currency);
-    const checks = [
-      [l.amount, amountScale],
-      [l.cashValue, scaleForCurrency(l.cashCurrency)],
-      [l.exchangeAmount, scaleForCurrency(l.exchangeCurrency)],
-    ];
-    for (const [value, scale] of checks) {
-      if (value !== undefined && fractionDigits(value) > scale) {
-        return `${displayAccountName(acc)}: ${value} has more than ${scale} decimal place${scale === 1 ? "" : "s"}.`;
-      }
-    }
-  }
-  return null;
 }

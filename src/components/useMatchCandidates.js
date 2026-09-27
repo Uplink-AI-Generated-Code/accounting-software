@@ -1,7 +1,5 @@
 import { useEffect, useState } from "react";
 import { getMatchCandidates } from "../api";
-import { scaleForCurrency } from "../lib/format";
-import { fractionDigits } from "../lib/decimal";
 
 const DEBOUNCE_MS = 300;
 
@@ -15,14 +13,6 @@ export function useMatchCandidates(params) {
 
   useEffect(() => {
     if (!params) {
-      setCandidates([]);
-      return;
-    }
-    // PHASE 1 ONLY — storage is still scaled integers, so the backend
-    // 400s a search whose `amount` has more decimal places than the
-    // target currency's own scale (console noise, no candidates would
-    // ever match anyway). Phase 2 removes this limit entirely.
-    if (fractionDigits(params.amount) > scaleForCurrency(params.currency)) {
       setCandidates([]);
       return;
     }

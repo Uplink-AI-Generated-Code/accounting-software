@@ -76,7 +76,6 @@ function CurrencyRow({ currency, onPatchName, onChangeScale, onDelete }) {
     const parsed = parseInt(next, 10);
     if (!Number.isInteger(parsed) || parsed < 0) return;
     if (parsed === currency.scale) return;
-    if (!window.confirm(`Changing ${currency.code}'s scale from ${currency.scale} to ${parsed} will rescale every existing amount using it and cannot be undone. Continue?`)) return;
     onChangeScale(parsed);
   }
 
@@ -150,7 +149,6 @@ function SymbolRow({ symbol, onPatchName, onChangeScale, onDelete }) {
     const parsed = parseInt(next, 10);
     if (!Number.isInteger(parsed) || parsed < 0) return;
     if (parsed === symbol.scale) return;
-    if (!window.confirm(`Changing ${symbol.ticker} (${symbol.tradingCurrency})'s scale from ${symbol.scale} to ${parsed} will rescale every existing amount using it and cannot be undone. Continue?`)) return;
     onChangeScale(parsed);
   }
 

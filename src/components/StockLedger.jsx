@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, Check, X, AlertTriangle, Pencil, Unlink2, TrendingUp, TableProperties, ChevronUp, ChevronDown } from "lucide-react";
 import { C } from "../lib/theme";
-import { fmt, fmtPlain, fmtUnits, todayISO, fmtDate, displayAccountName, precisionError } from "../lib/format";
+import { fmt, fmtPlain, fmtUnits, todayISO, fmtDate, displayAccountName } from "../lib/format";
 import { parseDecimal, parseOrZero, add, sub, neg, abs, isZero, isNegative, isPositive, isNonZero, divide, round } from "../lib/decimal";
 import { reorderSameDate } from "../lib/grouping";
 import { applyCostBasisLine, applyPortfolioValueLine } from "../lib/stockMath";
@@ -162,8 +162,8 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
     // own costBasis/portfolioValue total even before any line exists.
     const openingUnits = account.openingBalance ?? "0";
     const openingCost = account.openingBalanceCashValue ?? "0";
-    const costState = { units: openingUnits, cost: openingCost, cashPlaces: cashScale };
-    const valueState = { units: openingUnits, lastCashValue: openingCost, lastUnits: openingUnits, value: isZero(openingUnits) ? "0" : openingCost, cashPlaces: cashScale };
+    const costState = { units: openingUnits, cost: openingCost };
+    const valueState = { units: openingUnits, lastCashValue: openingCost, lastUnits: openingUnits, value: isZero(openingUnits) ? "0" : openingCost };
     return sorted.map(({ record, line }) => {
       running = add(running, line.amount ?? "0");
       applyCostBasisLine(costState, line);
@@ -267,11 +267,6 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
     const offender = newLines.find((l) => dateOutsideTaxYear(l.date, activeTaxYearStart));
     if (offender) {
       setDraftError(`${fmtDate(offender.date)} is outside the ${taxYearBounds(activeTaxYearStart).label} tax year.`);
-      return false;
-    }
-    const precisionMsg = precisionError(newLines, accounts);
-    if (precisionMsg) {
-      setDraftError(precisionMsg);
       return false;
     }
     const absorbedLineIds = draft.otherLines.filter((ol) => ol.matchedLineId).map((ol) => ol.matchedLineId);

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { LineChart, ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { C } from "../lib/theme";
-import { fmt, fmtUnits, fmtDateShort, todayISO, addYears, scaleForCurrency } from "../lib/format";
+import { fmt, fmtUnits, fmtDateShort, todayISO, addYears } from "../lib/format";
 import { toNumber, fromNumber } from "../lib/decimal";
 import { CHART_INTERVALS, intervalRange, buildDailySeries } from "../lib/chartSeries";
 import { taxYearBounds } from "../lib/isa";
@@ -222,7 +222,7 @@ export function UnitsChart({ account, transactions, tradingCurrency, activeTaxYe
   // Seeded from the account's own carried-forward opening position (see
   // CLAUDE.md's "The active tax year"/app:new-year) so the chart agrees
   // with the header's own costBasis/portfolioValue total.
-  const opening = { units: account.openingBalance ?? "0", cost: account.openingBalanceCashValue ?? "0", cashPlaces: scaleForCurrency(tradingCurrency) };
+  const opening = { units: account.openingBalance ?? "0", cost: account.openingBalanceCashValue ?? "0" };
   const unitsMerged = useChartSeries(account.openingBalance ?? "0", rawLines, interval, compareYoY, rangeCtx);
   const costMerged = useCostBasisSeries(opening, rawLines, interval, compareYoY, rangeCtx);
   const valueMerged = usePortfolioValueSeries(opening, rawLines, interval, compareYoY, rangeCtx);

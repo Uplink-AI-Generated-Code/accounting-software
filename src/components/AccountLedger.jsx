@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, Check, X, ArrowLeftRight, AlertTriangle, Pencil, Unlink2, TrendingUp, TableProperties, ChevronUp, ChevronDown } from "lucide-react";
 import { C, TYPES } from "../lib/theme";
-import { fmt, fmtPlain, todayISO, fmtDate, displayAccountName, precisionError } from "../lib/format";
+import { fmt, fmtPlain, todayISO, fmtDate, displayAccountName } from "../lib/format";
 import { parseOrZero, add, sub, neg, abs, isZero, isNegative, isPositive, isNonZero } from "../lib/decimal";
 import { reorderSameDate } from "../lib/grouping";
 import { formatCandidateAmount, candidateIsNegative, balanceHint } from "../lib/matching";
@@ -278,11 +278,6 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
     const offender = newLines.find((l) => dateOutsideTaxYear(l.date, activeTaxYearStart));
     if (offender) {
       setDraftError(`${fmtDate(offender.date)} is outside the ${taxYearBounds(activeTaxYearStart).label} tax year.`);
-      return false;
-    }
-    const precisionMsg = precisionError(newLines, accounts);
-    if (precisionMsg) {
-      setDraftError(precisionMsg);
       return false;
     }
     const absorbedLineIds = draft.otherLines.filter((ol) => ol.matchedLineId).map((ol) => ol.matchedLineId);

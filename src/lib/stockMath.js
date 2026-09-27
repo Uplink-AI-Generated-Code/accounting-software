@@ -1,4 +1,4 @@
-import { add, sub, mul, neg, abs, min, sign, isZero, divide, round } from "./decimal";
+import { add, sub, mul, neg, abs, min, sign, isZero, divide } from "./decimal";
 
 // Applies one line's effect to a running {units, cost} position using the
 // average-cost method — shared by the chart series builder below, the
@@ -7,9 +7,8 @@ import { add, sub, mul, neg, abs, min, sign, isZero, divide, round } from "./dec
 //
 // Amounts here are canonical decimal strings, mirrored exactly from the
 // backend's LedgerStateService::applyCostBasisLine() so the two never
-// disagree; see CLAUDE.md. Each division is rounded to `state.cashPlaces`,
-// which reproduces the old integer divRoundHalfUp() on minor units
-// exactly (phase 2 changes this).
+// disagree; see CLAUDE.md. Each division uses divide()'s 20dp with no
+// per-step rounding — display rounds only at the very end, via fmt().
 export function applyCostBasisLine(state, l) {
   const s = sign(l.amount ?? "0");
   if (s > 0) {
@@ -17,13 +16,11 @@ export function applyCostBasisLine(state, l) {
     state.cost = add(state.cost, l.cashValue ?? "0");
   } else if (s < 0) {
     const sold = min(neg(l.amount), state.units);
-    const costRemoved = sign(state.units) > 0 ? round(divide(mul(state.cost, sold), state.units), state.cashPlaces) : "0";
+    const costRemoved = sign(state.units) > 0 ? divide(mul(state.cost, sold), state.units) : "0";
     state.cost = sub(state.cost, costRemoved);
     state.units = sub(state.units, sold);
-    if (isZero(state.units)) {
-      // Absorbs ±1-minor-unit rounding dust from the per-step rounding above.
-      state.cost = "0";
-    }
+    // Fully sold: exactly 0 by construction; guards against 20-dp division dust.
+    if (isZero(state.units)) state.cost = "0";
   }
 }
 
@@ -40,7 +37,7 @@ export function applyCostBasisLine(state, l) {
 // LedgerStateService::stockStatsFor()'s own seeding — otherwise this
 // series would disagree with the account's own current-totals display.
 export function buildCostBasisSeries(sortedLines, startISO, endISO, opening = {}) {
-  const state = { units: opening.units ?? "0", cost: opening.cost ?? "0", cashPlaces: opening.cashPlaces ?? 2 };
+  const state = { units: opening.units ?? "0", cost: opening.cost ?? "0" };
   let idx = 0;
   while (idx < sortedLines.length && sortedLines[idx].date < startISO) {
     applyCostBasisLine(state, sortedLines[idx]);
@@ -81,7 +78,7 @@ export function applyPortfolioValueLine(state, l) {
     state.lastCashValue = abs(l.cashValue);
     state.lastUnits = abs(l.amount);
   }
-  state.value = isZero(state.lastUnits) ? "0" : round(divide(mul(state.units, state.lastCashValue), state.lastUnits), state.cashPlaces);
+  state.value = isZero(state.lastUnits) ? "0" : divide(mul(state.units, state.lastCashValue), state.lastUnits);
 }
 // `opening` is the same carried-forward seed buildCostBasisSeries() takes
 // — until the first new trade re-marks it, the carried cost basis is the
@@ -89,7 +86,7 @@ export function applyPortfolioValueLine(state, l) {
 export function buildPortfolioValueSeries(sortedLines, startISO, endISO, opening = {}) {
   const openingUnits = opening.units ?? "0";
   const openingCost = opening.cost ?? "0";
-  const state = { units: openingUnits, lastCashValue: openingCost, lastUnits: openingUnits, value: isZero(openingUnits) ? "0" : openingCost, cashPlaces: opening.cashPlaces ?? 2 };
+  const state = { units: openingUnits, lastCashValue: openingCost, lastUnits: openingUnits, value: isZero(openingUnits) ? "0" : openingCost };
   let idx = 0;
   while (idx < sortedLines.length && sortedLines[idx].date < startISO) {
     applyPortfolioValueLine(state, sortedLines[idx]);
