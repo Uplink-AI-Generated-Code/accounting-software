@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, Check, X, ArrowLeftRight, AlertTriangle, Pencil, Unlink2, TrendingUp, TableProperties, ChevronUp, ChevronDown } from "lucide-react";
 import { C, TYPES } from "../lib/theme";
-import { fmt, fmtPlain, todayISO, fmtDate, displayAccountName } from "../lib/format";
-import { toMinorUnits, fromMinorUnits } from "../lib/scale";
+import { fmt, fmtPlain, todayISO, fmtDate, displayAccountName, precisionError } from "../lib/format";
+import { parseOrZero, add, sub, neg, abs, isZero, isNegative, isPositive, isNonZero } from "../lib/decimal";
 import { reorderSameDate } from "../lib/grouping";
 import { formatCandidateAmount, candidateIsNegative, balanceHint } from "../lib/matching";
 import { dateOutsideTaxYear, taxYearBounds } from "../lib/isa";
@@ -57,29 +57,22 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
   }
 
   // If both In and Out are filled, the saved line is their difference —
-  // e.g. In 50 / Out 20 saves as an increase of 30. Amounts are scaled
-  // integers (see CLAUDE.md) — toMinorUnits() parses the typed decimal
-  // string straight into one, no float intermediate.
+  // e.g. In 50 / Out 20 saves as an increase of 30. Amounts are canonical
+  // decimal strings (see CLAUDE.md); blank or unparseable counts as zero.
   function draftDelta(d) {
-    const inN = toMinorUnits(d.inAmountStr, accountScale);
-    const outN = toMinorUnits(d.outAmountStr, accountScale);
-    return (isNaN(inN) ? 0 : inN) - (isNaN(outN) ? 0 : outN);
+    return sub(parseOrZero(d.inAmountStr), parseOrZero(d.outAmountStr));
   }
 
   function exchangeDelta(d) {
-    const scale = scaleFor(d.exchangeCurrency);
-    const inN = toMinorUnits(d.exchangeInStr, scale);
-    const outN = toMinorUnits(d.exchangeOutStr, scale);
-    return (isNaN(inN) ? 0 : inN) - (isNaN(outN) ? 0 : outN);
+    return sub(parseOrZero(d.exchangeInStr), parseOrZero(d.exchangeOutStr));
   }
 
   const { otherLineFromLine, resolveOtherLine, addOtherLine, removeOtherLine, updateOtherLine, otherLineCandidates, selectMatchForOtherLine } = useOtherLines(
     account, accounts, draft, setDraft,
     (d) => {
       const delta = draftDelta(d);
-      return delta !== 0 ? { isOut: delta > 0, amountStr: fromMinorUnits(Math.abs(delta), accountScale) } : null;
-    },
-    currencies, symbols
+      return !isZero(delta) ? { isOut: isPositive(delta), amountStr: abs(delta) } : null;
+    }
   );
 
   // This account's own line plus whichever other legs are active — the
@@ -114,7 +107,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
   // lines that would be saved (matched/preserved amounts included), so
   // the imbalance shown here always matches what a saved row would show.
   const draftHint = useMemo(() => {
-    if (!draft || draftDelta(draft) === 0) return null;
+    if (!draft || isZero(draftDelta(draft))) return null;
     return balanceHint(draftLines(draft), accounts);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft, accounts]);
@@ -133,12 +126,12 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
   const matchParams = useMemo(() => {
     if (!draft || draft.otherLines.length > 0) return null;
     const delta = draftDelta(draft);
-    if (delta === 0 || !draft.date) return null;
+    if (isZero(delta) || !draft.date) return null;
 
-    let targetAmount = -delta;
+    let targetAmount = neg(delta);
     let targetCurrency = account.currency;
     if (draft.exchangeChecked && draft.exchangeCurrency && (draft.exchangeOutStr !== "" || draft.exchangeInStr !== "")) {
-      targetAmount = -exchangeDelta(draft);
+      targetAmount = neg(exchangeDelta(draft));
       targetCurrency = draft.exchangeCurrency;
     }
 
@@ -184,9 +177,9 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
       if (ao !== bo) return ao - bo;
       return rowKey(a.record).localeCompare(rowKey(b.record));
     });
-    let running = account.openingBalance || 0;
+    let running = account.openingBalance ?? "0";
     return sorted.map(({ record, line }) => {
-      running += line.amount || 0;
+      running = add(running, line.amount ?? "0");
       const others = record.lines.filter((l) => l.accountId !== account.id).map((l) => accounts.find((a) => a.id === l.accountId)).filter(Boolean);
       return { record, line, running, others, key: rowKey(record) };
     });
@@ -209,11 +202,11 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
       date: line.date,
       description: line.description || "",
       tags: line.tags || [],
-      inAmountStr: line.amount > 0 ? fromMinorUnits(line.amount, accountScale) : "",
-      outAmountStr: line.amount < 0 ? fromMinorUnits(-line.amount, accountScale) : "",
+      inAmountStr: isPositive(line.amount) ? line.amount : "",
+      outAmountStr: isNegative(line.amount) ? neg(line.amount) : "",
       exchangeChecked: line.exchangeAmount !== undefined,
-      exchangeOutStr: line.exchangeAmount < 0 ? fromMinorUnits(-line.exchangeAmount, scaleFor(line.exchangeCurrency)) : "",
-      exchangeInStr: line.exchangeAmount > 0 ? fromMinorUnits(line.exchangeAmount, scaleFor(line.exchangeCurrency)) : "",
+      exchangeOutStr: isNegative(line.exchangeAmount) ? neg(line.exchangeAmount) : "",
+      exchangeInStr: isPositive(line.exchangeAmount) ? line.exchangeAmount : "",
       exchangeCurrency: line.exchangeCurrency ? line.exchangeCurrency : "",
       otherLines: others.map((o) => otherLineFromLine(o, o)),
       splitOffLines: [],
@@ -274,7 +267,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
   function commit() {
     if (!draft) return false;
     const delta = draftDelta(draft);
-    if (delta === 0) { setDraftError("Enter an amount in In or Out."); return false; }
+    if (isZero(delta)) { setDraftError("Enter an amount in In or Out."); return false; }
     const newLines = draftLines(draft);
     // Hard-blocked client-side (matching the backend's own independent
     // check — see LedgerStateService::assertOperationDatesInActiveTaxYear())
@@ -285,6 +278,11 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
     const offender = newLines.find((l) => dateOutsideTaxYear(l.date, activeTaxYearStart));
     if (offender) {
       setDraftError(`${fmtDate(offender.date)} is outside the ${taxYearBounds(activeTaxYearStart).label} tax year.`);
+      return false;
+    }
+    const precisionMsg = precisionError(newLines, accounts);
+    if (precisionMsg) {
+      setDraftError(precisionMsg);
       return false;
     }
     const absorbedLineIds = draft.otherLines.filter((ol) => ol.matchedLineId).map((ol) => ol.matchedLineId);
@@ -335,7 +333,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
             {[TYPES.find((t) => t.key === account.type)?.label, account.currency, account.counterparty, account.subtype].filter(Boolean).join(" · ")}
           </div>
           <h2 className="ll-serif" style={{ fontSize: 24, marginTop: 2 }}>{displayAccountName(account)}</h2>
-          <div className="ll-mono" style={{ fontSize: 22, marginTop: 6, color: balance < 0 ? C.debit : C.ink }}>{fmt(balance, account.currency)}</div>
+          <div className="ll-mono" style={{ fontSize: 22, marginTop: 6, color: isNegative(balance) ? C.debit : C.ink }}>{fmt(balance, account.currency)}</div>
           <ImbalanceBadge account={account} currency={account.currency} />
         </div>
         <div className="flex gap-2">
@@ -369,7 +367,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
 
         {!loaded && <div style={{ padding: "24px 16px", fontSize: 13, color: C.inkFaint }}>Loading…</div>}
 
-        {loaded && !!account.openingBalance && (
+        {loaded && isNonZero(account.openingBalance) && (
           <div
             className="grid"
             style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 60px", fontSize: 13.5, padding: "10px 16px", borderBottom: `1px solid ${C.lineSoft}`, alignItems: "center", color: C.inkFaint }}
@@ -377,8 +375,8 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
             <div style={{ fontSize: 12.5 }}>—</div>
             <div style={{ fontStyle: "italic" }}>Opening balance</div>
             <div />
-            <div className="ll-mono text-right">{account.openingBalance < 0 ? fmtPlain(-account.openingBalance, account.currency) : "—"}</div>
-            <div className="ll-mono text-right">{account.openingBalance > 0 ? fmtPlain(account.openingBalance, account.currency) : "—"}</div>
+            <div className="ll-mono text-right">{isNegative(account.openingBalance) ? fmtPlain(neg(account.openingBalance), account.currency) : "—"}</div>
+            <div className="ll-mono text-right">{isPositive(account.openingBalance) ? fmtPlain(account.openingBalance, account.currency) : "—"}</div>
             <div className="ll-mono text-right" style={{ fontWeight: 600 }}>{fmtPlain(account.openingBalance, account.currency)}</div>
             <div />
           </div>
@@ -389,8 +387,8 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
         {rows.map((r, idx) => {
           const key = r.key;
           const isEditing = key === editingKey;
-          const out = r.line.amount < 0 ? -r.line.amount : 0;
-          const inn = r.line.amount > 0 ? r.line.amount : 0;
+          const out = isNegative(r.line.amount) ? neg(r.line.amount) : null;
+          const inn = isPositive(r.line.amount) ? r.line.amount : null;
           const hint = balanceHint(r.record.lines, accounts);
           const unbalanced = hint.type === "unbalanced";
           // "single-fx" is still an unpaired line (it just also carries an
@@ -426,7 +424,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
                     className="ll-mono text-right" style={{ ...miniInput, color: C.credit }}
                     onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") cancel(); }}
                   />
-                  <div className="ll-mono text-right" style={{ fontWeight: 600, fontSize: 13.5, color: r.running < 0 ? C.debit : C.ink }}>{fmtPlain(r.running, account.currency)}</div>
+                  <div className="ll-mono text-right" style={{ fontWeight: 600, fontSize: 13.5, color: isNegative(r.running) ? C.debit : C.ink }}>{fmtPlain(r.running, account.currency)}</div>
                   <div className="flex gap-1 justify-end">
                     <button onClick={commit} title="Save" style={iconBtn(C.credit)}><Check size={15} /></button>
                     <button onClick={cancel} title="Cancel" style={iconBtn(C.inkFaint)}><X size={15} /></button>
@@ -559,7 +557,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
               </div>
               <div className="ll-mono text-right" style={{ color: out ? C.debit : C.inkFaint }}>{out ? fmtPlain(out, account.currency) : "—"}</div>
               <div className="ll-mono text-right" style={{ color: inn ? C.credit : C.inkFaint }}>{inn ? fmtPlain(inn, account.currency) : "—"}</div>
-              <div className="ll-mono text-right" style={{ fontWeight: 600, color: r.running < 0 ? C.debit : C.ink }}>{fmtPlain(r.running, account.currency)}</div>
+              <div className="ll-mono text-right" style={{ fontWeight: 600, color: isNegative(r.running) ? C.debit : C.ink }}>{fmtPlain(r.running, account.currency)}</div>
               <div className="flex justify-end items-center gap-0.5">
                 {hasAbove && (
                   <button onClick={(e) => { e.stopPropagation(); moveRow(idx, -1); }} title="Move earlier among same-date entries" style={{ padding: 2 }}>

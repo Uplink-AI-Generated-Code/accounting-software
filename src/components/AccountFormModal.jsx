@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Trash2 } from "lucide-react";
 import { C, TYPES, ISA_KINDS } from "../lib/theme";
-import { toMinorUnits, fromMinorUnits } from "../lib/scale";
+import { parseDecimal } from "../lib/decimal";
 import { ModalShell, Field, inputStyle } from "./ui";
 import { createSymbol } from "../api";
 import { displayAccountName } from "../lib/format";
@@ -18,17 +18,11 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
   const [currency, setCurrency] = useState(initial.currency || "GBP");
   const [symbol, setSymbol] = useState(initial.symbolTicker && initial.symbolCurrency ? symbolKey(initial.symbolTicker, initial.symbolCurrency) : "");
   const currencyScale = currencies.find((c) => c.code === currency)?.scale ?? 2;
-  // Investment-account amounts are unit-scaled via the account's own
-  // Symbol, never currency-scaled — see CLAUDE.md's "Amounts, currencies,
-  // and reference data". There's no UI to edit this for an investment
-  // account (see "Stock valuation" — openingBalance/openingBalanceCashValue
-  // are only ever set by app:new-year), but the value still round-trips
-  // through this state on every save, so it has to be parsed/formatted
-  // with the right scale even while hidden.
-  const openingScale = type === "investment" && symbol
-    ? symbols.find((s) => s.ticker === parseSymbolKey(symbol).ticker && s.tradingCurrency === parseSymbolKey(symbol).tradingCurrency)?.scale ?? 6
-    : currencyScale;
-  const [opening, setOpening] = useState(initial.openingBalance ? fromMinorUnits(initial.openingBalance, openingScale) : "0");
+  // There's no UI to edit this for an investment account (see "Stock
+  // valuation" — openingBalance/openingBalanceCashValue are only ever set
+  // by app:new-year), but the value still round-trips through this state
+  // unchanged on every save.
+  const [opening, setOpening] = useState(initial.openingBalance ?? "0");
   const [flexible, setFlexible] = useState(!!initial.flexible);
   // Counterparty names were always free text (any institution/payee not
   // used yet is fine to type) — the backend find-or-creates one on save
@@ -136,11 +130,11 @@ export function AccountFormModal({ initial, accounts, currencies, symbols, count
       id: initial.id,
       name: name.trim(),
       type,
-      openingBalance: toMinorUnits(opening, openingScale) || 0,
+      openingBalance: parseDecimal(opening) ?? "0",
       ...(type === "investment" ? { symbolTicker: parseSymbolKey(symbol).ticker, symbolCurrency: parseSymbolKey(symbol).tradingCurrency } : { currency }),
-      // Not editable through this form (see openingScale's comment above) —
-      // carried through unchanged so an edit save never silently wipes a
-      // rolled-over cost basis to null.
+      // Not editable through this form (see the `opening` state's comment
+      // above) — carried through unchanged so an edit save never silently
+      // wipes a rolled-over cost basis to null.
       ...(type === "investment" && initial.openingBalanceCashValue !== undefined
         ? { openingBalanceCashValue: initial.openingBalanceCashValue }
         : {}),

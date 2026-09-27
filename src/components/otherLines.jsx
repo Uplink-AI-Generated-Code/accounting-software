@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Plus, X, Check } from "lucide-react";
 import { C } from "../lib/theme";
 import { uid, todayISO, fmtDate, displayAccountName } from "../lib/format";
-import { toMinorUnits, fromMinorUnits } from "../lib/scale";
+import { parseDecimal, parseOrZero, neg, abs, isZero, isNegative } from "../lib/decimal";
 import { getMatchCandidates } from "../api";
 import { formatCandidateAmount, candidateIsNegative } from "../lib/matching";
 import { miniInput } from "./ui";
@@ -40,13 +40,7 @@ export function blankOtherLine(accountId) {
 // match candidates for whichever legs don't have an account chosen yet.
 // Parameterized by whichever account is being edited (cash or stock) so
 // the same logic drives both without duplicating it.
-export function useOtherLines(account, accounts, draft, setDraft, smartDefaultForFirst, currencies, symbols) {
-  function scaleForCurrency(code) {
-    return currencies.find((c) => c.code === code)?.scale ?? 2;
-  }
-  function scaleForSymbol(ticker, tradingCurrency) {
-    return symbols.find((s) => s.ticker === ticker && s.tradingCurrency === tradingCurrency)?.scale ?? 6;
-  }
+export function useOtherLines(account, accounts, draft, setDraft, smartDefaultForFirst) {
   // An investment account's own trading currency now lives directly on the
   // Account (symbolCurrency, populated from its Symbol server-side) — this
   // is the one place to resolve it from, for any account (this ledger's
@@ -61,14 +55,14 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
     const base = blankOtherLine(o.accountId);
     base.snapshot = snapshot || null;
     if (oAcc && oAcc.type === "investment") {
-      const naturalCash = o.cashValue !== undefined ? -o.cashValue : 0;
-      base.unitsIsOut = o.amount < 0;
-      base.unitsStr = fromMinorUnits(Math.abs(o.amount), scaleForSymbol(oAcc.symbolTicker, oAcc.symbolCurrency));
-      base.cashIsOut = naturalCash < 0;
-      base.cashStr = naturalCash !== 0 ? fromMinorUnits(Math.abs(naturalCash), scaleForCurrency(tradingCurrencyFor(oAcc))) : "";
+      const naturalCash = o.cashValue !== undefined ? neg(o.cashValue) : "0";
+      base.unitsIsOut = isNegative(o.amount);
+      base.unitsStr = abs(o.amount);
+      base.cashIsOut = isNegative(naturalCash);
+      base.cashStr = isZero(naturalCash) ? "" : abs(naturalCash);
     } else {
-      base.isOut = o.amount < 0;
-      base.amountStr = fromMinorUnits(Math.abs(o.amount), scaleForCurrency(oAcc?.currency));
+      base.isOut = isNegative(o.amount);
+      base.amountStr = abs(o.amount);
     }
     return base;
   }
@@ -84,15 +78,16 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
     const unchanged = ol.snapshot && ol.snapshot.accountId === ol.accountId;
 
     if (olAcc && olAcc.type === "investment") {
-      const unitsMag = Math.abs(toMinorUnits(ol.unitsStr, scaleForSymbol(olAcc.symbolTicker, olAcc.symbolCurrency)));
-      const units = isNaN(unitsMag) ? 0 : ol.unitsIsOut ? -unitsMag : unitsMag;
+      const unitsMag = abs(parseOrZero(ol.unitsStr));
+      const units = ol.unitsIsOut ? neg(unitsMag) : unitsMag;
       const base = unchanged ? { ...ol.snapshot } : { accountId: ol.accountId, date: d.date || todayISO(), description: d.description };
       base.amount = units;
       const olTradingCurrency = tradingCurrencyFor(olAcc);
-      const cashMag = Math.abs(toMinorUnits(ol.cashStr, scaleForCurrency(olTradingCurrency)));
-      if (ol.cashStr !== "" && !isNaN(cashMag)) {
-        const cashNatural = ol.cashIsOut ? -cashMag : cashMag;
-        base.cashValue = -cashNatural;
+      const cashParsed = parseDecimal(ol.cashStr);
+      if (ol.cashStr !== "" && cashParsed !== null) {
+        const cashMag = abs(cashParsed);
+        const cashNatural = ol.cashIsOut ? neg(cashMag) : cashMag;
+        base.cashValue = neg(cashNatural);
         base.cashCurrency = olTradingCurrency;
       } else {
         delete base.cashValue;
@@ -101,8 +96,8 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
       return base;
     }
 
-    const mag = Math.abs(toMinorUnits(ol.amountStr, scaleForCurrency(olAcc?.currency)));
-    const amt = isNaN(mag) ? 0 : ol.isOut ? -mag : mag;
+    const mag = abs(parseOrZero(ol.amountStr));
+    const amt = ol.isOut ? neg(mag) : mag;
     if (unchanged) return { ...ol.snapshot, amount: amt };
     return { accountId: ol.accountId, amount: amt, date: d.date || todayISO(), description: d.description };
   }
@@ -176,8 +171,8 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
     const usedAccountIds = [account.id, ...draft.otherLines.map((o) => o.accountId).filter(Boolean)];
     const pending = draft.otherLines.filter((ol) => {
       if (ol.accountId || ol.matchedLineId) return false;
-      const mag = toMinorUnits(ol.amountStr, scaleForCurrency(primaryCurrency));
-      return !isNaN(mag) && mag !== 0;
+      const mag = parseDecimal(ol.amountStr);
+      return mag !== null && !isZero(mag);
     });
     if (pending.length === 0) {
       setOtherLineCandidates({});
@@ -186,8 +181,8 @@ export function useOtherLines(account, accounts, draft, setDraft, smartDefaultFo
     const handle = setTimeout(() => {
       Promise.all(
         pending.map((ol) => {
-          const mag = toMinorUnits(ol.amountStr, scaleForCurrency(primaryCurrency));
-          const targetAmount = ol.isOut ? -mag : mag;
+          const mag = parseDecimal(ol.amountStr);
+          const targetAmount = ol.isOut ? neg(mag) : mag;
           return getMatchCandidates({
             currency: primaryCurrency,
             amount: targetAmount,
