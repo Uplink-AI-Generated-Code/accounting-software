@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import { LineChart, ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { C } from "../lib/theme";
-import { fmt, fmtUnits, fmtDateShort, todayISO, addYears } from "../lib/format";
+import { fmt, fmtUnits, fmtDateShort, todayISO, addYears, scaleForCurrency } from "../lib/format";
+import { toNumber, fromNumber } from "../lib/decimal";
 import { CHART_INTERVALS, intervalRange, buildDailySeries } from "../lib/chartSeries";
 import { taxYearBounds } from "../lib/isa";
 import { buildCostBasisSeries, buildPortfolioValueSeries } from "../lib/stockMath";
@@ -85,8 +86,8 @@ function useChartSeries(opening, lines, interval, compareYoY, rangeCtx) {
       currentSeries.map((p, i) => ({
         offset: i,
         date: p.date,
-        current: p.value,
-        previous: previousSeries && previousSeries[i] ? previousSeries[i].value : undefined,
+        current: toNumber(p.value),
+        previous: previousSeries && previousSeries[i] ? toNumber(previousSeries[i].value) : undefined,
         previousDate: previousSeries && previousSeries[i] ? previousSeries[i].date : undefined,
       })),
     [currentSeries, previousSeries]
@@ -104,8 +105,8 @@ function useCostBasisSeries(opening, lines, interval, compareYoY, rangeCtx) {
       currentSeries.map((p, i) => ({
         offset: i,
         date: p.date,
-        current: p.value,
-        previous: previousSeries && previousSeries[i] ? previousSeries[i].value : undefined,
+        current: toNumber(p.value),
+        previous: previousSeries && previousSeries[i] ? toNumber(previousSeries[i].value) : undefined,
         previousDate: previousSeries && previousSeries[i] ? previousSeries[i].date : undefined,
       })),
     [currentSeries, previousSeries]
@@ -123,8 +124,8 @@ function usePortfolioValueSeries(opening, lines, interval, compareYoY, rangeCtx)
       currentSeries.map((p, i) => ({
         offset: i,
         date: p.date,
-        current: p.value,
-        previous: previousSeries && previousSeries[i] ? previousSeries[i].value : undefined,
+        current: toNumber(p.value),
+        previous: previousSeries && previousSeries[i] ? toNumber(previousSeries[i].value) : undefined,
         previousDate: previousSeries && previousSeries[i] ? previousSeries[i].date : undefined,
       })),
     [currentSeries, previousSeries]
@@ -142,7 +143,7 @@ export function BalanceChart({ account, transactions, activeTaxYearStart }) {
     [transactions, account]
   );
   const rangeCtx = { taxYearStart: activeTaxYearStart, customStart, customEnd };
-  const merged = useChartSeries(account.openingBalance || 0, lines, interval, compareYoY, rangeCtx);
+  const merged = useChartSeries(account.openingBalance ?? "0", lines, interval, compareYoY, rangeCtx);
 
   if (lines.length === 0) {
     return <div style={{ padding: "40px 0", textAlign: "center", color: C.inkFaint, fontSize: 13 }}>Not enough entries yet to chart.</div>;
@@ -163,8 +164,8 @@ export function BalanceChart({ account, transactions, activeTaxYearStart }) {
           <LineChart data={merged} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
             <CartesianGrid stroke={C.lineSoft} vertical={false} />
             <XAxis dataKey="offset" tickFormatter={(o) => (merged[o] ? fmtDateShort(merged[o].date) : "")} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={{ stroke: C.line }} tickLine={false} minTickGap={40} />
-            <YAxis tickFormatter={(v) => fmt(v, account.currency)} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={80} />
-            <Tooltip content={<ChartTooltip formatValue={(v) => fmt(v, account.currency)} compareYoY={compareYoY} />} />
+            <YAxis tickFormatter={(v) => fmt(fromNumber(v), account.currency)} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={80} />
+            <Tooltip content={<ChartTooltip formatValue={(v) => fmt(fromNumber(v), account.currency)} compareYoY={compareYoY} />} />
             {compareYoY && <Legend wrapperStyle={{ fontSize: 12 }} />}
             {compareYoY && <Line type="stepAfter" dataKey="previous" name="Same period last year" stroke={C.goldDim} strokeWidth={1.5} dot={false} isAnimationActive={false} />}
             <Line type="stepAfter" dataKey="current" name="Balance" stroke={C.gold} strokeWidth={2} dot={false} isAnimationActive={false} />
@@ -190,14 +191,14 @@ function StockChartTooltip({ active, payload, account, tradingCurrency, compareY
   return (
     <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 6, padding: "8px 10px", fontSize: 12.5, lineHeight: 1.7 }}>
       <div style={{ fontWeight: 600, marginBottom: 3 }}>{fmtDateShort(date)}</div>
-      {row(C.gold, "Units", byKey.units && byKey.units.value, (v) => `${fmtUnits(v, symbolKey(account.symbolTicker, account.symbolCurrency))} ${account.symbolTicker}`)}
-      {row(C.credit, "Cost basis", byKey.cost && byKey.cost.value, (v) => fmt(v, tradingCurrency))}
-      {row(C.plum, "Worth", byKey.value && byKey.value.value, (v) => fmt(v, tradingCurrency))}
+      {row(C.gold, "Units", byKey.units && byKey.units.value, (v) => `${fmtUnits(fromNumber(v), symbolKey(account.symbolTicker, account.symbolCurrency))} ${account.symbolTicker}`)}
+      {row(C.credit, "Cost basis", byKey.cost && byKey.cost.value, (v) => fmt(fromNumber(v), tradingCurrency))}
+      {row(C.plum, "Worth", byKey.value && byKey.value.value, (v) => fmt(fromNumber(v), tradingCurrency))}
       {compareYoY && (
         <div style={{ marginTop: 4, paddingTop: 4, borderTop: `1px solid ${C.lineSoft}`, color: C.inkFaint }}>
-          {row(C.goldDim, "Units, last year", byKey.unitsPrev && byKey.unitsPrev.value, (v) => `${fmtUnits(v, symbolKey(account.symbolTicker, account.symbolCurrency))} ${account.symbolTicker}`)}
-          {row(C.credit, "Cost, last year", byKey.costPrev && byKey.costPrev.value, (v) => fmt(v, tradingCurrency))}
-          {row(C.plum, "Worth, last year", byKey.valuePrev && byKey.valuePrev.value, (v) => fmt(v, tradingCurrency))}
+          {row(C.goldDim, "Units, last year", byKey.unitsPrev && byKey.unitsPrev.value, (v) => `${fmtUnits(fromNumber(v), symbolKey(account.symbolTicker, account.symbolCurrency))} ${account.symbolTicker}`)}
+          {row(C.credit, "Cost, last year", byKey.costPrev && byKey.costPrev.value, (v) => fmt(fromNumber(v), tradingCurrency))}
+          {row(C.plum, "Worth, last year", byKey.valuePrev && byKey.valuePrev.value, (v) => fmt(fromNumber(v), tradingCurrency))}
         </div>
       )}
     </div>
@@ -221,8 +222,8 @@ export function UnitsChart({ account, transactions, tradingCurrency, activeTaxYe
   // Seeded from the account's own carried-forward opening position (see
   // CLAUDE.md's "The active tax year"/app:new-year) so the chart agrees
   // with the header's own costBasis/portfolioValue total.
-  const opening = { units: account.openingBalance || 0, cost: account.openingBalanceCashValue || 0 };
-  const unitsMerged = useChartSeries(account.openingBalance || 0, rawLines, interval, compareYoY, rangeCtx);
+  const opening = { units: account.openingBalance ?? "0", cost: account.openingBalanceCashValue ?? "0", cashPlaces: scaleForCurrency(tradingCurrency) };
+  const unitsMerged = useChartSeries(account.openingBalance ?? "0", rawLines, interval, compareYoY, rangeCtx);
   const costMerged = useCostBasisSeries(opening, rawLines, interval, compareYoY, rangeCtx);
   const valueMerged = usePortfolioValueSeries(opening, rawLines, interval, compareYoY, rangeCtx);
 
@@ -268,8 +269,8 @@ export function UnitsChart({ account, transactions, tradingCurrency, activeTaxYe
           <ComposedChart data={merged} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
             <CartesianGrid stroke={C.lineSoft} vertical={false} />
             <XAxis dataKey="offset" tickFormatter={(o) => (merged[o] ? fmtDateShort(merged[o].date) : "")} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={{ stroke: C.line }} tickLine={false} minTickGap={40} />
-            <YAxis yAxisId="units" tickFormatter={(v) => fmtUnits(v, symbolKey(account.symbolTicker, account.symbolCurrency))} tick={{ fontSize: 11, fill: C.gold }} axisLine={false} tickLine={false} width={55} />
-            <YAxis yAxisId="money" orientation="right" tickFormatter={(v) => fmt(v, tradingCurrency)} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={80} />
+            <YAxis yAxisId="units" tickFormatter={(v) => fmtUnits(fromNumber(v), symbolKey(account.symbolTicker, account.symbolCurrency))} tick={{ fontSize: 11, fill: C.gold }} axisLine={false} tickLine={false} width={55} />
+            <YAxis yAxisId="money" orientation="right" tickFormatter={(v) => fmt(fromNumber(v), tradingCurrency)} tick={{ fontSize: 11, fill: C.inkFaint }} axisLine={false} tickLine={false} width={80} />
             <Tooltip content={<StockChartTooltip account={account} tradingCurrency={tradingCurrency} compareYoY={compareYoY} />} />
             <Legend wrapperStyle={{ fontSize: 12 }} />
             {compareYoY && <Line yAxisId="units" type="stepAfter" dataKey="unitsPrev" name="Units (last year)" stroke={C.goldDim} strokeWidth={1.5} strokeDasharray="4 3" dot={false} isAnimationActive={false} />}

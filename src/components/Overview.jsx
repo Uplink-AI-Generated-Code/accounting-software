@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Plus, Wallet, Search, X, AlertTriangle } from "lucide-react";
 import { C } from "../lib/theme";
 import { fmt } from "../lib/format";
-import { buildNestedGroups, flattenAllAccounts, leafMatchesQuery } from "../lib/grouping";
+import { buildNestedGroups, flattenAllAccounts, leafMatchesQuery, subtotalsForItems } from "../lib/grouping";
 import { GroupLevelPicker } from "./GroupLevelPicker";
 import { OverviewGroupTree } from "./OverviewGroupTree";
 import { miniInput } from "./ui";
@@ -26,8 +26,7 @@ export function Overview({ accounts, symbols, settings, onSaveSettings, onSaveGr
       </div>
     );
   }
-  const totalsByCurrency = {};
-  accounts.filter((a) => a.type !== "investment" && a.type !== "investment-parent").forEach((a) => { totalsByCurrency[a.currency] = (totalsByCurrency[a.currency] || 0) + (a.balance || 0); });
+  const totalsByCurrency = subtotalsForItems(accounts);
 
   const groupLevels = (settings.groupLevels?.length ? settings.groupLevels : ["type"]);
 

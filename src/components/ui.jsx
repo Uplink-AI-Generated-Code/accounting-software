@@ -2,6 +2,7 @@ import { useState } from "react";
 import { X, AlertTriangle, Plus } from "lucide-react";
 import { C } from "../lib/theme";
 import { fmt } from "../lib/format";
+import { isPositive } from "../lib/decimal";
 
 export function iconBtn(color) { return { padding: 6, borderRadius: 4, border: `1px solid ${C.line}`, color, background: C.card }; }
 export const miniInput = { width: "100%", padding: "7px 8px", borderRadius: 4, border: `1px solid ${C.line}`, background: C.paper, fontSize: 13, color: C.ink, outline: "none" };
@@ -33,8 +34,8 @@ export function ImbalanceBadge({ account, currency }) {
     >
       <AlertTriangle size={13} />
       {account.imbalancedLineCount} imbalanced line{1 === account.imbalancedLineCount ? "" : "s"}
-      {account.imbalanceOut > 0 && <span>· Out {fmt(account.imbalanceOut, currency)}</span>}
-      {account.imbalanceIn > 0 && <span>· In {fmt(account.imbalanceIn, currency)}</span>}
+      {isPositive(account.imbalanceOut) && <span>· Out {fmt(account.imbalanceOut, currency)}</span>}
+      {isPositive(account.imbalanceIn) && <span>· In {fmt(account.imbalanceIn, currency)}</span>}
     </span>
   );
 }

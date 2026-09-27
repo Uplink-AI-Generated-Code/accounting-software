@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { C, ISA_KINDS } from "../lib/theme";
 import { fmt, todayISO, displayAccountName } from "../lib/format";
 import { taxYearStartYearFor, taxYearBounds, isaRulesFor, isaProducts } from "../lib/isa";
-import { toMinorUnits } from "../lib/scale";
+import { mul, divide, cmp, isZero, toNumber } from "../lib/decimal";
 import { getIsaAllowance } from "../api";
 
 /* ---------------------------------------------------------
@@ -22,29 +22,23 @@ export function AllowanceView({ accounts, settings, onSaveSettings, onSelect, ac
 
   const { label } = taxYearBounds(startYear);
   const rules = isaRulesFor(startYear, settings.over65);
-  // ISA amounts are GBP-only by design (see CLAUDE.md) — `usage` from the
-  // backend is already scaled to GBP's own minor unit, but the static
-  // ISA_RULE_TABLE in lib/isa.js is deliberately kept as plain whole
-  // pounds (legislative language, never user data, never round-tripped) —
-  // so caps get scaled up here, at the one point they're compared/
-  // displayed alongside usage, rather than scaling the source table
-  // itself. GBP's scale is normally 2 (pence) but is now editable via the
-  // Currency admin view, so this can't hardcode ×100 — it looks up GBP's
-  // current scale and converts through the same toMinorUnits() every
-  // other amount field uses (see lib/scale.js).
-  const gbpScale = currencies?.find((c) => c.code === "GBP")?.scale ?? 2;
-  const toPence = (pounds) => toMinorUnits(String(pounds), gbpScale);
-  const [usage, setUsage] = useState({ byKind: {}, total: 0 });
+  // ISA amounts are GBP-only by design (see CLAUDE.md). The caps in
+  // lib/isa.js's ISA_RULE_TABLE are decimal strings in whole pounds, the
+  // same unit the API's usage figures now use (both `usage.total` and
+  // `usage.byKind[...]`), so no scaling is needed to compare/display them
+  // alongside each other.
+  const [usage, setUsage] = useState({ byKind: {}, total: "0" });
   useEffect(() => {
     let cancelled = false;
     getIsaAllowance(startYear)
       .then((u) => { if (!cancelled) setUsage(u); })
-      .catch(() => { if (!cancelled) setUsage({ byKind: {}, total: 0 }); });
+      .catch(() => { if (!cancelled) setUsage({ byKind: {}, total: "0" }); });
     return () => { cancelled = true; };
   }, [startYear]);
 
   function Bar({ used, cap, color }) {
-    const pct = cap ? Math.min(100, (used / cap) * 100) : 0;
+    // A CSS width is a renderer boundary — the one place this becomes a Number.
+    const pct = cap ? Math.min(100, toNumber(divide(mul(used, "100"), cap))) : 0;
     return (
       <div style={{ height: 6, borderRadius: 3, background: C.paperDim, overflow: "hidden" }}>
         <div style={{ height: "100%", width: `${pct}%`, background: color, transition: "width 300ms ease" }} />
@@ -81,17 +75,17 @@ export function AllowanceView({ accounts, settings, onSaveSettings, onSelect, ac
       <div className="p-4 rounded mb-4" style={{ background: C.card, border: `1px solid ${C.line}` }}>
         <div className="flex items-center justify-between mb-2">
           <div style={{ fontSize: 13, fontWeight: 600 }}>Overall</div>
-          <div className="ll-mono" style={{ fontSize: 13 }}>{fmt(usage.total, "GBP")} <span style={{ color: C.inkFaint }}>of {fmt(toPence(rules.total), "GBP")}</span></div>
+          <div className="ll-mono" style={{ fontSize: 13 }}>{fmt(usage.total, "GBP")} <span style={{ color: C.inkFaint }}>of {fmt(rules.total, "GBP")}</span></div>
         </div>
-        <Bar used={usage.total} cap={toPence(rules.total)} color={usage.total > toPence(rules.total) ? C.debit : C.gold} />
+        <Bar used={usage.total} cap={rules.total} color={cmp(usage.total, rules.total) > 0 ? C.debit : C.gold} />
       </div>
 
       <div className="flex flex-col gap-3">
         {ISA_KINDS.map((k) => {
-          const used = usage.byKind[k.key] || 0;
-          const cap = rules.subCaps[k.key] ? toPence(rules.subCaps[k.key]) : rules.subCaps[k.key];
+          const used = usage.byKind[k.key] ?? "0";
+          const cap = rules.subCaps[k.key];
           const holders = productsByKind[k.key] || [];
-          if (used === 0 && holders.length === 0) return null;
+          if (isZero(used) && holders.length === 0) return null;
           return (
             <div key={k.key} className="p-4 rounded" style={{ background: C.card, border: `1px solid ${C.line}` }}>
               <div className="flex items-center justify-between mb-2">
@@ -100,7 +94,7 @@ export function AllowanceView({ accounts, settings, onSaveSettings, onSelect, ac
                   {fmt(used, "GBP")} {cap ? <span style={{ color: C.inkFaint }}>of {fmt(cap, "GBP")}</span> : <span style={{ color: C.inkFaint }}>· no sub-cap</span>}
                 </div>
               </div>
-              {cap && <Bar used={used} cap={cap} color={used > cap ? C.debit : C.goldDim} />}
+              {cap && <Bar used={used} cap={cap} color={cmp(used, cap) > 0 ? C.debit : C.goldDim} />}
               {holders.length > 0 && (
                 <div className="flex flex-wrap gap-2 mt-2">
                   {holders.map((p) => (

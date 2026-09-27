@@ -269,10 +269,10 @@ export default function App() {
       const n = accounts.filter((x) => x.parentId === a.id).length;
       return `${n} subaccount${n === 1 ? "" : "s"}`;
     }
-    const bal = a.balance || 0;
+    const bal = a.balance ?? "0";
     if (a.type === "investment") {
       const tradingCurrency = a.symbolCurrency;
-      return `${fmtUnits(bal, symbolKey(a.symbolTicker, a.symbolCurrency))} ${a.symbolTicker} · ${fmt(a.portfolioValue || 0, tradingCurrency)}`;
+      return `${fmtUnits(bal, symbolKey(a.symbolTicker, a.symbolCurrency))} ${a.symbolTicker} · ${fmt(a.portfolioValue ?? "0", tradingCurrency)}`;
     }
     return fmt(bal, a.currency);
   }
@@ -538,7 +538,7 @@ export default function App() {
                 currencies={currencies}
                 groupLevels={(settings.groupLevels?.length ? settings.groupLevels : ["type"])}
                 activeTaxYearStart={activeTaxYearStart}
-                balance={selected.balance || 0}
+                balance={selected.balance ?? "0"}
                 knownTags={knownTags}
                 onEditAccount={() => setAccountForm(selected)}
                 onLedgerOperations={saveLedgerOperations}
@@ -552,7 +552,7 @@ export default function App() {
                 currencies={currencies}
                 groupLevels={(settings.groupLevels?.length ? settings.groupLevels : ["type"])}
                 activeTaxYearStart={activeTaxYearStart}
-                balance={selected.balance || 0}
+                balance={selected.balance ?? "0"}
                 knownTags={knownTags}
                 onEditAccount={() => setAccountForm(selected)}
                 onLedgerOperations={saveLedgerOperations}

@@ -4,6 +4,7 @@ import { fmt, fmtUnits, fmtDate, displayAccountName } from "../lib/format";
 import { getTaggedLines } from "../api";
 import { useTagTotals } from "./useTagTotals";
 import { symbolKey } from "../lib/symbolKey";
+import { isNegative } from "../lib/decimal";
 
 /* ---------------------------------------------------------
    Tags — browsing/reporting for the cross-cutting facts that don't fit
@@ -84,7 +85,7 @@ export function TagsView({ knownTags, onSelect }) {
               style={{ background: drillValue === t.value ? C.paperDim : C.card, border: `1px solid ${C.line}` }}
             >
               <span style={{ fontSize: 13.5 }}>{t.value || <span style={{ fontStyle: "italic", color: C.inkFaint }}>(no value)</span>}</span>
-              <span className="ll-mono" style={{ fontSize: 13.5, color: t.amount < 0 ? C.debit : C.ink }}>{fmt(t.amount, t.currency)}</span>
+              <span className="ll-mono" style={{ fontSize: 13.5, color: isNegative(t.amount) ? C.debit : C.ink }}>{fmt(t.amount, t.currency)}</span>
             </button>
 
             {drillValue === t.value && (
@@ -103,7 +104,7 @@ export function TagsView({ knownTags, onSelect }) {
                       <strong style={{ color: C.ink }}>{displayAccountName(l.account)}</strong>
                       {l.line.description && <span style={{ color: C.inkFaint }}>· {l.line.description}</span>}
                     </span>
-                    <span className="ll-mono" style={{ color: l.line.amount < 0 ? C.debit : C.credit, flexShrink: 0 }}>
+                    <span className="ll-mono" style={{ color: isNegative(l.line.amount) ? C.debit : C.credit, flexShrink: 0 }}>
                       {l.account.type === "investment"
                         ? `${fmtUnits(l.line.amount, symbolKey(l.account.symbolTicker, l.account.symbolCurrency))} units`
                         : fmt(l.line.amount, l.account.currency)}

@@ -2,6 +2,7 @@ import { AlertTriangle } from "lucide-react";
 import { C, TYPES, ISA_KINDS } from "../lib/theme";
 import { fmt, fmtUnits, displayAccountName } from "../lib/format";
 import { symbolKey } from "../lib/symbolKey";
+import { isPositive, isNegative } from "../lib/decimal";
 
 // One line per account in the chart of accounts — replaces the earlier
 // card grid (AccountCard) specifically to fit far more accounts in the
@@ -73,8 +74,8 @@ export function AccountRow({ a, accounts, symbols, onSelect, subtitle, groupLeve
             style={{ fontSize: 11 }}
           >
             <AlertTriangle size={11} color={C.debit} />
-            {a.imbalanceOut > 0 && <span style={{ color: C.debit }}>Out {fmt(a.imbalanceOut, imbalanceCurrency)}</span>}
-            {a.imbalanceIn > 0 && <span style={{ color: C.credit }}>In {fmt(a.imbalanceIn, imbalanceCurrency)}</span>}
+            {isPositive(a.imbalanceOut) && <span style={{ color: C.debit }}>Out {fmt(a.imbalanceOut, imbalanceCurrency)}</span>}
+            {isPositive(a.imbalanceIn) && <span style={{ color: C.credit }}>In {fmt(a.imbalanceIn, imbalanceCurrency)}</span>}
             <span style={{ color: C.inkFaint }}>· {a.imbalancedLineCount}</span>
           </span>
         )}
@@ -82,11 +83,11 @@ export function AccountRow({ a, accounts, symbols, onSelect, subtitle, groupLeve
           <span style={{ color: C.inkFaint }}>{accounts.filter((x) => x.parentId === a.id).length} subaccounts</span>
         ) : a.type === "investment" ? (
           <>
-            <span style={{ color: C.inkFaint }}>{fmtUnits(a.balance || 0, symbolKey(a.symbolTicker, a.symbolCurrency))} units</span>
-            <span style={{ color: C.ink, fontWeight: 600 }}>{fmt(a.portfolioValue || 0, tradingCurrency)}</span>
+            <span style={{ color: C.inkFaint }}>{fmtUnits(a.balance ?? "0", symbolKey(a.symbolTicker, a.symbolCurrency))} units</span>
+            <span style={{ color: C.ink, fontWeight: 600 }}>{fmt(a.portfolioValue ?? "0", tradingCurrency)}</span>
           </>
         ) : (
-          <span style={{ color: (a.balance || 0) < 0 ? C.debit : C.ink, fontWeight: 600 }}>{fmt(a.balance || 0, a.currency)}</span>
+          <span style={{ color: isNegative(a.balance) ? C.debit : C.ink, fontWeight: 600 }}>{fmt(a.balance ?? "0", a.currency)}</span>
         )}
       </span>
     </button>
