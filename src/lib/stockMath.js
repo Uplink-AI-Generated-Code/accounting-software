@@ -1,31 +1,28 @@
-import { divRoundHalfUp } from "./scale";
+import { add, sub, mul, neg, abs, min, sign, isZero, divide, round } from "./decimal";
 
 // Applies one line's effect to a running {units, cost} position using the
 // average-cost method — shared by the chart series builder below, the
 // current-total helper, and the ledger's own running-total column, so
 // there's exactly one definition of "cost basis" across the whole app.
 //
-// All arithmetic here is exact integer arithmetic — no floats — mirrored
-// exactly from the backend's LedgerStateService::applyCostBasisLine() so
-// the two never disagree; see CLAUDE.md. `cost`/`cashValue` are
-// currency-scale integers, `units`/`amount` are symbol-scale integers; a
-// cross-multiply-then-divide (divRoundHalfUp) keeps every intermediate
-// value an exact integer of the correct implied scale without this
-// function ever needing to know either scale explicitly.
+// Amounts here are canonical decimal strings, mirrored exactly from the
+// backend's LedgerStateService::applyCostBasisLine() so the two never
+// disagree; see CLAUDE.md. Each division is rounded to `state.cashPlaces`,
+// which reproduces the old integer divRoundHalfUp() on minor units
+// exactly (phase 2 changes this).
 export function applyCostBasisLine(state, l) {
-  if (l.amount > 0) {
-    state.units += l.amount;
-    state.cost += l.cashValue || 0;
-  } else if (l.amount < 0) {
-    const sold = Math.min(-l.amount, state.units);
-    const costRemoved = state.units > 0 ? divRoundHalfUp(state.cost * sold, state.units) : 0;
-    state.cost -= costRemoved;
-    state.units -= sold;
-    if (state.units === 0) {
-      // Exact by construction once units is an integer — this only
-      // absorbs ±1-minor-unit rounding dust left over from
-      // divRoundHalfUp() above, not float fuzz.
-      state.cost = 0;
+  const s = sign(l.amount ?? "0");
+  if (s > 0) {
+    state.units = add(state.units, l.amount);
+    state.cost = add(state.cost, l.cashValue ?? "0");
+  } else if (s < 0) {
+    const sold = min(neg(l.amount), state.units);
+    const costRemoved = sign(state.units) > 0 ? round(divide(mul(state.cost, sold), state.units), state.cashPlaces) : "0";
+    state.cost = sub(state.cost, costRemoved);
+    state.units = sub(state.units, sold);
+    if (isZero(state.units)) {
+      // Absorbs ±1-minor-unit rounding dust from the per-step rounding above.
+      state.cost = "0";
     }
   }
 }
@@ -43,7 +40,7 @@ export function applyCostBasisLine(state, l) {
 // LedgerStateService::stockStatsFor()'s own seeding — otherwise this
 // series would disagree with the account's own current-totals display.
 export function buildCostBasisSeries(sortedLines, startISO, endISO, opening = {}) {
-  const state = { units: opening.units || 0, cost: opening.cost || 0 };
+  const state = { units: opening.units ?? "0", cost: opening.cost ?? "0", cashPlaces: opening.cashPlaces ?? 2 };
   let idx = 0;
   while (idx < sortedLines.length && sortedLines[idx].date < startISO) {
     applyCostBasisLine(state, sortedLines[idx]);
@@ -79,20 +76,20 @@ export function buildCostBasisSeries(sortedLines, startISO, endISO, opening = {}
 // compounding rounding error across many trades. Mirrors the backend's
 // LedgerStateService::stockStatsFor()/applyPortfolioValueLine() exactly.
 export function applyPortfolioValueLine(state, l) {
-  state.units += l.amount || 0;
-  if (l.amount && l.cashValue !== undefined) {
-    state.lastCashValue = Math.abs(l.cashValue);
-    state.lastUnits = Math.abs(l.amount);
+  state.units = add(state.units, l.amount ?? "0");
+  if (!isZero(l.amount ?? "0") && l.cashValue !== undefined) {
+    state.lastCashValue = abs(l.cashValue);
+    state.lastUnits = abs(l.amount);
   }
-  state.value = state.lastUnits ? divRoundHalfUp(state.units * state.lastCashValue, state.lastUnits) : 0;
+  state.value = isZero(state.lastUnits) ? "0" : round(divide(mul(state.units, state.lastCashValue), state.lastUnits), state.cashPlaces);
 }
 // `opening` is the same carried-forward seed buildCostBasisSeries() takes
 // — until the first new trade re-marks it, the carried cost basis is the
 // best available stand-in for "last known price" too.
 export function buildPortfolioValueSeries(sortedLines, startISO, endISO, opening = {}) {
-  const openingUnits = opening.units || 0;
-  const openingCost = opening.cost || 0;
-  const state = { units: openingUnits, lastCashValue: openingCost, lastUnits: openingUnits, value: openingUnits ? openingCost : 0 };
+  const openingUnits = opening.units ?? "0";
+  const openingCost = opening.cost ?? "0";
+  const state = { units: openingUnits, lastCashValue: openingCost, lastUnits: openingUnits, value: isZero(openingUnits) ? "0" : openingCost, cashPlaces: opening.cashPlaces ?? 2 };
   let idx = 0;
   while (idx < sortedLines.length && sortedLines[idx].date < startISO) {
     applyPortfolioValueLine(state, sortedLines[idx]);

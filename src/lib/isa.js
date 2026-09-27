@@ -8,8 +8,8 @@
 // startYear = the calendar year the tax year begins in (e.g. 2026 means
 // the 2026/27 tax year, 6 April 2026 – 5 April 2027).
 const ISA_RULE_TABLE = [
-  { startYear: 2026, total: 20000, subCaps: { "lifetime-isa": 4000 } },
-  { startYear: 2027, total: 20000, subCaps: { "lifetime-isa": 4000, "cash-isa": 12000 } },
+  { startYear: 2026, total: "20000", subCaps: { "lifetime-isa": "4000" } },
+  { startYear: 2027, total: "20000", subCaps: { "lifetime-isa": "4000", "cash-isa": "12000" } },
 ];
 
 // UK tax years run 6 April – 5 April, not the calendar year.

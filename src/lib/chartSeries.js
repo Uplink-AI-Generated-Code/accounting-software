@@ -1,5 +1,6 @@
 import { todayISO } from "./format";
 import { taxYearBounds } from "./isa";
+import { add } from "./decimal";
 
 // Just these two: every fixed-lookback preset (30D/3M/6M/1Y/YTD/All) only
 // ever means something relative to *today*, which makes it useless for
@@ -37,12 +38,13 @@ export function intervalRange(key, ctx = {}) {
 // Walks a sorted array of {date, amount} lines day by day across a range,
 // carrying the running total forward — a step function sampled daily, so
 // two different periods (e.g. this year vs last year) land on directly
-// comparable, equal-length series for overlaying on one chart.
+// comparable, equal-length series for overlaying on one chart. `opening`
+// and every point's `value` are canonical decimal strings.
 export function buildDailySeries(opening, sortedLines, startISO, endISO) {
   let value = opening;
   let idx = 0;
   while (idx < sortedLines.length && sortedLines[idx].date < startISO) {
-    value += sortedLines[idx].amount || 0;
+    value = add(value, sortedLines[idx].amount ?? "0");
     idx++;
   }
   const points = [];
@@ -52,7 +54,7 @@ export function buildDailySeries(opening, sortedLines, startISO, endISO) {
   while (cursor <= end && safety < 3660) {
     const iso = cursor.toISOString().slice(0, 10);
     while (idx < sortedLines.length && sortedLines[idx].date === iso) {
-      value += sortedLines[idx].amount || 0;
+      value = add(value, sortedLines[idx].amount ?? "0");
       idx++;
     }
     points.push({ date: iso, value });

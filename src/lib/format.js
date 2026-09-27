@@ -1,10 +1,10 @@
-import { fromMinorUnits } from "./scale";
+import { round, fractionDigits } from "./decimal";
 import { TYPES } from "./theme";
 import { symbolKey } from "./symbolKey";
 
-// Amounts are scaled integers now (e.g. 2000 = £20.00 at GBP's scale of
-// 2 — see CLAUDE.md), not floats. fmt()/fmtUnits() need each currency's/
-// symbol's own `scale` to convert back to a decimal before display; the
+// Amounts are canonical decimal strings now (see CLAUDE.md/the decimals
+// design doc), not scaled integers. fmt()/fmtUnits() need each currency's/
+// symbol's own `scale` only to know how many places to *show* — the
 // alternative — threading a `scale` argument through every single
 // display call site across the app (AccountCard, Overview, charts, ...)
 // — was rejected as needlessly invasive for what's fundamentally a
@@ -28,22 +28,28 @@ export function setSymbolScales(symbols) {
 export function scaleForCurrency(code) {
   return currencyScales[code] ?? 2;
 }
-function scaleForSymbol(key) {
+export function scaleForSymbol(key) {
   return symbolScales[key] ?? 6;
 }
 
+// Intl.NumberFormat formats a *string* as an exact decimal (ES2023), so
+// no amount ever passes through a float here. Phase 1: exactly `scale`
+// places (phase 3 changes this to "at least").
+function padFraction(v, places) {
+  if (places === 0) return v;
+  const [whole, frac = ""] = v.split(".");
+  return `${whole}.${frac.padEnd(places, "0")}`;
+}
 export function fmt(amount, currency) {
   const scale = scaleForCurrency(currency);
-  const v = Number.isFinite(amount) ? Number(fromMinorUnits(amount, scale) || "0") : 0;
+  const v = round(amount ?? "0", scale);
   try {
     // Intl doesn't reject an unrecognized-but-well-formed currency code
-    // (e.g. "BTC") — it silently formats it at its own default 2 fraction
-    // digits instead, discarding the precision `v` was already correctly
-    // computed at. minimumFractionDigits/maximumFractionDigits force it to
-    // respect this currency's own registered scale instead of guessing.
+    // (e.g. "BTC") — it would silently use its own default 2 digits, so
+    // force this currency's registered scale instead.
     return new Intl.NumberFormat("en-GB", { style: "currency", currency, minimumFractionDigits: scale, maximumFractionDigits: scale }).format(v);
   } catch (e) {
-    return `${v.toFixed(scale)} ${currency}`;
+    return `${padFraction(v, scale)} ${currency}`;
   }
 }
 // Same amount as fmt(), without the currency code/symbol prefix — for a
@@ -54,8 +60,7 @@ export function fmt(amount, currency) {
 // itself is dropped, never the precision.
 export function fmtPlain(amount, currency) {
   const scale = scaleForCurrency(currency);
-  const v = Number.isFinite(amount) ? Number(fromMinorUnits(amount, scale) || "0") : 0;
-  return v.toLocaleString("en-GB", { minimumFractionDigits: scale, maximumFractionDigits: scale });
+  return new Intl.NumberFormat("en-GB", { minimumFractionDigits: scale, maximumFractionDigits: scale }).format(round(amount ?? "0", scale));
 }
 // An account's `name` can be blank (see CLAUDE.md's "Account model") — a
 // credit card or an income/expense account often has nothing to add
@@ -110,6 +115,28 @@ export function fmtDateShort(iso) {
 // trading currency, each with its own scale.
 export function fmtUnits(n, symbolKeyString) {
   const scale = scaleForSymbol(symbolKeyString);
-  const v = Number.isFinite(n) ? Number(fromMinorUnits(n, scale) || "0") : 0;
-  return v.toLocaleString("en-GB", { maximumFractionDigits: scale, minimumFractionDigits: 0 });
+  return new Intl.NumberFormat("en-GB", { minimumFractionDigits: 0, maximumFractionDigits: scale }).format(round(n ?? "0", scale));
+}
+
+// PHASE 1 ONLY — delete in phase 2 (docs/superpowers/specs/2026-09-27-
+// arbitrary-precision-decimals-design.md). Storage is still scaled
+// integers, so the backend 400s on a value deeper than its scale; this
+// catches it before the save, so the edit isn't lost to a failed batch.
+export function precisionError(lines, accounts) {
+  for (const l of lines) {
+    const acc = accounts.find((a) => a.id === l.accountId);
+    if (!acc) continue;
+    const amountScale = acc.type === "investment" ? scaleForSymbol(symbolKey(acc.symbolTicker, acc.symbolCurrency)) : scaleForCurrency(acc.currency);
+    const checks = [
+      [l.amount, amountScale],
+      [l.cashValue, scaleForCurrency(l.cashCurrency)],
+      [l.exchangeAmount, scaleForCurrency(l.exchangeCurrency)],
+    ];
+    for (const [value, scale] of checks) {
+      if (value !== undefined && fractionDigits(value) > scale) {
+        return `${displayAccountName(acc)}: ${value} has more than ${scale} decimal place${scale === 1 ? "" : "s"}.`;
+      }
+    }
+  }
+  return null;
 }

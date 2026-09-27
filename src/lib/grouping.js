@@ -1,4 +1,5 @@
 import { TYPES, GROUP_DIMENSIONS } from "./theme";
+import { add } from "./decimal";
 
 // An ISA subaccount doesn't set its own counterparty — it inherits its
 // wrapper's, the same way it inherits flexibility. Always resolved
@@ -109,7 +110,7 @@ export function leafMatchesQuery(leaf, query) {
 
 export function subtotalsForItems(items) {
   const sub = {};
-  items.filter((a) => a.type !== "investment" && a.type !== "investment-parent").forEach((a) => { sub[a.currency] = (sub[a.currency] || 0) + (a.balance || 0); });
+  items.filter((a) => a.type !== "investment" && a.type !== "investment-parent").forEach((a) => { sub[a.currency] = add(sub[a.currency] ?? "0", a.balance ?? "0"); });
   return sub;
 }
 
