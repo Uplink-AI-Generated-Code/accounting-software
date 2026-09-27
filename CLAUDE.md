@@ -37,8 +37,10 @@ because they're small or tightly coupled:
 - `src/lib/` — pure logic, no JSX, no fetching: `theme.js` (colors/tokens,
   `TYPES`, `ISA_KINDS`, `GROUP_DIMENSIONS` — no `CURRENCIES` constant
   anymore, see "Amounts, currencies, and reference data" below),
-  `format.js` (date/currency formatting, `uid`), `scale.js`
-  (integer⟷decimal-string conversion, no floats — see below),
+  `format.js` (date/currency formatting, `uid`), `decimal.js` (the
+  canonical-decimal-string arithmetic core, no floats — see below; the
+  only frontend module with its own tests, `decimal.test.js`/
+  `format.test.js`, run via `yarn test`),
   `grouping.js` (sidebar/Overview nesting, `bucketBy`, `reorderSameDate`),
   `isa.js` (the static tax-year rules and `isaProducts` grouping — the
   actual usage computation is server-side now, see below), `stockMath.js`
@@ -83,7 +85,13 @@ Frontend: Vite + React, `yarn.lock` is the checked-in lockfile (no
 - Install: `yarn install` (or `npm install`)
 - Dev server: `yarn dev` — starts Vite on :5173, proxying `/api/*` to the
   Symfony backend on :8000 (see `vite.config.js`) — **the backend must
-  already be running** for the app to load any data.
+  already be running** for the app to load any data. Set `LEDGER_API` to
+  override the proxy target (e.g. `LEDGER_API=http://127.0.0.1:8001 yarn
+  dev`), for pointing a dev server at a backend running on a different
+  port than the default :8000.
+- Test: `yarn test` (Vitest) — covers `src/lib/decimal.js` and the
+  precision-guard rule in `src/lib/format.js` only; see "Amounts,
+  currencies, and reference data" below.
 - Build: `yarn build`
 - Preview a production build: `yarn preview`
 
@@ -169,7 +177,10 @@ SQLite. All commands run from `backend/`.
   migration, same as for `dev`.
 
 There is a small PHPUnit suite for the backend (see "Backend" below for what
-it covers and why); no test suite and no linter on the frontend.
+it covers and why); the frontend has a small Vitest suite scoped to
+`src/lib/decimal.js`/the precision-guard rule (`yarn test`, see "Amounts,
+currencies, and reference data" below) and no linter, but otherwise no test
+suite.
 
 ## Backend
 
@@ -472,11 +483,11 @@ it covers and why); no test suite and no linter on the frontend.
   transaction-level date/description.
 - A **line** is `{ accountId, amount, date, description, order?, ... }`,
   plus a backend-assigned `id` once persisted (see the id-exposure note
-  under "Backend" above). `amount` is a **scaled integer**, signed:
-  positive = increase, negative = decrease, regardless of account type —
-  see "Amounts, currencies, and reference data" below for what "scaled"
-  means. There is no separate debit/credit; the UI just labels
-  positive/negative as "In"/"Out".
+  under "Backend" above). `amount` is a **canonical decimal string** on
+  the wire (a scaled integer in storage — see "Amounts, currencies, and
+  reference data" below), signed: positive = increase, negative =
+  decrease, regardless of account type. There is no separate debit/credit;
+  the UI just labels positive/negative as "In"/"Out".
 - `src/lib/ledgerOperations.js` is where every UI transition (plain edit,
   merge, unlink, split-off, 2→1 demotion, same-date reorder) gets
   translated into `POST /api/ledger/batch` operations — see the endpoint
@@ -545,15 +556,26 @@ it covers and why); no test suite and no linter on the frontend.
 
 ## Amounts, currencies, and reference data
 
-Amounts used to be plain floats. They're **exact integers now, scaled by
-a currency's or symbol's own `scale`** (e.g. `2000` = £20.00 at GBP's
-scale of 2; `0` decimal places for JPY) — ported from a related legacy
-project specifically to eliminate floating-point drift. This touches
-every amount-like field: `Line.amount`, `Line.cashValue`,
-`Line.exchangeAmount`, `Account.openingBalance`. The scaled-integer
-representation crosses the API boundary too — the backend never emits a
-decimal string for an amount, and the frontend never receives one; it's
-integers in both directions, JSON like `"amount": 2000`.
+Amounts used to be plain floats, then became scaled integers (ported from
+a related legacy project specifically to eliminate floating-point drift).
+**Phase 1 of `docs/superpowers/specs/2026-09-27-arbitrary-precision-decimals-design.md`
+moved the wire format and the frontend to canonical decimal strings —
+storage is still scaled integers until phase 2.** A canonical string has
+no `+` sign, no leading zeros, no trailing fractional zeros, and spells
+zero as `"0"` (e.g. `"20.50"` → `"20.5"`, `".5"` → `"0.5"`) — see the
+spec's "Canonical form" for the exact grammar. This touches every
+amount-like field: `Line.amount`, `Line.cashValue`, `Line.exchangeAmount`,
+`Account.openingBalance`, and the computed `balance`/`costBasis`/
+`portfolioValue`/`imbalanceIn`/`imbalanceOut` fields. The database column
+types are unchanged — `backend/src/Money/` (`ScaledAmount`,
+`ScaleRegistry`, `WireAmounts`) converts integer⟷decimal-string only at
+the five controllers that touch amounts (Account, Ledger, Match, Tag,
+IsaAllowance); every service, `readState()`/`writeState()`
+(export/import), and `NewYearService` still speak scaled integers
+internally, and `LedgerStateService::divRoundHalfUp()` is unchanged. So
+JSON now looks like `"amount": "20.5"`, not `"amount": 2000` — a decimal
+string in both directions across the API, never a raw integer and never
+a float.
 
 - **`Currency`, `Symbol`, `Counterparty` are natural-key reference
   entities** (`backend/src/Entity/`), each with the business key itself
@@ -657,29 +679,51 @@ integers in both directions, JSON like `"amount": 2000`.
   /api/symbols`) `Currency`/`Symbol` were read-only; `Currency`/`Symbol`
   now have full admin endpoints (see above), while `Counterparty` remains
   read-only and find-or-create only.
-- **`src/lib/scale.js`** is the one place that converts between the
-  wire-format integer and a human-editable decimal string, without ever
-  going through a float intermediate: `toMinorUnits(str, scale)` (parse,
-  mirrors `parseFloat`'s NaN-on-failure contract) and `fromMinorUnits(value,
-  scale)` (format, trims trailing zeros). Every input field's onChange
-  handler across `AccountLedger.jsx`/`StockLedger.jsx`/`otherLines.jsx`/
-  `AccountFormModal.jsx` goes through these instead of `parseFloat`/
-  `String()` — don't reintroduce either.
-- **`divRoundHalfUp(numerator, denominator)`** (also `lib/scale.js`, and
-  mirrored exactly as a private method on `LedgerStateService` in PHP) is
-  exact-integer division with round-half-up, implemented with plain
-  integer arithmetic (`(2n*num + den) / (2n*den)` — no bcmath, no float
-  division; PHP's 64-bit ints and JS `BigInt` both have ample headroom
-  for any realistic ledger amount). This is the one place naive
-  int-division would silently reintroduce drift — see "Stock valuation"
-  below for where it's actually used, and keep the PHP and JS versions
-  byte-identical if you ever touch either.
+- **`src/lib/decimal.js`** (replaces the old `src/lib/scale.js`) is the
+  frontend's decimal arithmetic core, built on big.js, with its own
+  Vitest suite (`decimal.test.js`, plus `format.test.js` for the
+  precision guard below — `yarn test`) run against a fixture shared with
+  the PHP side, `tests/fixtures/decimal-cases.json`. Four rules govern it
+  everywhere in this codebase:
+  1. Amounts are canonical decimal strings everywhere outside the two
+     decimal modules (`src/lib/decimal.js` and `App\Money\Decimal` — see
+     `docs/superpowers/specs/2026-09-27-arbitrary-precision-decimals-design.md`).
+  2. Nothing divides amounts except `divide()` (20dp, round half-up,
+     returns `"0"` for a zero divisor — the same contract the old
+     `divRoundHalfUp` had).
+  3. A float appears only at the Recharts data boundary, via
+     `toNumber()`.
+  4. The PHP and JS implementations must agree, and the shared fixture
+     enforces it.
+  `parseDecimal(str)`/`parseOrZero(str)` replace `toMinorUnits` for
+  turning typed input into a canonical string (returning `null`/`"0"`
+  respectively for invalid input, rather than `NaN`); `canonical`,
+  `add`/`sub`/`mul`/`neg`/`abs`, `cmp`/`sign`/`isZero`/`isNegative`/
+  `isPositive`/`isNonZero`, `min`/`sum`, `divide`, `round`,
+  `fractionDigits`, and `toNumber`/`fromNumber` (the only float
+  conversion, for Recharts) round out the module. Every input field's
+  onChange handler across `AccountLedger.jsx`/`StockLedger.jsx`/
+  `otherLines.jsx`/`AccountFormModal.jsx` goes through these instead of
+  `parseFloat`/`String()` — don't reintroduce either. **Never hold a
+  big.js object outside `decimal.js`** — every exported function takes
+  and returns plain canonical strings, so React state, props, `===`, and
+  JSON stay plain; don't leak a `Big` instance into a component or into
+  state.
+- **`divRoundHalfUp`**: the old integer-`BigInt` JS copy in `scale.js` is
+  gone — `decimal.js`'s `divide()` + `round()` replaced it. The PHP copy,
+  a private method on `LedgerStateService`, remains for now: internal
+  cost-basis/portfolio-value math is still integer arithmetic in phase 1
+  (see "Stock valuation" below), only converted to a decimal string at
+  the controller boundary. It will be replaced by `App\Money\Decimal` in
+  phase 2 when storage itself moves off scaled integers.
 - **`src/lib/format.js`'s `fmt(amount, currencyCode)`/`fmtUnits(n,
   symbolKeyString)`** keep their 2-argument call-site shape everywhere in
-  the app — they don't take a `scale` parameter directly. `fmt` takes a
-  currency code; `fmtUnits` takes `symbolKeyString`, the composite key from
-  `lib/symbolKey.js`'s `symbolKey(ticker, tradingCurrency)` (not a bare
-  ticker, since the same ticker can exist under multiple trading currencies).
+  the app — they don't take a `scale` parameter directly, and both now
+  take a canonical decimal *string* for the amount, not a scaled integer.
+  `fmt` takes a currency code; `fmtUnits` takes `symbolKeyString`, the
+  composite key from `lib/symbolKey.js`'s `symbolKey(ticker,
+  tradingCurrency)` (not a bare ticker, since the same ticker can exist
+  under multiple trading currencies).
   `setCurrencyScales(currencies)`/`setSymbolScales(symbols)` are called once
   by `App.jsx` right after fetching `/api/currencies`/`/api/symbols`,
   populating a small module-level lookup `fmt`/`fmtUnits` read from
@@ -689,7 +733,14 @@ integers in both directions, JSON like `"amount": 2000`.
   prop-drilled parameter for something that's genuinely global, read-only,
   loaded-once data. If a value's scale genuinely isn't in the registry yet
   (e.g. mid-load), `fmt`/`fmtUnits` fall back to a plausible default (2 / 6)
-  rather than crashing.
+  places rather than crashing. `format.js` also exports
+  `precisionError(lines, accounts)`, a **phase-1-only guard**: since
+  storage is still a scaled integer, a typed value with more fractional
+  digits than its account's currency/symbol scale would be silently
+  truncated server-side, so the frontend rejects it client-side first
+  with a named-account error, keeping the edit open rather than saving.
+  This guard (and the `400` it mirrors in `ScaledAmount::fromDecimal()`)
+  goes away in phase 2 once storage itself is arbitrary-precision.
 
 ## Matching and linking — two different comparison modes, on purpose
 
@@ -715,17 +766,15 @@ line's value against a target, and where each is used.
   that finds a stock trade — this was ported from the frontend's old
   `getComparableAmount`/`getDirectComparableAmount` and has no test
   coverage of its own yet.
-- `useOtherLines(account, accounts, draft, setDraft, smartDefaultForFirst,
-  currencies, symbols)` is a shared hook used by **both** `AccountLedger`
-  and `StockLedger` for their arrays of linked "other account" legs —
-  adding, removing, updating, resolving to a savable line, and a
-  debounced per-leg match search. `currencies`/`symbols` are needed for
-  scale-aware amount parsing and to resolve an investment leg's trading
-  currency via its `Symbol` (never `account.currency` — see "Amounts,
-  currencies, and reference data" above). `OtherLinesEditor` is the
-  shared row-rendering component (also takes `symbols`, for the same
-  reason). Do not reintroduce a per-component copy of this logic; extend
-  the shared hook/component instead.
+- `useOtherLines(account, accounts, draft, setDraft, smartDefaultForFirst)`
+  is a shared hook used by **both** `AccountLedger` and `StockLedger` for
+  their arrays of linked "other account" legs — adding, removing,
+  updating, resolving to a savable line, and a debounced per-leg match
+  search. `OtherLinesEditor` is the shared row-rendering component (also
+  takes `symbols`, to resolve an investment leg's trading currency via
+  its `Symbol` — never `account.currency`, see "Amounts, currencies, and
+  reference data" above). Do not reintroduce a per-component copy of this
+  logic; extend the shared hook/component instead.
 - A selected match candidate's line data is stored directly on the
   `otherLine` as `matchedLineId`/`matchedLine` (set in `selectMatch`/
   `selectMatchForOtherLine`) rather than looked up from a `transactions`
