@@ -3,10 +3,8 @@
 namespace App\Service;
 
 use App\Doctrine\ActiveDatabasePathResolver;
-use App\Entity\Currency;
-use App\Entity\Symbol;
+use App\Money\Decimal;
 use Doctrine\DBAL\DriverManager;
-use Doctrine\ORM\EntityManagerInterface;
 
 /**
  * The copy/wipe/carry-forward logic behind `app:new-year`: copies the
@@ -24,7 +22,6 @@ class NewYearService
     private const CARRY_FORWARD_TYPES = ['asset', 'liability', 'equity', 'investment'];
 
     public function __construct(
-        private readonly EntityManagerInterface $em,
         private readonly LedgerStateService $state,
         private readonly ActiveDatabasePathResolver $pathResolver,
     ) {
@@ -38,12 +35,10 @@ class NewYearService
      * stops this from completing (can't determine the source path, the
      * file copy itself failed, or the carry-forward write failed).
      *
-     * @return array{sourcePath: string, rows: array<int, array{0: array<string, mixed>, 1: int, 2: ?int}>, currencyScales: array<string, int>, symbolScales: array<string, int>, symbolTradingCurrency: array<string, string>}
+     * Each row is `[account, openingBalance, openingBalanceCashValue]`,
+     * both amounts canonical decimal strings (see App\Money\Decimal).
      *
-     * symbolScales/symbolTradingCurrency are keyed by "ticker:tradingCurrency"
-     * (Symbol's own composite identity), not by bare ticker — a bare-ticker
-     * key would silently collide once the same ticker exists in more than one
-     * trading currency, with whichever Symbol row is iterated last winning.
+     * @return array{sourcePath: string, rows: array<int, array{0: array<string, mixed>, 1: string, 2: ?string}>}
      */
     public function createNextYear(string $newDbPath): array
     {
@@ -58,19 +53,6 @@ class NewYearService
         // GET /api/accounts uses, so this can never drift from what the
         // live app itself shows.
         $stats = $this->state->accountsWithStats();
-
-        $currencyScales = [];
-        foreach ($this->em->getRepository(Currency::class)->findAll() as $c) {
-            $currencyScales[$c->getCode()] = $c->getScale();
-        }
-        $symbolScales = [];
-        $symbolTradingCurrency = [];
-        foreach ($this->em->getRepository(Symbol::class)->findAll() as $s) {
-            $symbolKey = $s->getTicker().':'.$s->getTradingCurrency()->getCode();
-            $symbolScales[$symbolKey] = $s->getScale();
-            $symbolTradingCurrency[$symbolKey] = $s->getTradingCurrency()->getCode();
-            $currencyScales[$s->getTradingCurrency()->getCode()] ??= $s->getTradingCurrency()->getScale();
-        }
 
         if (!copy($sourcePath, $newDbPath)) {
             throw new \RuntimeException(\sprintf('Could not copy %s to %s.', $sourcePath, $newDbPath));
@@ -88,14 +70,14 @@ class NewYearService
             foreach ($stats as $a) {
                 $carry = \in_array($a['type'], self::CARRY_FORWARD_TYPES, true);
                 $openingBalance = $carry ? $a['balance'] : null;
-                $openingBalanceCashValue = $carry && 'investment' === $a['type'] ? ($a['costBasis'] ?? 0) : null;
+                $openingBalanceCashValue = $carry && 'investment' === $a['type'] ? ($a['costBasis'] ?? '0') : null;
 
                 $target->executeStatement(
                     'UPDATE account SET opening_balance = ?, opening_balance_cash_value = ? WHERE id = ?',
                     [$openingBalance, $openingBalanceCashValue, $a['id']]
                 );
 
-                if ($carry && 0 !== $openingBalance) {
+                if ($carry && !Decimal::isZero($openingBalance)) {
                     $rows[] = [$a, $openingBalance, $openingBalanceCashValue];
                 }
             }
@@ -112,9 +94,6 @@ class NewYearService
         return [
             'sourcePath' => $sourcePath,
             'rows' => $rows,
-            'currencyScales' => $currencyScales,
-            'symbolScales' => $symbolScales,
-            'symbolTradingCurrency' => $symbolTradingCurrency,
         ];
     }
 }

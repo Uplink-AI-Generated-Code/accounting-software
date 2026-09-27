@@ -71,19 +71,14 @@ class NewYearCommand extends Command
         $table = [];
         foreach ($result['rows'] as [$a, $openingBalance, $openingBalanceCashValue]) {
             if ('investment' === $a['type']) {
-                $symbolKey = ($a['symbolTicker'] ?? '').':'.($a['symbolCurrency'] ?? '');
-                $unitsScale = $result['symbolScales'][$symbolKey] ?? 6;
-                $tradingCurrency = $result['symbolTradingCurrency'][$symbolKey] ?? null;
-                $costScale = $result['currencyScales'][$tradingCurrency] ?? 2;
                 $table[] = [
                     $a['name'],
                     $a['type'],
-                    $this->formatScaled($openingBalance, $unitsScale).' units',
-                    $this->formatScaled($openingBalanceCashValue, $costScale).' cost',
+                    $openingBalance.' units',
+                    ($openingBalanceCashValue ?? '0').' cost',
                 ];
             } else {
-                $scale = $result['currencyScales'][$a['currency'] ?? ''] ?? 2;
-                $table[] = [$a['name'], $a['type'], $this->formatScaled($openingBalance, $scale), '—'];
+                $table[] = [$a['name'], $a['type'], $openingBalance, '—'];
             }
         }
 
@@ -102,17 +97,5 @@ class NewYearCommand extends Command
         $io->text('The new file has no lines yet, so its tax year is undetermined until the first entry is saved — same as any blank database.');
 
         return Command::SUCCESS;
-    }
-
-    private function formatScaled(int $value, int $scale): string
-    {
-        if (0 === $scale) {
-            return (string) $value;
-        }
-        $divisor = 10 ** $scale;
-        $sign = $value < 0 ? '-' : '';
-        $abs = abs($value);
-
-        return \sprintf('%s%d.%0'.$scale.'d', $sign, intdiv($abs, $divisor), $abs % $divisor);
     }
 }

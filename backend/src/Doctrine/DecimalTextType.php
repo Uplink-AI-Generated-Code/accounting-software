@@ -18,9 +18,18 @@ final class DecimalTextType extends Type
 {
     public const NAME = 'decimal_text';
 
+    /**
+     * The platform's own text declaration — exactly what DBAL's TextType
+     * declares, and so exactly what an introspected TEXT column compares
+     * equal to. On SQLite that's "CLOB", which (like "TEXT") has TEXT
+     * affinity; returning a literal 'TEXT' here instead makes every
+     * doctrine:migrations:diff see these columns as changed forever, since
+     * DBAL compares columns by declaration SQL and reads a TEXT column back
+     * as TextType ("CLOB").
+     */
     public function getSQLDeclaration(array $column, AbstractPlatform $platform): string
     {
-        return 'TEXT';
+        return $platform->getClobTypeDeclarationSQL($column);
     }
 
     public function convertToDatabaseValue(mixed $value, AbstractPlatform $platform): ?string

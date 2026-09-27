@@ -4,6 +4,7 @@ namespace App\Service;
 
 use App\Entity\Line;
 use App\Entity\Tag;
+use App\Money\Decimal;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
@@ -72,9 +73,9 @@ class TagService
     }
 
     /**
-     * Server-side SUM grouped by `(value, currency)` — same "compute it
-     * server-side, never sum many lines client-side" posture as
-     * accountsWithStats()'s own balance SUM. `excludeDimension`/
+     * Sum grouped by `(value, currency)` — exact, server-side (canonical
+     * decimal strings via App\Money\Decimal), never summed across many
+     * lines client-side. `excludeDimension`/
      * `excludeValue` cover "Groceries total, excluding refunded" style
      * filtering: a line carrying that second tag is skipped entirely.
      *
@@ -88,7 +89,7 @@ class TagService
      * (left unconstrained by design — see CLAUDE.md) contributes to each
      * value's total, not just one.
      *
-     * @return array<int, array{value: string, currency: string, amount: int}>
+     * @return array<int, array{value: string, currency: string, amount: string}>
      */
     public function computeTagTotals(string $dimension, ?string $excludeDimension, ?string $excludeValue): array
     {
@@ -118,7 +119,7 @@ class TagService
                 if ($tag->getDimension() !== $dimension) {
                     continue;
                 }
-                $totals[$tag->getValue()][$currency] = ($totals[$tag->getValue()][$currency] ?? 0) + $line->getAmount();
+                $totals[$tag->getValue()][$currency] = Decimal::add($totals[$tag->getValue()][$currency] ?? '0', $line->getAmount());
             }
         }
 

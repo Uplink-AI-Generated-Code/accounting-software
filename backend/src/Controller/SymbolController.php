@@ -4,7 +4,6 @@ namespace App\Controller;
 
 use App\Entity\Currency;
 use App\Entity\Symbol;
-use App\Service\LedgerStateService;
 use Doctrine\DBAL\Exception\ForeignKeyConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -19,13 +18,15 @@ use Symfony\Component\Routing\Attribute\Route;
  * check on create and the routes on PATCH/DELETE both key on the pair,
  * not the ticker alone. tradingCurrency itself is never editable (it's
  * part of the identity) — only name and scale can change via PATCH.
+ * `scale` is the minimum number of decimals displayed for this symbol's
+ * units; changing it never touches stored amounts (they're exact decimal
+ * strings — see App\Money\Decimal).
  */
 #[Route('/api/symbols')]
 class SymbolController
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly LedgerStateService $state,
     ) {
     }
 
@@ -111,7 +112,6 @@ class SymbolController
             return new JsonResponse(['error' => 'Invalid JSON body'], 400);
         }
 
-        $rowsTouched = 0;
         try {
             if (\array_key_exists('scale', $body)) {
                 $scale = $body['scale'];
@@ -122,7 +122,9 @@ class SymbolController
                 if ($scale < 0 || $scale > 12) {
                     return new JsonResponse(['error' => 'Scale must be between 0 and 12'], 400);
                 }
-                $rowsTouched = $this->state->rescaleSymbol($ticker, $tradingCurrency, $scale);
+                $symbol->setScale($scale);
+                $this->em->persist($symbol);
+                $this->em->flush();
             }
             if (\array_key_exists('name', $body)) {
                 $name = trim((string) $body['name']);
@@ -144,7 +146,6 @@ class SymbolController
                 'scale' => $symbol->getScale(),
                 'tradingCurrency' => $symbol->getTradingCurrency()->getCode(),
             ],
-            'rowsRescaled' => $rowsTouched,
         ]);
     }
 

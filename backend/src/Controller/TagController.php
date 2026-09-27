@@ -2,10 +2,7 @@
 
 namespace App\Controller;
 
-use App\Money\ScaleRegistry;
-use App\Money\WireAmounts;
 use App\Service\TagService;
-use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;
@@ -17,7 +14,7 @@ use Symfony\Component\Routing\Attribute\Route;
  */
 class TagController
 {
-    public function __construct(private readonly TagService $tags, private readonly EntityManagerInterface $em)
+    public function __construct(private readonly TagService $tags)
     {
     }
 
@@ -36,7 +33,7 @@ class TagController
         }
         $value = (string) $request->query->get('value', '');
 
-        return new JsonResponse(WireAmounts::candidatesOut($this->tags->findLinesByTag($dimension, $value), ScaleRegistry::fromEntityManager($this->em)));
+        return new JsonResponse($this->tags->findLinesByTag($dimension, $value));
     }
 
     #[Route('/api/tag-totals', methods: ['GET'])]
@@ -53,6 +50,6 @@ class TagController
             [$excludeDimension, $excludeValue] = array_pad(explode(':', (string) $excludeTag, 2), 2, '');
         }
 
-        return new JsonResponse(WireAmounts::tagTotalsOut($this->tags->computeTagTotals($dimension, $excludeDimension, $excludeValue), ScaleRegistry::fromEntityManager($this->em)));
+        return new JsonResponse($this->tags->computeTagTotals($dimension, $excludeDimension, $excludeValue));
     }
 }

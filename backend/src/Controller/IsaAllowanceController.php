@@ -2,10 +2,7 @@
 
 namespace App\Controller;
 
-use App\Money\ScaleRegistry;
-use App\Money\WireAmounts;
 use App\Service\IsaAllowanceService;
-use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;
@@ -18,7 +15,7 @@ use Symfony\Component\Routing\Attribute\Route;
 #[Route('/api/isa-allowance')]
 class IsaAllowanceController
 {
-    public function __construct(private readonly IsaAllowanceService $isa, private readonly EntityManagerInterface $em)
+    public function __construct(private readonly IsaAllowanceService $isa)
     {
     }
 
@@ -30,6 +27,6 @@ class IsaAllowanceController
             return new JsonResponse(['error' => 'taxYearStart (a tax year start year, e.g. 2026) is required'], 400);
         }
 
-        return new JsonResponse(WireAmounts::isaUsageOut($this->isa->computeUsage((int) $startYear), ScaleRegistry::fromEntityManager($this->em)));
+        return new JsonResponse($this->isa->computeUsage((int) $startYear));
     }
 }

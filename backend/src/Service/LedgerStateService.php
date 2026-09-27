@@ -9,6 +9,7 @@ use App\Entity\Line;
 use App\Entity\Symbol;
 use App\Entity\Tag;
 use App\Entity\Transaction;
+use App\Money\Decimal;
 use App\Service\AppSettingsRepository;
 use App\Service\SettingKeys;
 use App\Service\SettingsService;
@@ -49,17 +50,6 @@ use Doctrine\ORM\EntityManagerInterface;
  */
 class LedgerStateService
 {
-    /**
-     * JS's Number.MAX_SAFE_INTEGER (2^53). A rescale increase that would
-     * push any existing stored amount's magnitude past this is refused —
-     * see rescaleCurrency()/rescaleSymbol()'s increase-branch headroom
-     * check. This app's amounts cross the JSON API boundary as plain
-     * integers, read back into JS numbers on the frontend (see CLAUDE.md's
-     * "Amounts, currencies, and reference data") — PHP's own 64-bit ints
-     * have far more headroom than this, but the frontend doesn't.
-     */
-    private const JS_MAX_SAFE_INTEGER = 9007199254740992;
-
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly SettingsService $settingsService,
@@ -91,10 +81,11 @@ class LedgerStateService
     {
         $accounts = $this->em->getRepository(Account::class)->findAll();
         $imbalance = $this->imbalanceStatsByAccount();
+        $sums = $this->lineSumsByAccount();
 
-        return array_map(function (Account $a) use ($imbalance) {
+        return array_map(function (Account $a) use ($imbalance, $sums) {
             $arr = $this->accountToArray($a);
-            $arr['balance'] = $this->balanceFor($a);
+            $arr['balance'] = Decimal::add($a->getOpeningBalance() ?? '0', $sums[$a->getId()] ?? '0');
             $arr['entryCount'] = $this->entryCountFor($a);
             if ('investment' === $a->getType()) {
                 ['cost' => $cost, 'value' => $value] = $this->stockStatsFor($a);
@@ -151,14 +142,22 @@ class LedgerStateService
         return $records;
     }
 
-    private function balanceFor(Account $a): int
+    /**
+     * Sum of every line's amount per account, exact — replaces the old SQL
+     * SUM(amount), which on TEXT would coerce to floats. One query for all
+     * accounts; a ledger's line count is small enough (thousands) that
+     * summing in PHP is trivial.
+     *
+     * @return array<string, string> accountId => canonical sum
+     */
+    private function lineSumsByAccount(): array
     {
-        $sum = (int) $this->em->getConnection()->fetchOne(
-            'SELECT COALESCE(SUM(amount), 0) FROM line WHERE account_id = ?',
-            [$a->getId()]
-        );
+        $sums = [];
+        foreach ($this->em->getConnection()->fetchAllNumeric('SELECT account_id, amount FROM line') as [$accountId, $amount]) {
+            $sums[$accountId] = Decimal::add($sums[$accountId] ?? '0', (string) $amount);
+        }
 
-        return ($a->getOpeningBalance() ?? 0) + $sum;
+        return $sums;
     }
 
     private function entryCountFor(Account $a): int
@@ -190,7 +189,7 @@ class LedgerStateService
      * loading every account's own ledger — see CLAUDE.md's "The frontend
      * is a per-account editor" and "Matching and linking".
      *
-     * @return array<string, array{count: int, in: int, out: int}>
+     * @return array<string, array{count: int, in: string, out: string}>
      */
     private function imbalanceStatsByAccount(): array
     {
@@ -213,7 +212,7 @@ class LedgerStateService
     /**
      * @param array<int, array<string, mixed>>              $lines
      * @param array<string, array<string, mixed>>           $accountsById
-     * @param array<string, array{count: int, in: int, out: int}> $stats
+     * @param array<string, array{count: int, in: string, out: string}> $stats
      */
     private function accumulateImbalance(array $lines, array $accountsById, array &$stats): void
     {
@@ -225,7 +224,7 @@ class LedgerStateService
             }
             $acc = $accountsById[$accId];
             $bv = $this->lineBalanceValue($line, $acc);
-            if (null === $bv || 0 === $bv['value']) {
+            if (null === $bv || Decimal::isZero($bv['value'])) {
                 continue;
             }
             $enriched[] = ['accountId' => $accId, 'type' => $acc['type'] ?? null, ...$bv];
@@ -243,12 +242,12 @@ class LedgerStateService
         }
 
         foreach ($enriched as $e) {
-            $stats[$e['accountId']] ??= ['count' => 0, 'in' => 0, 'out' => 0];
+            $stats[$e['accountId']] ??= ['count' => 0, 'in' => '0', 'out' => '0'];
             ++$stats[$e['accountId']]['count'];
-            if ($e['value'] > 0) {
-                $stats[$e['accountId']]['in'] += $e['value'];
+            if (Decimal::sign($e['value']) > 0) {
+                $stats[$e['accountId']]['in'] = Decimal::add($stats[$e['accountId']]['in'], $e['value']);
             } else {
-                $stats[$e['accountId']]['out'] += -$e['value'];
+                $stats[$e['accountId']]['out'] = Decimal::add($stats[$e['accountId']]['out'], Decimal::neg($e['value']));
             }
         }
     }
@@ -263,19 +262,19 @@ class LedgerStateService
      * @param array<string, mixed> $line
      * @param array<string, mixed> $acc
      *
-     * @return array{value: int, currency: string}|null
+     * @return array{value: string, currency: string}|null
      */
     private function lineBalanceValue(array $line, array $acc): ?array
     {
         if ('investment' === ($acc['type'] ?? null)) {
             if (isset($line['cashValue'], $line['cashCurrency'])) {
-                return ['value' => (int) $line['cashValue'], 'currency' => (string) $line['cashCurrency']];
+                return ['value' => (string) $line['cashValue'], 'currency' => (string) $line['cashCurrency']];
             }
 
             return null;
         }
 
-        return ['value' => (int) ($line['amount'] ?? 0), 'currency' => $acc['currency'] ?? '???'];
+        return ['value' => (string) ($line['amount'] ?? '0'), 'currency' => $acc['currency'] ?? '???'];
     }
 
     /**
@@ -285,26 +284,26 @@ class LedgerStateService
      * currency. Caller already excludes the single-line ("single") case.
      * Mirrors lib/matching.js's balanceHint() byCur/curs logic exactly.
      *
-     * @param array<int, array{accountId: string, type: ?string, value: int, currency: string}> $enriched
+     * @param array<int, array{accountId: string, type: ?string, value: string, currency: string}> $enriched
      */
     private function enrichedIsBalanced(array $enriched): bool
     {
         $byCur = [];
         foreach ($enriched as $e) {
-            $byCur[$e['currency']] = ($byCur[$e['currency']] ?? 0) + $e['value'];
+            $byCur[$e['currency']] = Decimal::add($byCur[$e['currency']] ?? '0', $e['value']);
         }
         $curs = array_keys($byCur);
 
         if (1 === \count($curs)) {
-            return 0 === $byCur[$curs[0]];
+            return Decimal::isZero($byCur[$curs[0]]);
         }
         if (2 === \count($curs) && 2 === \count($enriched)) {
             [$a, $b] = $enriched;
 
-            return ($a['value'] > 0) !== ($b['value'] > 0);
+            return (Decimal::sign($a['value']) > 0) !== (Decimal::sign($b['value']) > 0);
         }
 
-        return array_all($curs, static fn ($c) => 0 === $byCur[$c]);
+        return array_all($curs, static fn ($c) => Decimal::isZero($byCur[$c]));
     }
 
     /**
@@ -346,15 +345,16 @@ class LedgerStateService
      * own ordered lines so the two numbers can never drift from what the
      * frontend would compute given the same data.
      *
-     * All arithmetic here is exact integer arithmetic — no floats — per
-     * CLAUDE.md. `cost`/`cashValue` are currency-scale integers, `units`/
-     * `amount` are symbol-scale integers; a cross-multiply-then-divide
-     * (see divRoundHalfUp()) keeps every intermediate value an exact
-     * integer of the correct implied scale without this method ever
-     * needing to know either scale explicitly. Portfolio value keeps the
-     * last trade's raw cashValue/units pair rather than a pre-rounded
-     * price, and divides only once, at the end, to avoid compounding
-     * rounding error across many trades.
+     * All arithmetic here is exact decimal arithmetic on canonical strings
+     * (App\Money\Decimal) — no floats, no scaled integers. The only
+     * inexact step is division: Decimal::divide() works to 20 decimal
+     * places, and nothing is rounded per step — intermediate values keep
+     * their full precision through the whole walk. Portfolio value keeps
+     * the last trade's raw cashValue/units pair rather than a pre-divided
+     * price, and divides only once, at the end. The output (both numbers)
+     * is rounded to the trading currency's scale for phase 2 — exactly
+     * what phase 1 sent — and phase 3 makes that precision adaptive.
+     * Mirrors src/lib/stockMath.js.
      *
      * A carried-forward opening position (Account::$openingBalance /
      * $openingBalanceCashValue — set by app:new-year when rolling an
@@ -364,12 +364,12 @@ class LedgerStateService
      * seeds its running column the same way) even before any line exists
      * in the new database.
      *
-     * @return array{cost: int, value: int}
+     * @return array{cost: string, value: string}
      */
     private function stockStatsFor(Account $a): array
     {
-        $openingUnits = $a->getOpeningBalance() ?? 0;
-        $openingCost = $a->getOpeningBalanceCashValue() ?? 0;
+        $openingUnits = $a->getOpeningBalance() ?? '0';
+        $openingCost = $a->getOpeningBalanceCashValue() ?? '0';
         $costState = ['units' => $openingUnits, 'cost' => $openingCost];
         $valueState = ['units' => $openingUnits, 'lastCashValue' => $openingCost, 'lastUnits' => $openingUnits];
 
@@ -378,63 +378,47 @@ class LedgerStateService
             $this->applyPortfolioValueLine($valueState, $line);
         }
 
-        $value = 0 !== $valueState['lastUnits']
-            ? $this->divRoundHalfUp($valueState['units'] * $valueState['lastCashValue'], $valueState['lastUnits'])
-            : 0;
+        $value = Decimal::isZero($valueState['lastUnits'])
+            ? '0'
+            : Decimal::divide(Decimal::mul($valueState['units'], $valueState['lastCashValue']), $valueState['lastUnits']);
+        // Phase 2: API output rounded to the trading currency's scale, exactly
+        // what phase 1 sent. Phase 3 replaces this with adaptive precision.
+        $cashScale = $a->getSymbol()?->getTradingCurrency()->getScale() ?? 2;
 
-        return ['cost' => $costState['cost'], 'value' => $value];
+        return ['cost' => Decimal::round($costState['cost'], $cashScale), 'value' => Decimal::round($value, $cashScale)];
     }
 
-    /** @param array{units: int, cost: int} $state */
+    /** @param array{units: string, cost: string} $state */
     private function applyCostBasisLine(array &$state, Line $l): void
     {
         $amount = $l->getAmount();
-        if ($amount > 0) {
-            $state['units'] += $amount;
-            $state['cost'] += $l->getCashValue() ?? 0;
-        } elseif ($amount < 0) {
-            $sold = min(-$amount, $state['units']);
-            $costRemoved = $state['units'] > 0
-                ? $this->divRoundHalfUp($state['cost'] * $sold, $state['units'])
-                : 0;
-            $state['cost'] -= $costRemoved;
-            $state['units'] -= $sold;
-            if (0 === $state['units']) {
-                // Exact by construction once units is an integer — this
-                // only absorbs ±1-minor-unit rounding dust left over from
-                // divRoundHalfUp() above, not float fuzz.
-                $state['cost'] = 0;
+        $s = Decimal::sign($amount);
+        if ($s > 0) {
+            $state['units'] = Decimal::add($state['units'], $amount);
+            $state['cost'] = Decimal::add($state['cost'], $l->getCashValue() ?? '0');
+        } elseif ($s < 0) {
+            $sold = Decimal::min(Decimal::neg($amount), $state['units']);
+            $costRemoved = Decimal::sign($state['units']) > 0
+                ? Decimal::divide(Decimal::mul($state['cost'], $sold), $state['units'])
+                : '0';
+            $state['cost'] = Decimal::sub($state['cost'], $costRemoved);
+            $state['units'] = Decimal::sub($state['units'], $sold);
+            if (Decimal::isZero($state['units'])) {
+                // Fully sold: cost is exactly 0 by construction (cost×units÷units);
+                // this only guards against 20-dp division dust.
+                $state['cost'] = '0';
             }
         }
     }
 
-    /** @param array{units: int, lastCashValue: int, lastUnits: int} $state */
+    /** @param array{units: string, lastCashValue: string, lastUnits: string} $state */
     private function applyPortfolioValueLine(array &$state, Line $l): void
     {
-        $state['units'] += $l->getAmount();
-        if (0 !== $l->getAmount() && null !== $l->getCashValue()) {
-            $state['lastCashValue'] = abs($l->getCashValue());
-            $state['lastUnits'] = abs($l->getAmount());
+        $state['units'] = Decimal::add($state['units'], $l->getAmount());
+        if (!Decimal::isZero($l->getAmount()) && null !== $l->getCashValue()) {
+            $state['lastCashValue'] = Decimal::abs($l->getCashValue());
+            $state['lastUnits'] = Decimal::abs($l->getAmount());
         }
-    }
-
-    /**
-     * Exact integer division with round-half-up, using only native int
-     * arithmetic (no bcmath, no float division) — safe for any amount a
-     * personal ledger could realistically hold, well within PHP's 64-bit
-     * int range even after the ×2 below. Mirrored exactly in the frontend
-     * (see lib/scale.js) so the two never disagree.
-     */
-    private function divRoundHalfUp(int $numerator, int $denominator): int
-    {
-        if (0 === $denominator) {
-            return 0;
-        }
-        $sign = (($numerator < 0) xor ($denominator < 0)) ? -1 : 1;
-        $num = abs($numerator);
-        $den = abs($denominator);
-
-        return $sign * intdiv(2 * $num + $den, 2 * $den);
     }
 
     /**
@@ -841,8 +825,8 @@ class LedgerStateService
         $account->setName((string) $data['name']);
         $account->setType((string) $data['type']);
         $account->setCurrency($this->resolveCurrency($data['currency'] ?? null));
-        $account->setOpeningBalance(isset($data['openingBalance']) ? (int) $data['openingBalance'] : null);
-        $account->setOpeningBalanceCashValue(isset($data['openingBalanceCashValue']) ? (int) $data['openingBalanceCashValue'] : null);
+        $account->setOpeningBalance(self::amountOrNull($data, 'openingBalance'));
+        $account->setOpeningBalanceCashValue(self::amountOrNull($data, 'openingBalanceCashValue'));
         $symbol = $this->resolveSymbol($data['symbolTicker'] ?? null, $data['symbolCurrency'] ?? null);
         $account->setSymbol($symbol);
         $account->setCounterparty($this->resolveCounterparty($data['counterparty'] ?? null));
@@ -856,7 +840,7 @@ class LedgerStateService
 
         // ISA allowance tracking (IsaAllowanceService) is GBP-only by
         // design (see CLAUDE.md) — it sums every ISA-tagged account's raw
-        // scaled integer directly into one GBP-denominated pool, with no
+        // amount directly into one GBP-denominated pool, with no
         // currency conversion. A non-GBP ISA-kind account would silently
         // mix a foreign currency's amounts into that GBP total, the same
         // class of bug already fixed elsewhere for a genuine scale
@@ -888,187 +872,6 @@ class LedgerStateService
         }
 
         return $account;
-    }
-
-    /**
-     * Rewrites every stored amount denominated in this currency to the
-     * new scale, in one transaction — see CLAUDE.md's "Amounts,
-     * currencies, and reference data" for why `scale` isn't just a
-     * display setting. A decrease that would lose precision on any
-     * existing row is refused outright (nothing partially applies); an
-     * increase is always lossless and always allowed. Returns how many
-     * rows were touched (0 if $newScale equals the current scale — a
-     * genuine no-op, not an error).
-     */
-    public function rescaleCurrency(string $code, int $newScale): int
-    {
-        $currency = $this->em->getRepository(Currency::class)->find($code);
-        if (!$currency) {
-            throw new \InvalidArgumentException(sprintf('Unknown currency code "%s".', $code));
-        }
-        $delta = $newScale - $currency->getScale();
-        if (0 === $delta) {
-            return 0;
-        }
-
-        return $this->em->wrapInTransaction(function () use ($currency, $code, $delta, $newScale) {
-            $conn = $this->em->getConnection();
-            $divisor = 10 ** abs($delta);
-            $op = $delta > 0 ? '*' : '/';
-
-            /** @var array<int, array{sql: string, params: array<int, mixed>}> $targets */
-            $targets = [
-                [
-                    'sql' => "opening_balance IS NOT NULL AND currency = ? AND type != 'investment'",
-                    'table' => 'account',
-                    'column' => 'opening_balance',
-                    'params' => [$code],
-                ],
-                [
-                    'sql' => 'opening_balance_cash_value IS NOT NULL AND symbol_currency = ?',
-                    'table' => 'account',
-                    'column' => 'opening_balance_cash_value',
-                    'params' => [$code],
-                ],
-                [
-                    'sql' => "account_id IN (SELECT id FROM account WHERE currency = ? AND type != 'investment')",
-                    'table' => 'line',
-                    'column' => 'amount',
-                    'params' => [$code],
-                ],
-                [
-                    'sql' => 'cash_value IS NOT NULL AND cash_currency = ?',
-                    'table' => 'line',
-                    'column' => 'cash_value',
-                    'params' => [$code],
-                ],
-                [
-                    'sql' => 'exchange_amount IS NOT NULL AND exchange_currency = ?',
-                    'table' => 'line',
-                    'column' => 'exchange_amount',
-                    'params' => [$code],
-                ],
-            ];
-
-            if ($delta < 0) {
-                $lossy = 0;
-                foreach ($targets as $t) {
-                    $lossy += (int) $conn->fetchOne(
-                        "SELECT COUNT(*) FROM {$t['table']} WHERE {$t['column']} % ? != 0 AND ({$t['sql']})",
-                        [$divisor, ...$t['params']]
-                    );
-                }
-                if ($lossy > 0) {
-                    throw new \InvalidArgumentException(sprintf('Decreasing %s\'s scale would lose precision on %d existing amount(s) — refused.', $code, $lossy));
-                }
-            } else {
-                foreach ($targets as $t) {
-                    $max = $conn->fetchOne(
-                        "SELECT MAX(ABS({$t['column']})) FROM {$t['table']} WHERE {$t['sql']}",
-                        $t['params']
-                    );
-                    if (null !== $max && ((float) $max) * $divisor > self::JS_MAX_SAFE_INTEGER) {
-                        throw new \InvalidArgumentException(sprintf('Increasing %s\'s scale to %d would push %s.%s past the safe-integer range for at least one existing amount — refused.', $code, $newScale, $t['table'], $t['column']));
-                    }
-                }
-            }
-
-            $rowsTouched = 0;
-            foreach ($targets as $t) {
-                $rowsTouched += $conn->executeStatement(
-                    "UPDATE {$t['table']} SET {$t['column']} = {$t['column']} {$op} ? WHERE {$t['sql']}",
-                    [$divisor, ...$t['params']]
-                );
-            }
-
-            $currency->setScale($newScale);
-            $this->em->persist($currency);
-            $this->em->flush();
-
-            return $rowsTouched;
-        });
-    }
-
-    /**
-     * Same shape as rescaleCurrency(), but only touches unit-denominated
-     * amounts for this exact (ticker, tradingCurrency) variant — a
-     * Symbol's own scale never affects cash-side amounts (those are
-     * currency-scaled, via tradingCurrency, which can't change — see
-     * Symbol's docblock).
-     */
-    public function rescaleSymbol(string $ticker, string $tradingCurrencyCode, int $newScale): int
-    {
-        $currency = $this->em->getRepository(Currency::class)->find($tradingCurrencyCode);
-        if (!$currency) {
-            throw new \InvalidArgumentException(sprintf('Unknown currency code "%s".', $tradingCurrencyCode));
-        }
-        $symbol = $this->em->getRepository(Symbol::class)->find(['ticker' => $ticker, 'tradingCurrency' => $currency]);
-        if (!$symbol) {
-            throw new \InvalidArgumentException(sprintf('Unknown symbol "%s" in %s.', $ticker, $tradingCurrencyCode));
-        }
-        $delta = $newScale - $symbol->getScale();
-        if (0 === $delta) {
-            return 0;
-        }
-
-        return $this->em->wrapInTransaction(function () use ($symbol, $ticker, $tradingCurrencyCode, $delta, $newScale) {
-            $conn = $this->em->getConnection();
-            $divisor = 10 ** abs($delta);
-            $op = $delta > 0 ? '*' : '/';
-
-            /** @var array<int, array{sql: string, table: string, column: string, params: array<int, mixed>}> $targets */
-            $targets = [
-                [
-                    'sql' => 'opening_balance IS NOT NULL AND symbol_ticker = ? AND symbol_currency = ?',
-                    'table' => 'account',
-                    'column' => 'opening_balance',
-                    'params' => [$ticker, $tradingCurrencyCode],
-                ],
-                [
-                    'sql' => 'account_id IN (SELECT id FROM account WHERE symbol_ticker = ? AND symbol_currency = ?)',
-                    'table' => 'line',
-                    'column' => 'amount',
-                    'params' => [$ticker, $tradingCurrencyCode],
-                ],
-            ];
-
-            if ($delta < 0) {
-                $lossy = 0;
-                foreach ($targets as $t) {
-                    $lossy += (int) $conn->fetchOne(
-                        "SELECT COUNT(*) FROM {$t['table']} WHERE {$t['column']} % ? != 0 AND ({$t['sql']})",
-                        [$divisor, ...$t['params']]
-                    );
-                }
-                if ($lossy > 0) {
-                    throw new \InvalidArgumentException(sprintf('Decreasing %s (%s)\'s scale would lose precision on %d existing amount(s) — refused.', $ticker, $tradingCurrencyCode, $lossy));
-                }
-            } else {
-                foreach ($targets as $t) {
-                    $max = $conn->fetchOne(
-                        "SELECT MAX(ABS({$t['column']})) FROM {$t['table']} WHERE {$t['sql']}",
-                        $t['params']
-                    );
-                    if (null !== $max && ((float) $max) * $divisor > self::JS_MAX_SAFE_INTEGER) {
-                        throw new \InvalidArgumentException(sprintf('Increasing %s (%s)\'s scale to %d would push %s.%s past the safe-integer range for at least one existing amount — refused.', $ticker, $tradingCurrencyCode, $newScale, $t['table'], $t['column']));
-                    }
-                }
-            }
-
-            $rowsTouched = 0;
-            foreach ($targets as $t) {
-                $rowsTouched += $conn->executeStatement(
-                    "UPDATE {$t['table']} SET {$t['column']} = {$t['column']} {$op} ? WHERE {$t['sql']}",
-                    [$divisor, ...$t['params']]
-                );
-            }
-
-            $symbol->setScale($newScale);
-            $this->em->persist($symbol);
-            $this->em->flush();
-
-            return $rowsTouched;
-        });
     }
 
     /**
@@ -1231,17 +1034,42 @@ class LedgerStateService
             $line->setTransaction(null);
         }
         $line->setAccount($account);
-        $line->setAmount((int) $data['amount']);
+        $line->setAmount(self::amountOrNull($data, 'amount') ?? throw new \InvalidArgumentException('amount is required.'));
         $line->setDate((string) $data['date']);
         $line->setDescription((string) ($data['description'] ?? ''));
         $line->setLineOrder(isset($data['order']) ? (int) $data['order'] : null);
-        $line->setCashValue(isset($data['cashValue']) ? (int) $data['cashValue'] : null);
+        $line->setCashValue(self::amountOrNull($data, 'cashValue'));
         $line->setCashCurrency($this->resolveCurrency($data['cashCurrency'] ?? null));
-        $line->setExchangeAmount(isset($data['exchangeAmount']) ? (int) $data['exchangeAmount'] : null);
+        $line->setExchangeAmount(self::amountOrNull($data, 'exchangeAmount'));
         $line->setExchangeCurrency($this->resolveCurrency($data['exchangeCurrency'] ?? null));
         $line->setTags($this->resolveTags($data['tags'] ?? []));
 
         return $line;
+    }
+
+    /**
+     * An amount field from a JSON payload → canonical decimal string (null
+     * if absent). Must be a JSON *string*: a bare JSON number is ambiguous
+     * (a legacy scaled integer, or a float?) — app:import-local-storage
+     * upgrades legacy integers via App\Money\LegacyIntegerAmounts before
+     * they ever reach here.
+     *
+     * @param array<string, mixed> $data
+     */
+    private static function amountOrNull(array $data, string $key): ?string
+    {
+        if (!isset($data[$key])) {
+            return null;
+        }
+        if (!\is_string($data[$key])) {
+            throw new \InvalidArgumentException(sprintf('%s must be a decimal string.', $key));
+        }
+        $c = Decimal::parse($data[$key]);
+        if (null === $c) {
+            throw new \InvalidArgumentException(sprintf('%s "%s" is not a decimal amount.', $key, $data[$key]));
+        }
+
+        return $c;
     }
 
     /**

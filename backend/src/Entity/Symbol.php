@@ -8,8 +8,9 @@ use Doctrine\ORM\Mapping as ORM;
 /**
  * Natural-key reference entity: the ticker itself is the primary key —
  * same half-normalization pattern as Currency, see CLAUDE.md. `scale` is
- * the unit precision for this security (how many decimal places a
- * fractional share is tracked to) — NOT a currency scale. `tradingCurrency`
+ * the minimum number of decimal places this security's units are
+ * displayed with — NOT a currency scale, and never affecting stored
+ * amounts (exact decimal strings, see App\Money\Decimal). `tradingCurrency`
  * is here rather than on Account because a given ticker always trades in
  * one currency; an investment Account's own `currency` field is unused
  * once it has a `symbol` — see Account.php's docblock.
@@ -21,9 +22,8 @@ use Doctrine\ORM\Mapping as ORM;
  * "AAPL" on Nasdaq in USD and "AAPL" as an LSE-listed line in GBP are two
  * separate Symbol rows). `tradingCurrency` is therefore immutable once
  * set: changing it would mean changing part of the row's own identity,
- * which is a new row, not an edit — see LedgerStateService's rescale
- * operation and the admin endpoints for what *is* editable (`name`,
- * `scale`).
+ * which is a new row, not an edit — see SymbolController's admin
+ * endpoints for what *is* editable (`name`, `scale`).
  */
 #[ORM\Entity(repositoryClass: SymbolRepository::class)]
 class Symbol

@@ -2,10 +2,8 @@
 
 namespace App\Controller;
 
-use App\Money\ScaleRegistry;
-use App\Money\WireAmounts;
+use App\Money\Decimal;
 use App\Service\MatchingService;
-use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;
@@ -19,7 +17,7 @@ use Symfony\Component\Routing\Attribute\Route;
 #[Route('/api/match-candidates')]
 class MatchController
 {
-    public function __construct(private readonly MatchingService $matching, private readonly EntityManagerInterface $em)
+    public function __construct(private readonly MatchingService $matching)
     {
     }
 
@@ -39,13 +37,11 @@ class MatchController
             return new JsonResponse(['error' => 'mode must be "mirrored" or "direct"'], 400);
         }
 
-        $registry = ScaleRegistry::fromEntityManager($this->em);
-        try {
-            $amountInt = WireAmounts::amountIn((string) $amount, $currency, $registry);
-        } catch (\InvalidArgumentException $e) {
-            return new JsonResponse(['error' => $e->getMessage()], 400);
+        $amountDecimal = Decimal::parse((string) $amount);
+        if (null === $amountDecimal) {
+            return new JsonResponse(['error' => 'amount must be a decimal number'], 400);
         }
 
-        return new JsonResponse(WireAmounts::candidatesOut($this->matching->findCandidates($currency, $amountInt, $date, $excludeAccountIds, $mode), $registry));
+        return new JsonResponse($this->matching->findCandidates($currency, $amountDecimal, $date, $excludeAccountIds, $mode));
     }
 }

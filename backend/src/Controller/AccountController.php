@@ -2,10 +2,7 @@
 
 namespace App\Controller;
 
-use App\Money\ScaleRegistry;
-use App\Money\WireAmounts;
 use App\Service\LedgerStateService;
-use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;
@@ -17,7 +14,7 @@ use Symfony\Component\Routing\Attribute\Route;
 #[Route('/api/accounts')]
 class AccountController
 {
-    public function __construct(private readonly LedgerStateService $state, private readonly EntityManagerInterface $em)
+    public function __construct(private readonly LedgerStateService $state)
     {
     }
 
@@ -30,7 +27,7 @@ class AccountController
     #[Route('', methods: ['GET'])]
     public function list(): JsonResponse
     {
-        return new JsonResponse(WireAmounts::accountsOut($this->state->accountsWithStats(), ScaleRegistry::fromEntityManager($this->em)));
+        return new JsonResponse($this->state->accountsWithStats());
     }
 
     /**
@@ -40,7 +37,7 @@ class AccountController
     #[Route('/{id}/ledger', methods: ['GET'])]
     public function ledger(string $id): JsonResponse
     {
-        return new JsonResponse(['records' => WireAmounts::recordsOut($this->state->accountLedger($id), ScaleRegistry::fromEntityManager($this->em))]);
+        return new JsonResponse(['records' => $this->state->accountLedger($id)]);
     }
 
     #[Route('/{id}', methods: ['PUT'])]
@@ -52,9 +49,7 @@ class AccountController
         }
 
         try {
-            $registry = ScaleRegistry::fromEntityManager($this->em);
-
-            return new JsonResponse(WireAmounts::accountOut($this->state->upsertAccount($id, WireAmounts::accountIn($body, $registry)), $registry));
+            return new JsonResponse($this->state->upsertAccount($id, $body));
         } catch (\InvalidArgumentException $e) {
             return new JsonResponse(['error' => $e->getMessage()], 400);
         }

@@ -2,7 +2,9 @@
 
 namespace App\Command;
 
+use App\Entity\Currency;
 use App\Entity\Symbol;
+use App\Money\LegacyIntegerAmounts;
 use App\Service\LedgerStateService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -41,6 +43,12 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  * database) is part of that data, not something this app's own baseline
  * list can be expected to anticipate — omit it and any account/line
  * referencing an unrecognized currency code fails the whole import.
+ *
+ * Amounts in the file may be canonical decimal strings (the current
+ * format) or, in an export written before phase 2 of the decimal
+ * migration, legacy scaled integers — the latter are upgraded to decimal
+ * strings on the fly via App\Money\LegacyIntegerAmounts, each with its own
+ * currency's/symbol's scale.
  */
 #[AsCommand(
     name: 'app:import-local-storage',
@@ -122,6 +130,30 @@ class ImportLocalStorageCommand extends Command
 
         $settings = $data['settings'] ?? [];
         $currencies = isset($data['currencies']) && \is_array($data['currencies']) ? $data['currencies'] : [];
+
+        // Exports written before phase 2 of the decimal migration carry
+        // amounts as scaled integers — upgrade them with each amount's own
+        // scale (the file's declared currencies win over this database's).
+        $currencyScales = [];
+        foreach ($this->em->getRepository(Currency::class)->findAll() as $c) {
+            $currencyScales[$c->getCode()] = $c->getScale();
+        }
+        foreach ($currencies as $c) {
+            if (isset($c['code'], $c['scale'])) {
+                $currencyScales[(string) $c['code']] = (int) $c['scale'];
+            }
+        }
+        $symbolScales = [];
+        foreach ($this->em->getRepository(Symbol::class)->findAll() as $s) {
+            $symbolScales[$s->getTicker().'|'.$s->getTradingCurrency()->getCode()] = $s->getScale();
+        }
+        try {
+            ['accounts' => $accounts, 'records' => $records] = LegacyIntegerAmounts::upgrade($accounts, $records, $currencyScales, $symbolScales);
+        } catch (\InvalidArgumentException $e) {
+            $io->error($e->getMessage());
+
+            return Command::FAILURE;
+        }
 
         $linkedCount = \count(array_filter($records, static fn ($r) => null !== ($r['transactionId'] ?? null)));
         $standaloneCount = \count($records) - $linkedCount;

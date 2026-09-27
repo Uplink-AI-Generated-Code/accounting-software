@@ -28,10 +28,10 @@ use Doctrine\ORM\Mapping as ORM;
  * meanings this field can have — "where this account is held" for a real
  * account, "who was paid/who paid" for an income/expense one — the UI
  * labels the field "Institution" or "Counterparty" depending on `type`,
- * but it's one column, one entity, either way. `openingBalance` is stored
- * as an integer scaled by the account's currency's `scale` (or, for an
- * investment account, its symbol's `scale`) — never a float, to avoid
- * floating-point drift; see CLAUDE.md. For an investment account (one with
+ * but it's one column, one entity, either way. `openingBalance` (and
+ * `openingBalanceCashValue`) is a canonical decimal string, exact (stored
+ * as TEXT via the `decimal_text` type) — never a float, to avoid
+ * floating-point drift; see App\Money\Decimal. For an investment account (one with
  * a `symbol` set), `currency` is unused/left null: trading currency is
  * derived via `symbol.tradingCurrency` instead of being stored twice.
  * `openingBalanceCashValue` only ever means something alongside a nonzero
@@ -70,11 +70,11 @@ class Account
     #[ORM\JoinColumn(name: 'currency', referencedColumnName: 'code', nullable: true)]
     private ?Currency $currency = null;
 
-    #[ORM\Column(nullable: true)]
-    private ?int $openingBalance = null;
+    #[ORM\Column(type: 'decimal_text', nullable: true)]
+    private ?string $openingBalance = null;
 
-    #[ORM\Column(nullable: true)]
-    private ?int $openingBalanceCashValue = null;
+    #[ORM\Column(type: 'decimal_text', nullable: true)]
+    private ?string $openingBalanceCashValue = null;
 
     // Two join columns, not one — Symbol's primary key is now the pair
     // (ticker, tradingCurrency), so referencing one requires both. Kept
@@ -151,24 +151,24 @@ class Account
         return $this;
     }
 
-    public function getOpeningBalance(): ?int
+    public function getOpeningBalance(): ?string
     {
         return $this->openingBalance;
     }
 
-    public function setOpeningBalance(?int $openingBalance): static
+    public function setOpeningBalance(?string $openingBalance): static
     {
         $this->openingBalance = $openingBalance;
 
         return $this;
     }
 
-    public function getOpeningBalanceCashValue(): ?int
+    public function getOpeningBalanceCashValue(): ?string
     {
         return $this->openingBalanceCashValue;
     }
 
-    public function setOpeningBalanceCashValue(?int $openingBalanceCashValue): static
+    public function setOpeningBalanceCashValue(?string $openingBalanceCashValue): static
     {
         $this->openingBalanceCashValue = $openingBalanceCashValue;
 

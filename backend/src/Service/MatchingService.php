@@ -4,6 +4,7 @@ namespace App\Service;
 
 use App\Entity\Account;
 use App\Entity\Line;
+use App\Money\Decimal;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
@@ -30,13 +31,16 @@ class MatchingService
     }
 
     /**
+     * $targetAmount is a canonical decimal string (see App\Money\Decimal);
+     * comparing canonical strings with `!==` is exact equality.
+     *
      * @param string[] $excludeAccountIds
      *
      * @return array<int, array{lineId: int, line: array<string, mixed>, account: array<string, mixed>}>
      */
     public function findCandidates(
         string $targetCurrency,
-        int $targetAmount,
+        string $targetAmount,
         string $date,
         array $excludeAccountIds,
         string $mode,
@@ -80,14 +84,14 @@ class MatchingService
 
     // Mirrors getComparableAmount (direct=false) / getDirectComparableAmount
     // (direct=true) exactly — see lib/matching.js.
-    private function comparableAmount(Line $line, Account $acc, string $targetCurrency, bool $direct): ?int
+    private function comparableAmount(Line $line, Account $acc, string $targetCurrency, bool $direct): ?string
     {
         if ('investment' === $acc->getType()) {
             if ($line->getCashCurrency()?->getCode() !== $targetCurrency || null === $line->getCashValue()) {
                 return null;
             }
 
-            return $direct ? -$line->getCashValue() : $line->getCashValue();
+            return $direct ? Decimal::neg($line->getCashValue()) : $line->getCashValue();
         }
         if ($acc->getCurrency()?->getCode() === $targetCurrency) {
             return $line->getAmount();

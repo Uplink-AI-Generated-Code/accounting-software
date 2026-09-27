@@ -19,7 +19,8 @@ class DecimalTextTypeTest extends TestCase
 
     public function testDeclaresTextAffinityNotNumeric(): void
     {
-        self::assertSame('TEXT', $this->type->getSQLDeclaration([], $this->platform));
+        // SQLite gives any declared type containing "CLOB" TEXT affinity.
+        self::assertSame('CLOB', $this->type->getSQLDeclaration([], $this->platform));
     }
 
     public function testStoresCanonicalStringsVerbatim(): void

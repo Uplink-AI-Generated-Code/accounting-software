@@ -19,9 +19,9 @@ use Doctrine\ORM\Mapping as ORM;
  * see CLAUDE.md's data model section for what each mirrored-sign field
  * means.
  *
- * `amount`/`cashValue`/`exchangeAmount` are integers scaled by a currency's
- * (or, for units on an investment account, a symbol's) `scale` — never
- * floats, to avoid floating-point drift; see CLAUDE.md. `cashCurrency`/
+ * `amount`/`cashValue`/`exchangeAmount` are canonical decimal strings,
+ * exact (stored as TEXT via the `decimal_text` type) — never floats, to
+ * avoid floating-point drift; see App\Money\Decimal. `cashCurrency`/
  * `exchangeCurrency` are FKs to the Currency entity rather than free
  * strings.
  *
@@ -60,8 +60,8 @@ class Line
     #[ORM\JoinColumn(nullable: false, onDelete: 'CASCADE')]
     private Account $account;
 
-    #[ORM\Column]
-    private int $amount;
+    #[ORM\Column(type: 'decimal_text')]
+    private string $amount;
 
     #[ORM\Column(length: 10)]
     private string $date;
@@ -72,15 +72,15 @@ class Line
     #[ORM\Column(nullable: true)]
     private ?int $lineOrder = null;
 
-    #[ORM\Column(nullable: true)]
-    private ?int $cashValue = null;
+    #[ORM\Column(type: 'decimal_text', nullable: true)]
+    private ?string $cashValue = null;
 
     #[ORM\ManyToOne(targetEntity: Currency::class)]
     #[ORM\JoinColumn(name: 'cash_currency', referencedColumnName: 'code', nullable: true)]
     private ?Currency $cashCurrency = null;
 
-    #[ORM\Column(nullable: true)]
-    private ?int $exchangeAmount = null;
+    #[ORM\Column(type: 'decimal_text', nullable: true)]
+    private ?string $exchangeAmount = null;
 
     #[ORM\ManyToOne(targetEntity: Currency::class)]
     #[ORM\JoinColumn(name: 'exchange_currency', referencedColumnName: 'code', nullable: true)]
@@ -128,12 +128,12 @@ class Line
         return $this;
     }
 
-    public function getAmount(): int
+    public function getAmount(): string
     {
         return $this->amount;
     }
 
-    public function setAmount(int $amount): static
+    public function setAmount(string $amount): static
     {
         $this->amount = $amount;
 
@@ -176,12 +176,12 @@ class Line
         return $this;
     }
 
-    public function getCashValue(): ?int
+    public function getCashValue(): ?string
     {
         return $this->cashValue;
     }
 
-    public function setCashValue(?int $cashValue): static
+    public function setCashValue(?string $cashValue): static
     {
         $this->cashValue = $cashValue;
 
@@ -200,12 +200,12 @@ class Line
         return $this;
     }
 
-    public function getExchangeAmount(): ?int
+    public function getExchangeAmount(): ?string
     {
         return $this->exchangeAmount;
     }
 
-    public function setExchangeAmount(?int $exchangeAmount): static
+    public function setExchangeAmount(?string $exchangeAmount): static
     {
         $this->exchangeAmount = $exchangeAmount;
 

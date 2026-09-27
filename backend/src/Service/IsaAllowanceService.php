@@ -5,6 +5,8 @@ namespace App\Service;
 use App\Entity\Account;
 use App\Entity\Line;
 use App\Entity\Transaction;
+use App\Money\Decimal;
+use BcMath\Number;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
@@ -33,13 +35,13 @@ class IsaAllowanceService
     ) {
     }
 
-    /** @return array{byKind: array<string, int>, total: int} */
+    /** @return array{byKind: array<string, string>, total: string} */
     public function computeUsage(int $startYear): array
     {
         $start = sprintf('%d-04-06', $startYear);
         $end = sprintf('%d-04-05', $startYear + 1);
 
-        $byKind = array_fill_keys(self::ISA_KINDS, 0);
+        $byKind = array_fill_keys(self::ISA_KINDS, new Number(0));
 
         $accounts = array_map($this->ledgerState->accountToArray(...), $this->em->getRepository(Account::class)->findAll());
         $products = $this->isaProducts($accounts);
@@ -52,7 +54,9 @@ class IsaAllowanceService
         }
         $isaAccountIds = array_keys($isaAccountIds);
         if (!$isaAccountIds) {
-            return ['byKind' => $byKind, 'total' => 0];
+            $byKindOut = array_map(static fn (Number $n) => Decimal::canonical((string) $n), $byKind);
+
+            return ['byKind' => $byKindOut, 'total' => Decimal::sum($byKindOut)];
         }
 
         $transactions = $this->transactionsTouching($isaAccountIds);
@@ -60,7 +64,7 @@ class IsaAllowanceService
         // Non-flexible: every deposit counts, withdrawals never reduce
         // anything.
         foreach (array_filter($products, static fn ($p) => !$p['flexible']) as $product) {
-            $deposits = 0;
+            $deposits = new Number(0);
             foreach ($transactions as $t) {
                 foreach ($t['lines'] as $line) {
                     if (!\in_array($line['accountId'], $product['accountIds'], true)) {
@@ -78,7 +82,7 @@ class IsaAllowanceService
                     }
                 }
             }
-            $byKind[$product['kind']] = ($byKind[$product['kind']] ?? 0) + $deposits;
+            $byKind[$product['kind']] = ($byKind[$product['kind']] ?? new Number(0)) + $deposits;
         }
 
         // Flexible: simulate withdrawal/replacement ordering together, in
@@ -92,14 +96,14 @@ class IsaAllowanceService
                 $state[$p['accountId']] = [
                     'product' => $p,
                     'priorBalance' => $this->priorPoolEntering($p, $accounts, $transactions, $start),
-                    'priorReplaceable' => 0,
-                    'thisYearBalance' => 0,
+                    'priorReplaceable' => new Number(0),
+                    'thisYearBalance' => new Number(0),
                 ];
                 foreach ($p['accountIds'] as $id) {
                     $accountToProduct[$id] = $p;
                 }
             }
-            $globalReplaceable = 0; // this-year money, replaceable into any flexible ISA
+            $globalReplaceable = new Number(0); // this-year money, replaceable into any flexible ISA
 
             $events = [];
             foreach ($transactions as $t) {
@@ -109,7 +113,7 @@ class IsaAllowanceService
                         continue;
                     }
                     $amount = $this->contributionAmount($line, $accounts);
-                    if (null === $amount || !$amount) {
+                    if (null === $amount || 0 === $amount->compare(0)) {
                         continue;
                     }
                     if ($line['date'] < $start || $line['date'] > $end) {
@@ -199,11 +203,13 @@ class IsaAllowanceService
             // this-year-sourced money is currently sitting in it — see
             // isa.js's computeIsaUsage for the full reasoning.
             foreach ($state as $s) {
-                $byKind[$s['product']['kind']] = ($byKind[$s['product']['kind']] ?? 0) + max(0, $s['thisYearBalance']);
+                $byKind[$s['product']['kind']] = ($byKind[$s['product']['kind']] ?? new Number(0)) + max(new Number(0), $s['thisYearBalance']);
             }
         }
 
-        return ['byKind' => $byKind, 'total' => array_sum($byKind)];
+        $byKindOut = array_map(static fn (Number $n) => Decimal::canonical((string) $n), $byKind);
+
+        return ['byKind' => $byKindOut, 'total' => Decimal::sum($byKindOut)];
     }
 
     /** @param array<int, array<string, mixed>> $accounts */
@@ -294,13 +300,13 @@ class IsaAllowanceService
      * @param array<int, array<string, mixed>>  $accounts
      * @param array<int, array<string, mixed>>  $transactions
      */
-    private function priorPoolEntering(array $product, array $accounts, array $transactions, string $yearStart): int
+    private function priorPoolEntering(array $product, array $accounts, array $transactions, string $yearStart): Number
     {
-        $pool = 0;
+        $pool = new Number(0);
         foreach ($product['accountIds'] as $id) {
             $acc = $this->findAccount($accounts, $id);
             if ($acc) {
-                $pool += $acc['openingBalance'] ?? 0;
+                $pool += new Number($acc['openingBalance'] ?? '0');
             }
         }
         foreach ($transactions as $t) {
@@ -309,7 +315,7 @@ class IsaAllowanceService
                     continue;
                 }
                 $amount = $this->contributionAmount($line, $accounts);
-                if (null === $amount || !$amount) {
+                if (null === $amount || 0 === $amount->compare(0)) {
                     continue;
                 }
                 if ($line['date'] >= $yearStart) {
@@ -321,14 +327,14 @@ class IsaAllowanceService
             }
         }
 
-        return max(0, $pool);
+        return max(new Number(0), $pool);
     }
 
     /**
-     * The line's contribution to the ISA pool, in currency-scale units.
-     * `amount` is a cash figure for every account type except
-     * `investment`, where it's a unit count scaled by the Symbol's own
-     * scale (see CLAUDE.md's "Amounts, currencies, and reference data").
+     * The line's contribution to the ISA pool, as a cash amount (null if
+     * it has none). `amount` is a cash figure for every account type except
+     * `investment`, where it's a unit count (see CLAUDE.md's "Amounts,
+     * currencies, and reference data").
      * For an investment line we use `cashValue` instead — same
      * mirrored-sign convention as `amount` (positive = value entering the
      * account) — and treat an untagged trade (no `cashValue`) as having no
@@ -337,14 +343,12 @@ class IsaAllowanceService
      * @param array<string, mixed>             $line
      * @param array<int, array<string, mixed>> $accounts
      */
-    private function contributionAmount(array $line, array $accounts): ?int
+    private function contributionAmount(array $line, array $accounts): ?Number
     {
         $acc = $this->findAccount($accounts, $line['accountId']);
-        if ($acc && 'investment' === $acc['type']) {
-            return $line['cashValue'] ?? null;
-        }
+        $raw = $acc && 'investment' === $acc['type'] ? ($line['cashValue'] ?? null) : $line['amount'];
 
-        return $line['amount'];
+        return null === $raw ? null : new Number($raw);
     }
 
     /** @param array<int, array<string, mixed>> $accounts */

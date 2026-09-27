@@ -8,9 +8,10 @@ use Doctrine\ORM\Mapping as ORM;
 /**
  * Natural-key reference entity: the currency code itself is the primary
  * key (no surrogate id), deliberately, so raw DB records stay
- * human-readable — see CLAUDE.md. `scale` is the number of decimal places
- * (2 for GBP/USD/EUR, 0 for JPY, etc.) that every amount stored against
- * this currency is scaled by.
+ * human-readable — see CLAUDE.md. `scale` is the minimum number of
+ * decimal places amounts in this currency are displayed with (2 for
+ * GBP/USD/EUR, 0 for JPY, etc.) — stored amounts are exact decimal
+ * strings (see App\Money\Decimal) and never depend on it.
  */
 #[ORM\Entity(repositoryClass: CurrencyRepository::class)]
 class Currency

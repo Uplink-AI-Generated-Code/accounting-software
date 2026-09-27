@@ -3,7 +3,6 @@
 namespace App\Controller;
 
 use App\Entity\Currency;
-use App\Service\LedgerStateService;
 use Doctrine\DBAL\Exception\ForeignKeyConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -14,9 +13,10 @@ use Symfony\Component\Routing\Attribute\Route;
  * Full admin CRUD for Currency — see
  * docs/superpowers/specs/2026-09-26-currency-symbol-admin-design.md.
  * `code` is immutable once created (it's the primary key); only `name`
- * and `scale` can be edited via PATCH. A `scale` edit rewrites every
- * dependent stored amount transactionally — see
- * LedgerStateService::rescaleCurrency(). Delete relies on the schema's
+ * and `scale` can be edited via PATCH. `scale` is the minimum number of
+ * decimals displayed for amounts in this currency; changing it never
+ * touches stored amounts (they're exact decimal strings — see
+ * App\Money\Decimal). Delete relies on the schema's
  * own foreign-key enforcement to refuse a still-referenced currency;
  * this controller just translates that into a clean 409.
  */
@@ -25,7 +25,6 @@ class CurrencyController
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly LedgerStateService $state,
     ) {
     }
 
@@ -94,7 +93,6 @@ class CurrencyController
             return new JsonResponse(['error' => 'Invalid JSON body'], 400);
         }
 
-        $rowsTouched = 0;
         try {
             if (\array_key_exists('scale', $body)) {
                 $scale = $body['scale'];
@@ -105,7 +103,9 @@ class CurrencyController
                 if ($scale < 0 || $scale > 12) {
                     return new JsonResponse(['error' => 'Scale must be between 0 and 12'], 400);
                 }
-                $rowsTouched = $this->state->rescaleCurrency($code, $scale);
+                $currency->setScale($scale);
+                $this->em->persist($currency);
+                $this->em->flush();
             }
             if (\array_key_exists('name', $body)) {
                 $currency->setName(null === $body['name'] ? null : trim((string) $body['name']));
@@ -122,7 +122,6 @@ class CurrencyController
                 'scale' => $currency->getScale(),
                 'name' => $currency->getName(),
             ], static fn ($v) => null !== $v),
-            'rowsRescaled' => $rowsTouched,
         ]);
     }
 
