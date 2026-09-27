@@ -686,8 +686,11 @@ class LedgerStateService
     {
         $this->em->wrapInTransaction(function () use ($operations) {
             $this->assertOperationDatesInActiveTaxYear($operations);
+            $tempIds = [];
             foreach ($operations as $op) {
                 match ($op['op'] ?? null) {
+                    'createLine' => $this->opCreateLine($op, $tempIds),
+                    'updateLine' => $this->opUpdateLine($op, $tempIds),
                     'deleteLine' => $this->opDeleteLine($op),
                     'deleteTransaction' => $this->opDeleteTransaction($op),
                     'upsertLine' => $this->opUpsertLine($op),
@@ -696,6 +699,79 @@ class LedgerStateService
                 };
             }
         });
+    }
+
+    /** @param array<string, mixed> $op */
+    private function opCreateLine(array $op, array &$tempIds): void
+    {
+        if (!isset($op['accountId'])) {
+            throw new \InvalidArgumentException('createLine requires accountId.');
+        }
+        $accountId = (string) $op['accountId'];
+        $account = $this->em->getRepository(Account::class)->find($accountId);
+        if (!$account) {
+            throw new \InvalidArgumentException(sprintf('Unknown account "%s".', $accountId));
+        }
+        $line = $this->hydrateLine(new Line(), $op, null, $account);
+        $this->em->persist($line);
+        $this->em->flush();
+
+        if (isset($op['tempId'])) {
+            $tempId = (string) $op['tempId'];
+            if (isset($tempIds[$tempId])) {
+                throw new \InvalidArgumentException(sprintf('Duplicate tempId "%s".', $tempId));
+            }
+            $tempIds[$tempId] = $line->getId();
+        }
+    }
+
+    /** @param array<string, mixed> $op */
+    private function opUpdateLine(array $op, array &$tempIds): void
+    {
+        $lineId = $this->resolveLineRef($op['lineId'] ?? null, $tempIds);
+        $line = $this->em->getRepository(Line::class)->find($lineId);
+        if (!$line) {
+            throw new \InvalidArgumentException(sprintf('Unknown line id "%s".', $lineId));
+        }
+        if (!isset($op['accountId'])) {
+            throw new \InvalidArgumentException('updateLine requires accountId.');
+        }
+        $accountId = (string) $op['accountId'];
+        $account = $this->em->getRepository(Account::class)->find($accountId);
+        if (!$account) {
+            throw new \InvalidArgumentException(sprintf('Unknown account "%s".', $accountId));
+        }
+        // Passing the line's *current* transaction preserves membership —
+        // updateLine never links or unlinks anything (see linkLines/unlinkLine).
+        $this->hydrateLine($line, $op, $line->getTransaction(), $account);
+        $this->em->persist($line);
+        $this->em->flush();
+    }
+
+    /**
+     * Resolves an op's line reference — either a real numeric Line id, or a
+     * `tempId` string registered by an earlier `createLine` in this same
+     * batch — to a real Line id. Every op that names a line
+     * (updateLine/deleteLine/linkLines/unlinkLine) goes through this rather
+     * than casting to int directly, so a bad or unresolved reference is a
+     * clear 400 instead of silently becoming line id 0.
+     *
+     * @param array<string, int> $tempIds
+     */
+    private function resolveLineRef(mixed $ref, array $tempIds): int
+    {
+        if (null === $ref) {
+            throw new \InvalidArgumentException('A line reference is required.');
+        }
+        $key = (string) $ref;
+        if (isset($tempIds[$key])) {
+            return $tempIds[$key];
+        }
+        if (!is_numeric($ref)) {
+            throw new \InvalidArgumentException(sprintf('Unresolved line reference "%s".', $key));
+        }
+
+        return (int) $ref;
     }
 
     /** @param array<string, mixed> $op */
