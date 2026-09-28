@@ -152,10 +152,7 @@ export function reorderSameDate(rows, idx, dir) {
   [newOrderArr[localPos], newOrderArr[targetLocalPos]] = [newOrderArr[targetLocalPos], newOrderArr[localPos]];
   return newOrderArr.map((absIdx, seq) => {
     const r = rows[absIdx];
-    return {
-      transactionId: r.record.transactionId,
-      lineId: r.record.transactionId ? null : r.line.id,
-      lines: r.record.lines.map((l) => (l === r.line ? { ...l, order: seq } : l)),
-    };
+    const { id: lineId, ...line } = r.line;
+    return { lineId, line: { ...line, order: seq } };
   });
 }

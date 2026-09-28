@@ -465,12 +465,11 @@ class LedgerStateService
             $this->em->flush();
 
             $connection = $this->em->getConnection();
-            // line_tag first — same reason as deleteTransactionLines():
-            // even though SQLite's foreign_keys pragma is now enforced
-            // everywhere (see ForeignKeysMiddleware), so ON DELETE CASCADE
-            // on line_tag does fire on its own now, this explicit delete is
-            // kept for clarity/defense-in-depth rather than relied upon
-            // implicitly.
+            // Delete line_tag first for clarity/defense-in-depth: even though
+            // SQLite's foreign_keys pragma is enforced everywhere (see
+            // ForeignKeysMiddleware), so ON DELETE CASCADE on line_tag fires
+            // on its own now, this explicit delete is kept rather than
+            // relied upon implicitly.
             $connection->executeStatement('DELETE FROM line_tag');
             $connection->executeStatement('DELETE FROM line');
             $connection->executeStatement('DELETE FROM transactions');
@@ -653,163 +652,268 @@ class LedgerStateService
 
     /**
      * Applies an ordered list of operations atomically — the shared path
-     * for every ledger write. Four primitives, each doing exactly one
+     * for every ledger write. Five primitives, each doing exactly one
      * thing:
      *
-     *  - `upsertLine` {lineId?, line}: create (lineId omitted/null) or
-     *    update-in-place (lineId given) one standalone line. Always
-     *    leaves the line with no transaction, even if it had one before
-     *    (it shouldn't — see below).
-     *  - `deleteLine` {lineId}: delete one standalone line outright.
-     *  - `upsertTransaction` {transactionId, lines}: replace a
-     *    transaction's lines wholesale (delete then reinsert, same as
-     *    before) — `transactionId` is always frontend-provided (see
-     *    CLAUDE.md), never null, for both create and update.
-     *  - `deleteTransaction` {transactionId}: delete a transaction and
-     *    all of its lines.
+     *  - `createLine` {accountId, amount, date, description, ...}: create
+     *    one standalone line (no transaction). Fields are flat in the op.
+     *  - `updateLine` {lineId|tempId, accountId, amount, date, description, ...}:
+     *    update one existing line in place, preserving its current
+     *    transaction membership (if any). Membership never changes here;
+     *    see linkLines/unlinkLine instead.
+     *  - `deleteLine` {lineId|tempId}: delete one line outright, breaking
+     *    any transaction membership and cascading to delete its tags. If
+     *    this drops its transaction below 2 lines, the transaction is
+     *    dissolved (see demoteOrDeleteTransactionIfBelowMinimum()).
+     *  - `linkLines` {lineIds}: puts 2+ lines (real ids and/or tempIds
+     *    registered by an earlier createLine in this same batch) into one
+     *    transaction. If the given lines already share a single existing
+     *    transaction, that transaction is extended (or left as-is, if it's
+     *    idempotently re-run); if none has one, a fresh transaction is
+     *    created with a backend-generated id. Throws if the lines span two
+     *    *different* existing transactions, or if the same line id is
+     *    given twice — it never breaks a line out of an existing
+     *    transaction on its own (a caller that wants that unlinks first).
+     *  - `unlinkLine` {lineId|tempId}: removes one line from its transaction
+     *    (if any), leaving it standalone. No-op if the line is already
+     *    standalone. If this drops its transaction below 2 lines, the
+     *    transaction is dissolved the same way deleteLine's cascade does.
      *
      * A plain single save is one op. A merge (linking two standalone
-     * lines, or adding a standalone line to an existing transaction)
-     * deletes the absorbed standalone line(s) and upserts the transaction
-     * with the full new line set — the absorbed line's *id* doesn't
-     * survive the merge, a fresh row is created inside the transaction,
-     * matching this endpoint's existing "wholesale replace, don't diff"
-     * philosophy. A split-off/unlink is the reverse: delete (or shrink)
-     * the transaction, upsert new standalone lines for whatever came out
-     * of it. A same-date reorder is several upserts (line or transaction,
-     * whichever each affected row actually is) in one call. See
-     * CLAUDE.md's "Data model" section for the full worked examples.
+     * lines, or adding a standalone line to an existing transaction) is
+     * createLine/updateLine ops followed by a linkLines op — e.g. saving a
+     * new expense leg that matches an existing standalone bank line is
+     * `createLine` (the expense leg) + `linkLines` (both line ids). A
+     * split-off/unlink is one or more `unlinkLine` ops, one per line being
+     * detached. A same-date reorder is several updateLine ops in one call.
      *
-     * @param array<int, array{op: string, lineId?: int, transactionId?: string, line?: array<string, mixed>, lines?: array<int, array<string, mixed>>}> $operations
+     * @param array<int, array<string, mixed>> $operations
      */
     public function applyLedgerOperations(array $operations): void
     {
         $this->em->wrapInTransaction(function () use ($operations) {
             $this->assertOperationDatesInActiveTaxYear($operations);
+            $tempIds = [];
             foreach ($operations as $op) {
                 match ($op['op'] ?? null) {
-                    'deleteLine' => $this->opDeleteLine($op),
-                    'deleteTransaction' => $this->opDeleteTransaction($op),
-                    'upsertLine' => $this->opUpsertLine($op),
-                    'upsertTransaction' => $this->opUpsertTransaction($op),
-                    default => null,
+                    'createLine' => $this->opCreateLine($op, $tempIds),
+                    'updateLine' => $this->opUpdateLine($op, $tempIds),
+                    'deleteLine' => $this->opDeleteLine($op, $tempIds),
+                    'linkLines' => $this->opLinkLines($op, $tempIds),
+                    'unlinkLine' => $this->opUnlinkLine($op, $tempIds),
+                    default => throw new \InvalidArgumentException(sprintf('Unknown operation "%s".', $op['op'] ?? 'null')),
                 };
             }
         });
     }
 
     /** @param array<string, mixed> $op */
-    private function opDeleteLine(array $op): void
+    private function opCreateLine(array $op, array &$tempIds): void
     {
-        if (!isset($op['lineId'])) {
-            return;
+        if (!isset($op['accountId'])) {
+            throw new \InvalidArgumentException('createLine requires accountId.');
         }
-        $line = $this->em->getRepository(Line::class)->find((int) $op['lineId']);
-        if ($line) {
-            $this->em->remove($line);
-            $this->em->flush();
-        }
-    }
-
-    /** @param array<string, mixed> $op */
-    private function opDeleteTransaction(array $op): void
-    {
-        if (!isset($op['transactionId'])) {
-            return;
-        }
-        $transactionId = (string) $op['transactionId'];
-        $this->deleteTransactionLines($transactionId);
-        $transaction = $this->em->getRepository(Transaction::class)->find($transactionId);
-        if ($transaction) {
-            $this->em->remove($transaction);
-            $this->em->flush();
-        }
-    }
-
-    /** @param array<string, mixed> $op */
-    private function opUpsertLine(array $op): void
-    {
-        $lineData = $op['line'] ?? null;
-        if (!\is_array($lineData) || !isset($lineData['accountId'])) {
-            return;
-        }
-        $accountId = (string) $lineData['accountId'];
+        $accountId = (string) $op['accountId'];
         $account = $this->em->getRepository(Account::class)->find($accountId);
         if (!$account) {
             throw new \InvalidArgumentException(sprintf('Unknown account "%s".', $accountId));
         }
-        $lineId = isset($op['lineId']) ? (int) $op['lineId'] : null;
-        $line = $lineId ? $this->em->getRepository(Line::class)->find($lineId) : null;
-        $line = $this->hydrateLine($line ?? new Line(), $lineData, null, $account);
+        $line = $this->hydrateLine(new Line(), $op, null, $account);
+        $this->em->persist($line);
+        $this->em->flush();
+
+        if (isset($op['tempId'])) {
+            $tempId = (string) $op['tempId'];
+            if (isset($tempIds[$tempId])) {
+                throw new \InvalidArgumentException(sprintf('Duplicate tempId "%s".', $tempId));
+            }
+            $tempIds[$tempId] = $line->getId();
+        }
+    }
+
+    /** @param array<string, mixed> $op */
+    private function opUpdateLine(array $op, array &$tempIds): void
+    {
+        $lineId = $this->resolveLineRef($op['lineId'] ?? null, $tempIds);
+        $line = $this->em->getRepository(Line::class)->find($lineId);
+        if (!$line) {
+            throw new \InvalidArgumentException(sprintf('Unknown line id "%s".', $lineId));
+        }
+        if (!isset($op['accountId'])) {
+            throw new \InvalidArgumentException('updateLine requires accountId.');
+        }
+        $accountId = (string) $op['accountId'];
+        $account = $this->em->getRepository(Account::class)->find($accountId);
+        if (!$account) {
+            throw new \InvalidArgumentException(sprintf('Unknown account "%s".', $accountId));
+        }
+        // Passing the line's *current* transaction preserves membership —
+        // updateLine never links or unlinks anything (see linkLines/unlinkLine).
+        $this->hydrateLine($line, $op, $line->getTransaction(), $account);
         $this->em->persist($line);
         $this->em->flush();
     }
 
-    /** @param array<string, mixed> $op */
-    private function opUpsertTransaction(array $op): void
+    /**
+     * Resolves an op's line reference — either a real numeric Line id, or a
+     * `tempId` string registered by an earlier `createLine` in this same
+     * batch — to a real Line id. Every op that names a line
+     * (updateLine/deleteLine/linkLines/unlinkLine) goes through this rather
+     * than casting to int directly, so a bad or unresolved reference is a
+     * clear 400 instead of silently becoming line id 0.
+     *
+     * @param array<string, int> $tempIds
+     */
+    private function resolveLineRef(mixed $ref, array $tempIds): int
     {
-        if (!isset($op['transactionId'])) {
+        if (null === $ref) {
+            throw new \InvalidArgumentException('A line reference is required.');
+        }
+        $key = (string) $ref;
+        if (isset($tempIds[$key])) {
+            return $tempIds[$key];
+        }
+        if (!is_numeric($ref)) {
+            throw new \InvalidArgumentException(sprintf('Unresolved line reference "%s".', $key));
+        }
+
+        return (int) $ref;
+    }
+
+    /** @param array<string, mixed> $op */
+    private function opDeleteLine(array $op, array &$tempIds): void
+    {
+        $lineId = $this->resolveLineRef($op['lineId'] ?? null, $tempIds);
+        $line = $this->em->getRepository(Line::class)->find($lineId);
+        if (!$line) {
+            throw new \InvalidArgumentException(sprintf('Unknown line id "%s".', $lineId));
+        }
+        $transactionId = $line->getTransaction()?->getId();
+        $this->em->remove($line);
+        $this->em->flush();
+        $this->demoteOrDeleteTransactionIfBelowMinimum($transactionId);
+    }
+
+    /**
+     * Removes one line from its Transaction, making it standalone. Idempotent
+     * — a line that's already standalone (whether from before this batch, or
+     * demoted by an earlier cascade within this same batch) is a no-op, not
+     * an error. This is what lets a full unlink send unlinkLine for every
+     * line of a record without the caller needing to hold one back for the
+     * cascade that demotes the last survivor automatically.
+     *
+     * @param array<string, mixed> $op
+     */
+    private function opUnlinkLine(array $op, array &$tempIds): void
+    {
+        $lineId = $this->resolveLineRef($op['lineId'] ?? null, $tempIds);
+        $line = $this->em->getRepository(Line::class)->find($lineId);
+        if (!$line) {
+            throw new \InvalidArgumentException(sprintf('Unknown line id "%s".', $lineId));
+        }
+        $transaction = $line->getTransaction();
+        if (!$transaction) {
             return;
         }
-        $txnId = (string) $op['transactionId'];
-        $this->deleteTransactionLines($txnId);
-        $transaction = $this->em->getRepository(Transaction::class)->find($txnId) ?? new Transaction();
-        $transaction->setId($txnId);
-        $this->em->persist($transaction);
+        $transactionId = $transaction->getId();
+        $line->setTransaction(null);
+        $this->em->persist($line);
+        $this->em->flush();
+        $this->demoteOrDeleteTransactionIfBelowMinimum($transactionId);
+    }
 
-        foreach ($op['lines'] ?? [] as $lineData) {
-            $accountId = (string) ($lineData['accountId'] ?? '');
-            $account = $this->em->getRepository(Account::class)->find($accountId);
-            if (!$account) {
-                // A line pointing nowhere is malformed input. Unlike
-                // writeState()'s deliberate best-effort import skip, the
-                // live batch path must fail the whole operation rather
-                // than silently persist a transaction with a dropped
-                // line (which could even leave a 1-line Transaction).
-                throw new \InvalidArgumentException(sprintf('Unknown account "%s".', $accountId));
+    /**
+     * Puts 2+ lines in one Transaction, creating a fresh one only if none of
+     * them already has one. Never merges two *different* pre-existing
+     * Transactions — a caller that genuinely needs that unlinks first (see
+     * the design spec's "linkLines" section). Idempotent when every given
+     * line already belongs to the one target Transaction.
+     *
+     * @param array<string, mixed> $op
+     */
+    private function opLinkLines(array $op, array &$tempIds): void
+    {
+        $rawIds = $op['lineIds'] ?? null;
+        if (!\is_array($rawIds) || \count($rawIds) < 2) {
+            throw new \InvalidArgumentException('linkLines requires at least 2 line ids.');
+        }
+        $resolvedIds = array_map(fn ($ref) => $this->resolveLineRef($ref, $tempIds), $rawIds);
+        if (\count($resolvedIds) !== \count(array_unique($resolvedIds))) {
+            throw new \InvalidArgumentException('linkLines given duplicate line ids.');
+        }
+
+        $lines = [];
+        foreach ($resolvedIds as $id) {
+            $line = $this->em->getRepository(Line::class)->find($id);
+            if (!$line) {
+                throw new \InvalidArgumentException(sprintf('Unknown line id "%s".', $id));
             }
-            $line = $this->hydrateLine(new Line(), $lineData, $transaction, $account);
+            $lines[] = $line;
+        }
+
+        $existingTransactionIds = [];
+        foreach ($lines as $line) {
+            $t = $line->getTransaction();
+            if ($t) {
+                $existingTransactionIds[$t->getId()] = true;
+            }
+        }
+        if (\count($existingTransactionIds) > 1) {
+            throw new \InvalidArgumentException('linkLines cannot span two different existing transactions.');
+        }
+
+        if (1 === \count($existingTransactionIds)) {
+            $transaction = $this->em->getRepository(Transaction::class)->find(array_key_first($existingTransactionIds));
+        } else {
+            $transaction = new Transaction();
+            $transaction->setId(bin2hex(random_bytes(8)));
+            $this->em->persist($transaction);
+        }
+
+        foreach ($lines as $line) {
+            $transaction->addLine($line);
             $this->em->persist($line);
         }
         $this->em->flush();
     }
 
     /**
-     * Bulk-deletes a transaction's lines via DQL rather than through its
-     * (possibly not yet loaded, possibly stale) in-memory collection —
-     * every caller here only cares that the rows are gone, not about
-     * touching loaded entities.
-     *
-     * A bulk DQL DELETE bypasses the UnitOfWork entirely, so it does
-     * *not* clean up `line_tag` the way removing a Line entity normally
-     * would (see opDeleteLine(), which uses `$em->remove()` and gets this
-     * for free). SQLite's `ON DELETE CASCADE` on `line_tag` *would* now
-     * cover it on its own — `foreign_keys` enforcement is on everywhere
-     * as of ForeignKeysMiddleware — but this explicit cleanup is kept
-     * anyway for clarity/defense-in-depth rather than relying on the
-     * cascade implicitly. Every linked-transaction edit goes through
-     * opUpsertTransaction(), which calls this before recreating the
-     * lines.
+     * Shared by deleteLine and unlinkLine: after a line leaves a Transaction
+     * (removed outright, or detached to standalone), checks whether that
+     * Transaction now has fewer than the 2 lines a real linked Transaction
+     * always requires (see CLAUDE.md's "Data model"). At exactly 1 remaining
+     * line, that survivor is demoted to standalone *before* the Transaction
+     * row is removed — Line.transaction is ON DELETE CASCADE at the database
+     * level, so removing the Transaction first would delete the survivor too.
+     * The Transaction itself is always removed via a bulk DQL DELETE, never
+     * $em->remove() on the loaded entity — that would trigger the ORM's own
+     * cascade/orphanRemoval semantics against its (possibly stale) in-memory
+     * `lines` collection, which is exactly the trap Transaction::removeLine()
+     * sets (see this plan's Global Constraints).
      */
-    private function deleteTransactionLines(string $transactionId): void
+    private function demoteOrDeleteTransactionIfBelowMinimum(?string $transactionId): void
     {
-        $this->deleteLineTagsForLines($this->em->getConnection()->fetchFirstColumn(
-            'SELECT id FROM line WHERE transaction_id = ?',
-            [$transactionId]
-        ));
-        $this->em->createQuery('DELETE FROM App\Entity\Line l WHERE IDENTITY(l.transaction) = :id')
-            ->setParameter('id', $transactionId)
-            ->execute();
-    }
-
-    /** @param array<int, int|string> $lineIds */
-    private function deleteLineTagsForLines(array $lineIds): void
-    {
-        if (!$lineIds) {
+        if (null === $transactionId) {
             return;
         }
-        $placeholders = implode(',', array_fill(0, \count($lineIds), '?'));
-        $this->em->getConnection()->executeStatement("DELETE FROM line_tag WHERE line_id IN ($placeholders)", $lineIds);
+        $remainingIds = $this->em->getConnection()->fetchFirstColumn(
+            'SELECT id FROM line WHERE transaction_id = ?',
+            [$transactionId]
+        );
+        if (\count($remainingIds) >= 2) {
+            return;
+        }
+        foreach ($remainingIds as $survivorId) {
+            $survivor = $this->em->getRepository(Line::class)->find((int) $survivorId);
+            if ($survivor) {
+                $survivor->setTransaction(null);
+                $this->em->persist($survivor);
+            }
+        }
+        $this->em->flush();
+        $this->em->createQuery('DELETE FROM App\Entity\Transaction t WHERE t.id = :id')
+            ->setParameter('id', $transactionId)
+            ->execute();
     }
 
     private function deleteTransactionIfEmpty(string $transactionId): void
@@ -1302,8 +1406,7 @@ class LedgerStateService
         $dates = [];
         foreach ($operations as $op) {
             $lines = match ($op['op'] ?? null) {
-                'upsertLine' => [$op['line'] ?? []],
-                'upsertTransaction' => $op['lines'] ?? [],
+                'createLine', 'updateLine' => [$op],
                 default => [],
             };
             foreach ($lines as $line) {

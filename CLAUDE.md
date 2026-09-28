@@ -390,27 +390,38 @@ below) and no linter, but otherwise no test suite.
     `saveSettings()` merges the partial into local state instead of
     replacing it).
   - `POST /api/ledger/batch` (`LedgerController`) — the one endpoint that
-    still takes a *list*: `{operations: [...]}`, a 4-primitive vocabulary
-    (`upsertLine`, `deleteLine`, `upsertTransaction`, `deleteTransaction`)
+    still takes a *list*: `{operations: [...]}`, a 5-primitive vocabulary
+    (`createLine`, `updateLine`, `deleteLine`, `linkLines`, `unlinkLine`)
     applied atomically in one DB transaction
     (`LedgerStateService::applyLedgerOperations()`). Every line's `date`
     in the batch is hard-validated against this ledger's one (freshly
     computed, never stored) tax year before any operation runs; a
     rejection is a `400` with a clear message, not the usual uncaught
-    500 — see "The active tax year" below. `upsertLine` always
-    creates/updates a standalone line (`transaction: null`);
-    `upsertTransaction` replaces a Transaction's whole line set in one go.
+    500 — see "The active tax year" below. `createLine` always creates a
+    fresh standalone line (there's no `transactionId` field to set —
+    membership is established later, if at all, by `linkLines`);
+    `updateLine` edits an existing line's own fields in place and never
+    touches transaction membership either way; `deleteLine` deletes a
+    line outright, and — like `unlinkLine` below — cascades to dissolve
+    its transaction (or demote the sole survivor to standalone) if that
+    drops it below 2 lines. `linkLines` puts 2+ given lines (real ids
+    and/or tempIds from an earlier `createLine` in the same batch) into
+    one transaction — extending the single existing transaction they
+    already share, or creating a fresh one if none of them has one yet —
+    and errors if they span two different existing transactions or
+    repeat an id. `unlinkLine` is idempotent: it removes one line from
+    its transaction, or does nothing if the line is already standalone.
     `src/lib/ledgerOperations.js` (`buildSaveOperations`,
     `buildUnlinkOperations`, `buildDeleteOperations`,
     `buildReorderOperations`) is the *only* place that decides which
-    primitives a given UI transition needs — a plain edit, a merge
-    (two standalones → one `upsertTransaction`), an unlink
-    (`deleteTransaction` + N `upsertLine`), a split-off, a 2→1 demotion,
-    or a same-date reorder all funnel through it. Don't hand-assemble an
-    `operations` array anywhere else. This is the *only* place several
-    rows still need to change together: with a real database every other
-    write is independently atomic per-row, which is what let the old
-    "compute the whole next state, save it all at once" pattern go away.
+    primitives a given UI transition needs — a plain edit, a merge (two
+    standalones → `linkLines`), an unlink (one `unlinkLine` per line
+    being detached), a split-off, a 2→1 demotion, or a same-date reorder
+    all funnel through it. Don't hand-assemble an `operations` array
+    anywhere else. This is the *only* place several rows still need to
+    change together: with a real database every other write is
+    independently atomic per-row, which is what let the old "compute the
+    whole next state, save it all at once" pattern go away.
   - `GET /api/match-candidates` (`MatchController` /
     `MatchingService::findCandidates()`) — replaces the old client-side
     "scan every transaction for a plausible counterpart" search. Query
@@ -475,13 +486,20 @@ below) and no linter, but otherwise no test suite.
   to add optimism, not to move business logic back to the frontend.
 - **`Account`/`Transaction` ids are frontend-provided strings** (the
   frontend already generates them with `uid()`), not Doctrine-generated —
-  this is what lets a round-trip save keep every id stable. `Line` is the
+  this is what lets a round-trip save keep every id stable. The one
+  exception: when `linkLines` needs a brand-new Transaction (none of the
+  lines being linked already has one), the *backend* generates its id
+  (`bin2hex(random_bytes(8))`, 16 hex characters) — deliberately narrow,
+  made possible because the frontend never needs to know a Transaction's
+  id in advance, since it always refetches after a write rather than
+  trusting a locally-assembled id back. `Line` is the
   one entity with a normal auto-increment PK, and — unlike Account/
   Transaction — the frontend *does* see that id (`lineToArray()` includes
   it): a standalone line has no Transaction id to key off, so its own
   backend-assigned `id` is what the frontend uses as its row identity
   (`rowKey()` in `AccountLedger.jsx`/`StockLedger.jsx`) and what
-  `upsertLine`/`deleteLine` operations address it by.
+  `updateLine`/`deleteLine` (and `linkLines`/`unlinkLine`, which address a
+  line the same way) operations address it by.
 - **The `Transaction` entity's table is explicitly named `transactions`**,
   not the default `transaction` — `transaction` is a reserved word in
   SQLite. DBAL's own DDL generation auto-quotes reserved table names, which
@@ -1026,8 +1044,8 @@ Counterparty and were dropped — don't reintroduce them as tags.
   fact only.
 - **`LedgerStateService::resolveTags()`** does a full replace of a line's
   Tag set on every save (`Line::setTags()`), not incremental add/remove —
-  called from `hydrateLine()`, so every write path (`upsertLine`,
-  `upsertTransaction`, `writeState()`) carries tags the same way as every
+  called from `hydrateLine()`, so every write path (`createLine`,
+  `updateLine`, `writeState()`) carries tags the same way as every
   other line field.
 - **Query endpoints** (`TagController`/`TagService`), deliberately narrow:
   - `GET /api/tags[?dimension=Car]` — distinct `(dimension, value)` pairs

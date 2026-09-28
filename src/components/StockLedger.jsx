@@ -256,7 +256,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
   // own date) is touched; each just goes back to standing alone.
   function unlinkNow() {
     if (!draft || !draft.originalRecord || draft.originalRecord.lines.length < 2) return;
-    onLedgerOperations(buildUnlinkOperations(draft.transactionId, draft.originalRecord.lines)).then(reload);
+    onLedgerOperations(buildUnlinkOperations(draft.originalRecord.lines)).then(reload);
     setDraft(null);
     setDraftError("");
   }
@@ -266,6 +266,17 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
   function moveRow(idx, dir) {
     const patches = reorderSameDate(rows, idx, dir);
     if (patches) onLedgerOperations(buildReorderOperations(patches)).then(reload);
+  }
+
+  // This account's own line's existing id — whether the record was
+  // already standalone (draft.lineId) or already linked (not tracked on
+  // draft directly; found from the original record's own lines) — or
+  // null for a brand-new entry.
+  function primaryLineIdOf(d) {
+    if (d.mode !== "edit") return null;
+    if (d.lineId) return d.lineId;
+    const line = d.originalRecord.lines.find((l) => l.accountId === account.id);
+    return line ? line.id : null;
   }
 
   function commit() {
@@ -279,13 +290,10 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
       setDraftError(`${fmtDate(offender.date)} is outside the ${taxYearBounds(activeTaxYearStart).label} tax year.`);
       return false;
     }
-    const absorbedLineIds = draft.otherLines.filter((ol) => ol.matchedLineId).map((ol) => ol.matchedLineId);
     const operations = buildSaveOperations({
-      oldTransactionId: draft.transactionId,
-      oldLineId: draft.lineId,
+      primaryLineId: primaryLineIdOf(draft),
       newLines,
-      absorbedLineIds,
-      extraStandaloneLines: draft.splitOffLines,
+      splitOffLineIds: draft.splitOffLines.map((l) => l.id),
     });
     onLedgerOperations(operations).then(reload);
     setDraft(null);
