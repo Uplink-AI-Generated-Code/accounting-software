@@ -465,12 +465,11 @@ class LedgerStateService
             $this->em->flush();
 
             $connection = $this->em->getConnection();
-            // line_tag first — same reason as deleteTransactionLines():
-            // even though SQLite's foreign_keys pragma is now enforced
-            // everywhere (see ForeignKeysMiddleware), so ON DELETE CASCADE
-            // on line_tag does fire on its own now, this explicit delete is
-            // kept for clarity/defense-in-depth rather than relied upon
-            // implicitly.
+            // Delete line_tag first for clarity/defense-in-depth: even though
+            // SQLite's foreign_keys pragma is enforced everywhere (see
+            // ForeignKeysMiddleware), so ON DELETE CASCADE on line_tag fires
+            // on its own now, this explicit delete is kept rather than
+            // relied upon implicitly.
             $connection->executeStatement('DELETE FROM line_tag');
             $connection->executeStatement('DELETE FROM line');
             $connection->executeStatement('DELETE FROM transactions');
@@ -653,34 +652,33 @@ class LedgerStateService
 
     /**
      * Applies an ordered list of operations atomically — the shared path
-     * for every ledger write. Four primitives, each doing exactly one
+     * for every ledger write. Five primitives, each doing exactly one
      * thing:
      *
-     *  - `upsertLine` {lineId?, line}: create (lineId omitted/null) or
-     *    update-in-place (lineId given) one standalone line. Always
-     *    leaves the line with no transaction, even if it had one before
-     *    (it shouldn't — see below).
-     *  - `deleteLine` {lineId}: delete one standalone line outright.
-     *  - `upsertTransaction` {transactionId, lines}: replace a
-     *    transaction's lines wholesale (delete then reinsert, same as
-     *    before) — `transactionId` is always frontend-provided (see
-     *    CLAUDE.md), never null, for both create and update.
-     *  - `deleteTransaction` {transactionId}: delete a transaction and
-     *    all of its lines.
+     *  - `createLine` {accountId, amount, date, description, ...}: create
+     *    one standalone line (no transaction). Fields are flat in the op.
+     *  - `updateLine` {lineId|tempId, accountId, amount, date, description, ...}:
+     *    update one existing line in place, preserving its current
+     *    transaction membership (if any). Membership never changes here;
+     *    see linkLines/unlinkLine instead.
+     *  - `deleteLine` {lineId|tempId}: delete one line outright, breaking
+     *    any transaction membership and cascading to delete its tags.
+     *  - `linkLines` {tempIds}: link N standalone lines (created or updated
+     *    earlier in this batch via tempId) into one new transaction. If
+     *    any line was already in a transaction, it's broken out first.
+     *  - `unlinkLine` {lineId|tempId}: break one line out of its transaction
+     *    (if any), leaving it standalone. The transaction is deleted if this
+     *    was its last line, demoting to no-transaction for a 2-line→1-line
+     *    shrink.
      *
      * A plain single save is one op. A merge (linking two standalone
-     * lines, or adding a standalone line to an existing transaction)
-     * deletes the absorbed standalone line(s) and upserts the transaction
-     * with the full new line set — the absorbed line's *id* doesn't
-     * survive the merge, a fresh row is created inside the transaction,
-     * matching this endpoint's existing "wholesale replace, don't diff"
-     * philosophy. A split-off/unlink is the reverse: delete (or shrink)
-     * the transaction, upsert new standalone lines for whatever came out
-     * of it. A same-date reorder is several upserts (line or transaction,
-     * whichever each affected row actually is) in one call. See
-     * CLAUDE.md's "Data model" section for the full worked examples.
+     * lines, or adding a standalone line to an existing transaction) is
+     * createLine/updateLine ops followed by a linkLines op. A split-off/
+     * unlink is the reverse. A same-date reorder is several updateLine ops
+     * in one call. See CLAUDE.md's "Data model" section for the full worked
+     * examples.
      *
-     * @param array<int, array{op: string, lineId?: int, transactionId?: string, line?: array<string, mixed>, lines?: array<int, array<string, mixed>>}> $operations
+     * @param array<int, array<string, mixed>> $operations
      */
     public function applyLedgerOperations(array $operations): void
     {
