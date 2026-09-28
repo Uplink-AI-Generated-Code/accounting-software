@@ -76,7 +76,7 @@ export function patchSettings(partial) {
 }
 
 // operations: see lib/ledgerOperations.js — an ordered list of
-// upsertLine/deleteLine/upsertTransaction/deleteTransaction primitives,
+// createLine/updateLine/deleteLine/linkLines/unlinkLine primitives,
 // applied atomically.
 export function applyLedgerOperations(operations) {
   return request("/api/ledger/batch", { method: "POST", ...jsonBody({ operations }) });

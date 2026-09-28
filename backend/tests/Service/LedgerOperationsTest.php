@@ -118,6 +118,22 @@ class LedgerOperationsTest extends KernelTestCase
         self::assertSame($before, $this->rowCounts());
     }
 
+    public function testUnknownOpNameThrowsAndWritesNothing(): void
+    {
+        $before = $this->rowCounts();
+
+        try {
+            $this->state->applyLedgerOperations([
+                ['op' => 'upsertLine', 'accountId' => 'cash', 'amount' => '10', 'date' => '2026-05-01', 'description' => ''],
+            ]);
+            self::fail('expected InvalidArgumentException');
+        } catch (\InvalidArgumentException $e) {
+            self::assertSame('Unknown operation "upsertLine".', $e->getMessage());
+        }
+
+        self::assertSame($before, $this->rowCounts());
+    }
+
     private function linkOp(array $ids): array
     {
         return ['op' => 'linkLines', 'lineIds' => $ids];

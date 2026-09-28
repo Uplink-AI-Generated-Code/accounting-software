@@ -662,21 +662,30 @@ class LedgerStateService
      *    transaction membership (if any). Membership never changes here;
      *    see linkLines/unlinkLine instead.
      *  - `deleteLine` {lineId|tempId}: delete one line outright, breaking
-     *    any transaction membership and cascading to delete its tags.
-     *  - `linkLines` {tempIds}: link N standalone lines (created or updated
-     *    earlier in this batch via tempId) into one new transaction. If
-     *    any line was already in a transaction, it's broken out first.
-     *  - `unlinkLine` {lineId|tempId}: break one line out of its transaction
-     *    (if any), leaving it standalone. The transaction is deleted if this
-     *    was its last line, demoting to no-transaction for a 2-line→1-line
-     *    shrink.
+     *    any transaction membership and cascading to delete its tags. If
+     *    this drops its transaction below 2 lines, the transaction is
+     *    dissolved (see demoteOrDeleteTransactionIfBelowMinimum()).
+     *  - `linkLines` {lineIds}: puts 2+ lines (real ids and/or tempIds
+     *    registered by an earlier createLine in this same batch) into one
+     *    transaction. If the given lines already share a single existing
+     *    transaction, that transaction is extended (or left as-is, if it's
+     *    idempotently re-run); if none has one, a fresh transaction is
+     *    created with a backend-generated id. Throws if the lines span two
+     *    *different* existing transactions, or if the same line id is
+     *    given twice — it never breaks a line out of an existing
+     *    transaction on its own (a caller that wants that unlinks first).
+     *  - `unlinkLine` {lineId|tempId}: removes one line from its transaction
+     *    (if any), leaving it standalone. No-op if the line is already
+     *    standalone. If this drops its transaction below 2 lines, the
+     *    transaction is dissolved the same way deleteLine's cascade does.
      *
      * A plain single save is one op. A merge (linking two standalone
      * lines, or adding a standalone line to an existing transaction) is
-     * createLine/updateLine ops followed by a linkLines op. A split-off/
-     * unlink is the reverse. A same-date reorder is several updateLine ops
-     * in one call. See CLAUDE.md's "Data model" section for the full worked
-     * examples.
+     * createLine/updateLine ops followed by a linkLines op — e.g. saving a
+     * new expense leg that matches an existing standalone bank line is
+     * `createLine` (the expense leg) + `linkLines` (both line ids). A
+     * split-off/unlink is one or more `unlinkLine` ops, one per line being
+     * detached. A same-date reorder is several updateLine ops in one call.
      *
      * @param array<int, array<string, mixed>> $operations
      */
@@ -692,7 +701,7 @@ class LedgerStateService
                     'deleteLine' => $this->opDeleteLine($op, $tempIds),
                     'linkLines' => $this->opLinkLines($op, $tempIds),
                     'unlinkLine' => $this->opUnlinkLine($op, $tempIds),
-                    default => null,
+                    default => throw new \InvalidArgumentException(sprintf('Unknown operation "%s".', $op['op'] ?? 'null')),
                 };
             }
         });
@@ -906,10 +915,6 @@ class LedgerStateService
             ->setParameter('id', $transactionId)
             ->execute();
     }
-
-    /** @param array<string, mixed> $op */
-    /** @param array<string, mixed> $op */
-    /** @param array<string, mixed> $op */
 
     private function deleteTransactionIfEmpty(string $transactionId): void
     {

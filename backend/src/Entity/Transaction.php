@@ -10,7 +10,11 @@ use Doctrine\ORM\Mapping as ORM;
 /**
  * A transaction is just a bag of lines — no transaction-level date or
  * description (see CLAUDE.md: that was a deliberate fix for a real bug).
- * `id` is frontend-provided, same reasoning as Account.
+ * `id` is frontend-provided, same reasoning as Account — except when
+ * `LedgerStateService::opLinkLines()` creates a brand-new Transaction (none
+ * of the given lines had one yet), in which case the backend generates the
+ * id (`bin2hex(random_bytes(8))`), since the frontend never needs to know
+ * it in advance and always refetches after a write.
  *
  * Table is explicitly named "transactions", not the default "transaction"
  * — the singular is a reserved word in SQLite, which breaks ORM-generated
