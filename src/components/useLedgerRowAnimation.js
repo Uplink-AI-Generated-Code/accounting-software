@@ -65,7 +65,9 @@ function layoutTop(el, scroller) {
    Also owns drag-to-reorder among same-date rows (startDrag, wired to a
    row's drag handle's onPointerDown): the dragged row follows the
    pointer, clamped to its same-date group, while its neighbours slide
-   aside to open a gap where it would land. On release it calls
+   aside to open a gap where it would land; holding it near the top or
+   bottom edge of the visible area auto-scrolls, for a group taller than
+   the screen. On release it calls
    onReorder(fromIdx, toIdx) and — because the drag's transforms are
    still in place when the new order renders — the FLIP pass below
    glides the dropped row from wherever it was let go into its slot.
@@ -206,6 +208,35 @@ export function useLedgerRowAnimation(rows, editingKey, { onReorder } = {}) {
       clientY = ev.clientY;
       update();
     }
+
+    // Edge auto-scroll, for a same-date group taller than the visible
+    // area: holding the pointer within EDGE px of the scroller's visible
+    // top/bottom scrolls it, faster the closer to (or further past) the
+    // edge — and the scroll listener below keeps the row under the
+    // pointer as it does. Stops once the row is already pinned at that
+    // end of its group, since there's nowhere further to take it.
+    const EDGE = 60, MAX_SPEED = 1.2; // px per ms at full depth
+    let autoScrollFrame = null, lastFrame = null, carry = 0;
+    function visibleBounds() {
+      const r = scroller ? scroller.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+      return { top: Math.max(r.top, 0), bottom: Math.min(r.bottom, window.innerHeight) };
+    }
+    function autoScroll(now) {
+      const dt = lastFrame === null ? 16 : Math.min(now - lastFrame, 50);
+      lastFrame = now;
+      const { top, bottom } = visibleBounds();
+      const rowTop = dragged.top + currentTranslateY(dragged.el);
+      let depth = 0;
+      if (clientY < top + EDGE && rowTop > groupTop + 0.5) depth = -Math.min(1, (top + EDGE - clientY) / EDGE);
+      else if (clientY > bottom - EDGE && rowTop + dragged.height < groupBottom - 0.5) depth = Math.min(1, (clientY - (bottom - EDGE)) / EDGE);
+      // Accumulate sub-pixel amounts — scrollTop can round a small
+      // increment away entirely, stalling a slow scroll near the edge.
+      carry = depth === 0 ? 0 : carry + depth * Math.abs(depth) * MAX_SPEED * dt;
+      const step = Math.trunc(carry);
+      if (step !== 0) { scrollByPx(scroller, step); carry -= step; }
+      autoScrollFrame = requestAnimationFrame(autoScroll);
+    }
+    autoScrollFrame = requestAnimationFrame(autoScroll);
     // Scrolling mid-drag (e.g. the mouse wheel) moves the rows under a
     // stationary pointer, so it needs the same update a pointer move does.
     const scrollTarget = scroller || window;
@@ -242,6 +273,7 @@ export function useLedgerRowAnimation(rows, editingKey, { onReorder } = {}) {
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
       scrollTarget.removeEventListener("scroll", update);
+      cancelAnimationFrame(autoScrollFrame);
       dragged.el.style.boxShadow = "";
       // Stay on top, opaque, until it's finished gliding into its slot.
       setTimeout(() => {
