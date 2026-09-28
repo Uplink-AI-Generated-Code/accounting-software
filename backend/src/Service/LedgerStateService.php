@@ -696,6 +696,7 @@ class LedgerStateService
                     'upsertLine' => $this->opUpsertLine($op),
                     'upsertTransaction' => $this->opUpsertTransaction($op),
                     'linkLines' => $this->opLinkLines($op, $tempIds),
+                    'unlinkLine' => $this->opUnlinkLine($op, $tempIds),
                     default => null,
                 };
             }
@@ -785,6 +786,34 @@ class LedgerStateService
         }
         $transactionId = $line->getTransaction()?->getId();
         $this->em->remove($line);
+        $this->em->flush();
+        $this->demoteOrDeleteTransactionIfBelowMinimum($transactionId);
+    }
+
+    /**
+     * Removes one line from its Transaction, making it standalone. Idempotent
+     * — a line that's already standalone (whether from before this batch, or
+     * demoted by an earlier cascade within this same batch) is a no-op, not
+     * an error. This is what lets a full unlink send unlinkLine for every
+     * line of a record without the caller needing to hold one back for the
+     * cascade that demotes the last survivor automatically.
+     *
+     * @param array<string, mixed> $op
+     */
+    private function opUnlinkLine(array $op, array &$tempIds): void
+    {
+        $lineId = $this->resolveLineRef($op['lineId'] ?? null, $tempIds);
+        $line = $this->em->getRepository(Line::class)->find($lineId);
+        if (!$line) {
+            throw new \InvalidArgumentException(sprintf('Unknown line id "%s".', $lineId));
+        }
+        $transaction = $line->getTransaction();
+        if (!$transaction) {
+            return;
+        }
+        $transactionId = $transaction->getId();
+        $line->setTransaction(null);
+        $this->em->persist($line);
         $this->em->flush();
         $this->demoteOrDeleteTransactionIfBelowMinimum($transactionId);
     }

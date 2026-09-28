@@ -304,4 +304,112 @@ class LedgerOperationsTest extends KernelTestCase
 
         self::assertSame($before, $this->rowCounts());
     }
+
+    public function testUnlinkLineOnATwoLineTransactionDissolvesItAndDemotesTheSurvivor(): void
+    {
+        $this->state->applyLedgerOperations([
+            $this->createOp('a', 'cash', '10', '2026-05-01'),
+            $this->createOp('b', 'savings', '-10', '2026-05-01'),
+            $this->linkOp(['a', 'b']),
+        ]);
+        $conn = $this->em->getConnection();
+        $cashId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'cash'");
+        $savingsId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'savings'");
+
+        $this->state->applyLedgerOperations([['op' => 'unlinkLine', 'lineId' => $cashId]]);
+
+        self::assertSame(['lines' => 2, 'transactions' => 0], $this->rowCounts());
+        self::assertNull($this->lineRow($cashId)['transaction_id']);
+        self::assertNull($this->lineRow($savingsId)['transaction_id']);
+    }
+
+    public function testUnlinkLineOnAThreeLineTransactionJustDetachesTheOneLine(): void
+    {
+        $this->state->applyLedgerOperations([
+            $this->createOp('a', 'cash', '10', '2026-05-01'),
+            $this->createOp('b', 'savings', '-6', '2026-05-01'),
+            $this->createOp('c', 'wages', '-4', '2026-05-01'),
+            $this->linkOp(['a', 'b', 'c']),
+        ]);
+        $conn = $this->em->getConnection();
+        $wagesId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'wages'");
+        $savingsId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'savings'");
+        $transactionIdBefore = $conn->fetchOne('SELECT transaction_id FROM line WHERE id = ?', [$savingsId]);
+
+        $this->state->applyLedgerOperations([['op' => 'unlinkLine', 'lineId' => $wagesId]]);
+
+        self::assertSame(['lines' => 3, 'transactions' => 1], $this->rowCounts());
+        self::assertNull($this->lineRow($wagesId)['transaction_id']);
+        self::assertSame($transactionIdBefore, $this->lineRow($savingsId)['transaction_id']);
+    }
+
+    public function testUnlinkLineOnEveryLineOfARecordInOneBatchSucceeds(): void
+    {
+        $this->state->applyLedgerOperations([
+            $this->createOp('a', 'cash', '10', '2026-05-01'),
+            $this->createOp('b', 'savings', '-10', '2026-05-01'),
+            $this->linkOp(['a', 'b']),
+        ]);
+        $conn = $this->em->getConnection();
+        $cashId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'cash'");
+        $savingsId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'savings'");
+
+        $this->state->applyLedgerOperations([
+            ['op' => 'unlinkLine', 'lineId' => $cashId],
+            ['op' => 'unlinkLine', 'lineId' => $savingsId],
+        ]);
+
+        self::assertSame(['lines' => 2, 'transactions' => 0], $this->rowCounts());
+        self::assertNull($this->lineRow($cashId)['transaction_id']);
+        self::assertNull($this->lineRow($savingsId)['transaction_id']);
+    }
+
+    public function testUnlinkLineOnALineThatWasAlreadyStandaloneIsANoOp(): void
+    {
+        $this->state->applyLedgerOperations([$this->createOp('a', 'cash', '10', '2026-05-01')]);
+        $lineId = $this->firstLineId();
+
+        $this->state->applyLedgerOperations([['op' => 'unlinkLine', 'lineId' => $lineId]]);
+
+        self::assertSame(['lines' => 1, 'transactions' => 0], $this->rowCounts());
+        self::assertNull($this->lineRow($lineId)['transaction_id']);
+    }
+
+    public function testUnlinkLineWithUnknownLineIdThrows(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->state->applyLedgerOperations([['op' => 'unlinkLine', 'lineId' => 999999]]);
+    }
+
+    public function testAMixedBatchOfEveryPrimitiveAppliesAtomically(): void
+    {
+        $this->state->applyLedgerOperations([
+            $this->createOp('a', 'cash', '10', '2026-05-01'),
+            $this->createOp('b', 'savings', '-6', '2026-05-01'),
+            $this->createOp('c', 'wages', '-4', '2026-05-01'),
+            $this->linkOp(['a', 'b', 'c']),
+        ]);
+        $conn = $this->em->getConnection();
+        $cashId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'cash'");
+        $savingsId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'savings'");
+        $wagesId = (int) $conn->fetchOne("SELECT id FROM line WHERE account_id = 'wages'");
+
+        // Second batch: add a new unrelated line, edit cash's own fields,
+        // delete wages (transaction drops to {cash, savings} = 2, no
+        // cascade yet), then unlink savings too (drops to {cash} = 1,
+        // which cascades: transaction dissolved, cash demoted).
+        $this->state->applyLedgerOperations([
+            $this->createOp('d', 'cash', '-1', '2026-05-03'),
+            ['op' => 'updateLine', 'lineId' => $cashId, 'accountId' => 'cash', 'amount' => '11', 'date' => '2026-05-01', 'description' => 'topped up'],
+            ['op' => 'deleteLine', 'lineId' => $wagesId],
+            ['op' => 'unlinkLine', 'lineId' => $savingsId],
+        ]);
+
+        self::assertSame(['lines' => 3, 'transactions' => 0], $this->rowCounts());
+        $cashRow = $this->lineRow($cashId);
+        self::assertSame('11', $cashRow['amount']);
+        self::assertSame('topped up', $cashRow['description']);
+        self::assertNull($cashRow['transaction_id']);
+        self::assertNull($this->lineRow($savingsId)['transaction_id']);
+    }
 }
