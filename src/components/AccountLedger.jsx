@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, Check, X, ArrowLeftRight, AlertTriangle, Pencil, Unlink2, TrendingUp, TableProperties, ChevronUp, ChevronDown } from "lucide-react";
+import { Plus, Trash2, Check, X, ArrowLeftRight, AlertTriangle, Pencil, Unlink2, TrendingUp, TableProperties, ChevronUp, ChevronDown, GripVertical } from "lucide-react";
 import { C, TYPES } from "../lib/theme";
 import { fmt, todayISO, fmtDate, displayAccountName, fracWidth } from "../lib/format";
 import { parseOrZero, add, sub, neg, abs, isZero, isNegative, isPositive, isNonZero } from "../lib/decimal";
@@ -49,7 +49,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
   // This account's own records — fetched on mount and whenever the
   // account changes, discarded on navigating away. reload() is called
   // after this ledger's own mutations succeed.
-  const { records, loaded, reload } = useAccountLedger(account.id);
+  const { records, loaded, reload, reorder } = useAccountLedger(account.id);
 
   // If both In and Out are filled, the saved line is their difference —
   // e.g. In 50 / Out 20 saves as an increase of 30. Amounts are canonical
@@ -180,7 +180,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
     });
   }, [effectiveRecords, account, accounts]);
 
-  const { rowRefs, pendingSettleId } = useLedgerRowAnimation(rows, editingKey);
+  const { rowRefs, pendingSettleId, startDrag, isDragClick } = useLedgerRowAnimation(rows, editingKey, { onReorder: moveRow });
 
   // One width for the Out/In/Balance columns: the running balance can't
   // have more decimals than the amounts that built it.
@@ -260,10 +260,16 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
   }
 
   // Rows sharing a date otherwise fall back to an arbitrary tiebreak — this
-  // lets that order be set deliberately instead.
-  function moveRow(idx, dir) {
-    const patches = reorderSameDate(rows, idx, dir);
-    if (patches) onLedgerOperations(buildReorderOperations(patches)).then(reload);
+  // lets that order be set deliberately instead, via the up/down buttons
+  // (settle: true — the moved row stays put on screen while the ledger
+  // slides underneath it, like a date edit, so the same button is still
+  // under the pointer for another click) or by dragging a row's handle.
+  // Applied optimistically — see useAccountLedger's reorder().
+  function moveRow(fromIdx, toIdx, { settle = false } = {}) {
+    const patches = reorderSameDate(rows, fromIdx, toIdx);
+    if (!patches) return;
+    if (settle) pendingSettleId.current = rows[fromIdx].key;
+    reorder(patches, () => onLedgerOperations(buildReorderOperations(patches)));
   }
 
   // This account's own line's existing id — whether the record was
@@ -366,7 +372,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
         <BalanceChart account={account} transactions={records} activeTaxYearStart={activeTaxYearStart} />
       ) : (
       <div style={{ border: `1px solid ${C.line}`, borderRadius: 6, overflow: "hidden", background: C.card }}>
-        <div className="grid" style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 60px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.6, color: C.inkFaint, padding: "10px 16px", borderBottom: `1px solid ${C.line}` }}>
+        <div className="grid" style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 80px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.6, color: C.inkFaint, padding: "10px 16px", borderBottom: `1px solid ${C.line}` }}>
           <div>Date</div><div>Description</div><div>Transfer</div><div className="text-right">Out</div><div className="text-right">In</div><div className="text-right">Balance</div><div />
         </div>
 
@@ -375,7 +381,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
         {loaded && isNonZero(account.openingBalance) && (
           <div
             className="grid"
-            style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 60px", fontSize: 13.5, padding: "10px 16px", borderBottom: `1px solid ${C.lineSoft}`, alignItems: "center", color: C.inkFaint }}
+            style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 80px", fontSize: 13.5, padding: "10px 16px", borderBottom: `1px solid ${C.lineSoft}`, alignItems: "center", color: C.inkFaint }}
           >
             <div style={{ fontSize: 12.5 }}>—</div>
             <div style={{ fontStyle: "italic" }}>Opening balance</div>
@@ -411,7 +417,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
           if (isEditing) {
             return (
               <div key={key} ref={(el) => (rowRefs.current[key] = el)} style={{ borderBottom: `1px solid ${C.lineSoft}`, background: C.paperDim, padding: "10px 16px" }}>
-                <div className="grid items-center" style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 60px", gap: 8 }}>
+                <div className="grid items-center" style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 80px", gap: 8 }}>
                   <input type="date" autoFocus value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} style={miniInput} />
                   <input type="text" placeholder="Description" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} style={miniInput} />
                   <div style={{ fontSize: 12, color: C.inkFaint, fontStyle: draft.otherLines.length === 0 ? "italic" : "normal" }}>
@@ -463,7 +469,7 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
                     </span>
                   </label>
                   {draft.exchangeChecked && (
-                    <div className="grid items-center mt-1.5" style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 60px", gap: 8 }}>
+                    <div className="grid items-center mt-1.5" style={{ gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 80px", gap: 8 }}>
                       <div />
                       <select value={draft.exchangeCurrency} onChange={(e) => setDraft({ ...draft, exchangeCurrency: e.target.value })} style={{ ...miniInput, width: 90 }}>
                         <option value="">currency…</option>
@@ -537,10 +543,10 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
             <div
               key={key}
               ref={(el) => (rowRefs.current[key] = el)}
-              onClick={() => (draft ? null : startEdit(r.record))}
+              onClick={() => (draft || isDragClick() ? null : startEdit(r.record))}
               className="grid ll-row cursor-pointer"
               style={{
-                gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 60px",
+                gridTemplateColumns: "120px 1fr 170px 100px 100px 120px 80px",
                 fontSize: 13.5,
                 padding: "10px 16px 10px 13px",
                 borderBottom: `1px solid ${C.lineSoft}`,
@@ -564,13 +570,23 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
               <div className="ll-mono text-right" style={{ color: inn ? C.credit : C.inkFaint }}>{inn ? <Amount value={inn} code={account.currency} fracWidth={amountWidth} /> : "—"}</div>
               <div className="ll-mono text-right" style={{ fontWeight: 600, color: isNegative(r.running) ? C.debit : C.ink }}><Amount value={r.running} code={account.currency} fracWidth={amountWidth} /></div>
               <div className="flex justify-end items-center gap-0.5">
+                {(hasAbove || hasBelow) && (
+                  <span
+                    onPointerDown={(e) => startDrag(e, key)}
+                    onClick={(e) => e.stopPropagation()}
+                    title="Drag to reorder among same-date entries"
+                    style={{ padding: 2, cursor: "grab", touchAction: "none", display: "flex" }}
+                  >
+                    <GripVertical size={13} color={C.inkFaint} />
+                  </span>
+                )}
                 {hasAbove && (
-                  <button onClick={(e) => { e.stopPropagation(); moveRow(idx, -1); }} title="Move earlier among same-date entries" style={{ padding: 2 }}>
+                  <button onClick={(e) => { e.stopPropagation(); moveRow(idx, idx - 1, { settle: true }); }} title="Move earlier among same-date entries" style={{ padding: 2 }}>
                     <ChevronUp size={13} color={C.inkFaint} />
                   </button>
                 )}
                 {hasBelow && (
-                  <button onClick={(e) => { e.stopPropagation(); moveRow(idx, 1); }} title="Move later among same-date entries" style={{ padding: 2 }}>
+                  <button onClick={(e) => { e.stopPropagation(); moveRow(idx, idx + 1, { settle: true }); }} title="Move later among same-date entries" style={{ padding: 2 }}>
                     <ChevronDown size={13} color={C.inkFaint} />
                   </button>
                 )}

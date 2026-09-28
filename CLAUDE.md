@@ -73,7 +73,10 @@ because they're small or tightly coupled:
   `miniInput`/`inputStyle`, `iconBtn`, and the tag-editing pair
   `TagChips`/`TagsEditor` used by both ledgers' row editors).
   `useLedgerRowAnimation.js` is the FLIP/autoscroll hook shared by both
-  ledgers' row lists.
+  ledgers' row lists — it also owns drag-to-reorder among same-date rows
+  (`startDrag`, wired to each row's grip handle). It measures and scrolls
+  relative to the row list's nearest overflow container (`App.jsx`'s
+  `<main>`), not the window, since that's what actually scrolls.
 
 When adding a helper, put it in the `lib/` module that already owns that
 domain rather than inlining it into a component or creating a new module for
@@ -477,7 +480,12 @@ below) and no linter, but otherwise no test suite.
     the full design.
 - **None of the write handlers are optimistic on the frontend** except
   `saveAccount`/`saveSettings` in `App.jsx` (plain replaces with no
-  cascading effect elsewhere). Account deletion and every transaction
+  cascading effect elsewhere) and a same-date reorder
+  (`useAccountLedger.js`'s `reorder()`, which overlays the new `order`
+  values on the fetched records until the save and reload land — it only
+  touches `order` on lines already on screen, so there's no cascade to
+  get wrong, and it lets the row animate on click/drop instead of after
+  a round trip). Account deletion and every transaction
   write wait for the response, then re-fetch (`refreshAccounts()` for the
   account list; each ledger's own `reload()` for its rows) rather than
   trying to patch local state — specifically so the cascade/merge/

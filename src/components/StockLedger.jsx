@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, Check, X, AlertTriangle, Pencil, Unlink2, TrendingUp, TableProperties, ChevronUp, ChevronDown } from "lucide-react";
+import { Plus, Trash2, Check, X, AlertTriangle, Pencil, Unlink2, TrendingUp, TableProperties, ChevronUp, ChevronDown, GripVertical } from "lucide-react";
 import { C } from "../lib/theme";
 import { fmt, fmtPlain, fmtUnits, todayISO, fmtDate, displayAccountName, fracWidth } from "../lib/format";
 import { parseDecimal, parseOrZero, add, sub, neg, abs, isZero, isNegative, isPositive, isNonZero, divide, round } from "../lib/decimal";
@@ -51,7 +51,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
   const [draftError, setDraftError] = useState("");
   const [view, setView] = useState("ledger");
 
-  const { records, loaded, reload } = useAccountLedger(account.id);
+  const { records, loaded, reload, reorder } = useAccountLedger(account.id);
 
   // Trading currency now lives on the Symbol, not the Account itself —
   // an investment account's own `currency` field is unused, see
@@ -171,7 +171,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
     });
   }, [effectiveRecords, account, accounts]);
 
-  const { rowRefs, pendingSettleId } = useLedgerRowAnimation(rows, editingKey);
+  const { rowRefs, pendingSettleId, startDrag, isDragClick } = useLedgerRowAnimation(rows, editingKey, { onReorder: moveRow });
 
   // Adaptive precision for computed money (see lib/stockMath.js's
   // stockPlaces) — must agree with the backend's costBasis/portfolioValue.
@@ -262,10 +262,16 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
   }
 
   // Rows sharing a date otherwise fall back to an arbitrary tiebreak — this
-  // lets that order be set deliberately instead.
-  function moveRow(idx, dir) {
-    const patches = reorderSameDate(rows, idx, dir);
-    if (patches) onLedgerOperations(buildReorderOperations(patches)).then(reload);
+  // lets that order be set deliberately instead, via the up/down buttons
+  // (settle: true — the moved row stays put on screen while the ledger
+  // slides underneath it, like a date edit, so the same button is still
+  // under the pointer for another click) or by dragging a row's handle.
+  // Applied optimistically — see useAccountLedger's reorder().
+  function moveRow(fromIdx, toIdx, { settle = false } = {}) {
+    const patches = reorderSameDate(rows, fromIdx, toIdx);
+    if (!patches) return;
+    if (settle) pendingSettleId.current = rows[fromIdx].key;
+    reorder(patches, () => onLedgerOperations(buildReorderOperations(patches)));
   }
 
   // This account's own line's existing id — whether the record was
@@ -324,7 +330,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
     };
   });
 
-  const gridCols = "110px 1fr 90px 90px 110px 60px";
+  const gridCols = "110px 1fr 90px 90px 110px 80px";
 
   return (
     <div>
@@ -509,7 +515,7 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
             <div
               key={key}
               ref={(el) => (rowRefs.current[key] = el)}
-              onClick={() => (draft ? null : startEdit(r.record))}
+              onClick={() => (draft || isDragClick() ? null : startEdit(r.record))}
               className="ll-row cursor-pointer"
               style={{ padding: "10px 16px", borderBottom: `1px solid ${C.lineSoft}` }}
             >
@@ -524,13 +530,23 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
                 <div className="ll-mono text-right" style={{ color: unitsIn ? C.credit : C.inkFaint }}>{unitsIn ? <Amount value={unitsIn} code={unitsKey} kind="units" fracWidth={unitsWidth} /> : "—"}</div>
                 <div className="ll-mono text-right" style={{ fontWeight: 600 }}><Amount value={r.running} code={unitsKey} kind="units" fracWidth={unitsWidth} /></div>
                 <div className="flex justify-end items-center gap-0.5">
+                  {(hasAbove || hasBelow) && (
+                    <span
+                      onPointerDown={(e) => startDrag(e, key)}
+                      onClick={(e) => e.stopPropagation()}
+                      title="Drag to reorder among same-date entries"
+                      style={{ padding: 2, cursor: "grab", touchAction: "none", display: "flex" }}
+                    >
+                      <GripVertical size={13} color={C.inkFaint} />
+                    </span>
+                  )}
                   {hasAbove && (
-                    <button onClick={(e) => { e.stopPropagation(); moveRow(idx, -1); }} title="Move earlier among same-date entries" style={{ padding: 2 }}>
+                    <button onClick={(e) => { e.stopPropagation(); moveRow(idx, idx - 1, { settle: true }); }} title="Move earlier among same-date entries" style={{ padding: 2 }}>
                       <ChevronUp size={13} color={C.inkFaint} />
                     </button>
                   )}
                   {hasBelow && (
-                    <button onClick={(e) => { e.stopPropagation(); moveRow(idx, 1); }} title="Move later among same-date entries" style={{ padding: 2 }}>
+                    <button onClick={(e) => { e.stopPropagation(); moveRow(idx, idx + 1, { settle: true }); }} title="Move later among same-date entries" style={{ padding: 2 }}>
                       <ChevronDown size={13} color={C.inkFaint} />
                     </button>
                   )}
