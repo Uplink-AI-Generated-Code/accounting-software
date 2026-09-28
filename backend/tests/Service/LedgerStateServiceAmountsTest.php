@@ -47,7 +47,7 @@ class LedgerStateServiceAmountsTest extends KernelTestCase
 
     private function line(string $accountId, string $amount, string $date, array $extra = []): array
     {
-        return ['op' => 'upsertLine', 'line' => ['accountId' => $accountId, 'amount' => $amount, 'date' => $date, 'description' => '', ...$extra]];
+        return ['op' => 'createLine', 'accountId' => $accountId, 'amount' => $amount, 'date' => $date, 'description' => '', ...$extra];
     }
 
     public function testBalancesAreExactAndAllowPrecisionBeyondScale(): void
@@ -84,7 +84,7 @@ class LedgerStateServiceAmountsTest extends KernelTestCase
     {
         $this->state->upsertAccount('cash', ['name' => 'Cash', 'type' => 'asset', 'currency' => 'GBP']);
         $this->expectException(\InvalidArgumentException::class);
-        $this->state->applyLedgerOperations([['op' => 'upsertLine', 'line' => ['accountId' => 'cash', 'amount' => 2050, 'date' => '2026-05-01', 'description' => '']]]);
+        $this->state->applyLedgerOperations([['op' => 'createLine', 'accountId' => 'cash', 'amount' => 2050, 'date' => '2026-05-01', 'description' => '']]);
     }
 
     /** @return array{lines: int, transactions: int} */
@@ -96,47 +96,6 @@ class LedgerStateServiceAmountsTest extends KernelTestCase
             'lines' => (int) $conn->fetchOne('SELECT COUNT(*) FROM line'),
             'transactions' => (int) $conn->fetchOne('SELECT COUNT(*) FROM transactions'),
         ];
-    }
-
-    public function testUpsertLineWithUnknownAccountThrowsAndWritesNothing(): void
-    {
-        $this->state->upsertAccount('cash', ['name' => 'Cash', 'type' => 'asset', 'currency' => 'GBP']);
-        $before = $this->rowCounts();
-
-        try {
-            $this->state->applyLedgerOperations([
-                $this->line('does-not-exist', '10', '2026-05-01'),
-            ]);
-            self::fail('expected InvalidArgumentException');
-        } catch (\InvalidArgumentException $e) {
-            self::assertSame('Unknown account "does-not-exist".', $e->getMessage());
-        }
-
-        self::assertSame($before, $this->rowCounts(), 'batch must not persist anything when a line targets an unknown account');
-    }
-
-    public function testUpsertTransactionWithUnknownAccountOnOneLegThrowsAndWritesNothing(): void
-    {
-        $this->state->upsertAccount('cash', ['name' => 'Cash', 'type' => 'asset', 'currency' => 'GBP']);
-        $before = $this->rowCounts();
-
-        try {
-            $this->state->applyLedgerOperations([[
-                'op' => 'upsertTransaction',
-                'transactionId' => 'txn-1',
-                'lines' => [
-                    ['accountId' => 'cash', 'amount' => '10', 'date' => '2026-05-01', 'description' => ''],
-                    ['accountId' => 'does-not-exist', 'amount' => '-10', 'date' => '2026-05-01', 'description' => ''],
-                ],
-            ]]);
-            self::fail('expected InvalidArgumentException');
-        } catch (\InvalidArgumentException $e) {
-            self::assertSame('Unknown account "does-not-exist".', $e->getMessage());
-        }
-
-        // In particular: the first (valid) leg must not have been left
-        // behind as an orphan 1-line Transaction.
-        self::assertSame($before, $this->rowCounts(), 'batch must not persist a partial transaction when one leg targets an unknown account');
     }
 
     public function testStockWalkWithRepeatingQuotientDividesAtTwentyDpAndRoundsOnlyOnOutput(): void

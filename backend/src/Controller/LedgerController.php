@@ -9,12 +9,12 @@ use Symfony\Component\Routing\Attribute\Route;
 
 /**
  * One endpoint for every ledger write that isn't a plain account/settings
- * change — a standalone line's own save/delete, a transaction's, and
- * every compound action built from them (merge, split-off, unlink,
- * same-date reorder) — applied atomically as an ordered list of
- * operations. See LedgerStateService::applyLedgerOperations() for the
- * four primitives and worked examples of how each frontend action maps
- * to a short sequence of them.
+ * change — a standalone line's own create/edit/delete, and every compound
+ * action built from them (merge, split-off, unlink, same-date reorder) —
+ * applied atomically as an ordered list of operations. See
+ * LedgerStateService::applyLedgerOperations() for the five primitives
+ * (createLine, updateLine, deleteLine, linkLines, unlinkLine) and how
+ * each frontend action maps to a short sequence of them.
  */
 #[Route('/api/ledger')]
 class LedgerController

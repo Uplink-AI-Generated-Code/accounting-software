@@ -692,9 +692,6 @@ class LedgerStateService
                     'createLine' => $this->opCreateLine($op, $tempIds),
                     'updateLine' => $this->opUpdateLine($op, $tempIds),
                     'deleteLine' => $this->opDeleteLine($op, $tempIds),
-                    'deleteTransaction' => $this->opDeleteTransaction($op),
-                    'upsertLine' => $this->opUpsertLine($op),
-                    'upsertTransaction' => $this->opUpsertTransaction($op),
                     'linkLines' => $this->opLinkLines($op, $tempIds),
                     'unlinkLine' => $this->opUnlinkLine($op, $tempIds),
                     default => null,
@@ -913,105 +910,8 @@ class LedgerStateService
     }
 
     /** @param array<string, mixed> $op */
-    private function opDeleteTransaction(array $op): void
-    {
-        if (!isset($op['transactionId'])) {
-            return;
-        }
-        $transactionId = (string) $op['transactionId'];
-        $this->deleteTransactionLines($transactionId);
-        $transaction = $this->em->getRepository(Transaction::class)->find($transactionId);
-        if ($transaction) {
-            $this->em->remove($transaction);
-            $this->em->flush();
-        }
-    }
-
     /** @param array<string, mixed> $op */
-    private function opUpsertLine(array $op): void
-    {
-        $lineData = $op['line'] ?? null;
-        if (!\is_array($lineData) || !isset($lineData['accountId'])) {
-            return;
-        }
-        $accountId = (string) $lineData['accountId'];
-        $account = $this->em->getRepository(Account::class)->find($accountId);
-        if (!$account) {
-            throw new \InvalidArgumentException(sprintf('Unknown account "%s".', $accountId));
-        }
-        $lineId = isset($op['lineId']) ? (int) $op['lineId'] : null;
-        $line = $lineId ? $this->em->getRepository(Line::class)->find($lineId) : null;
-        $line = $this->hydrateLine($line ?? new Line(), $lineData, null, $account);
-        $this->em->persist($line);
-        $this->em->flush();
-    }
-
     /** @param array<string, mixed> $op */
-    private function opUpsertTransaction(array $op): void
-    {
-        if (!isset($op['transactionId'])) {
-            return;
-        }
-        $txnId = (string) $op['transactionId'];
-        $this->deleteTransactionLines($txnId);
-        $transaction = $this->em->getRepository(Transaction::class)->find($txnId) ?? new Transaction();
-        $transaction->setId($txnId);
-        $this->em->persist($transaction);
-
-        foreach ($op['lines'] ?? [] as $lineData) {
-            $accountId = (string) ($lineData['accountId'] ?? '');
-            $account = $this->em->getRepository(Account::class)->find($accountId);
-            if (!$account) {
-                // A line pointing nowhere is malformed input. Unlike
-                // writeState()'s deliberate best-effort import skip, the
-                // live batch path must fail the whole operation rather
-                // than silently persist a transaction with a dropped
-                // line (which could even leave a 1-line Transaction).
-                throw new \InvalidArgumentException(sprintf('Unknown account "%s".', $accountId));
-            }
-            $line = $this->hydrateLine(new Line(), $lineData, $transaction, $account);
-            $this->em->persist($line);
-        }
-        $this->em->flush();
-    }
-
-    /**
-     * Bulk-deletes a transaction's lines via DQL rather than through its
-     * (possibly not yet loaded, possibly stale) in-memory collection —
-     * every caller here only cares that the rows are gone, not about
-     * touching loaded entities.
-     *
-     * A bulk DQL DELETE bypasses the UnitOfWork entirely, so it does
-     * *not* clean up `line_tag` the way removing a Line entity normally
-     * would (see opDeleteLine(), which uses `$em->remove()` and gets this
-     * for free). SQLite's `ON DELETE CASCADE` on `line_tag` *would* now
-     * cover it on its own — `foreign_keys` enforcement is on everywhere
-     * as of ForeignKeysMiddleware — but this explicit cleanup is kept
-     * anyway for clarity/defense-in-depth rather than relying on the
-     * cascade implicitly. Every linked-transaction edit goes through
-     * opUpsertTransaction(), which calls this before recreating the
-     * lines.
-     */
-    private function deleteTransactionLines(string $transactionId): void
-    {
-        $this->deleteLineTagsForLines($this->em->getConnection()->fetchFirstColumn(
-            'SELECT id FROM line WHERE transaction_id = ?',
-            [$transactionId]
-        ));
-        $this->em->createQuery('DELETE FROM App\Entity\Line l WHERE IDENTITY(l.transaction) = :id')
-            ->setParameter('id', $transactionId)
-            ->execute();
-    }
-
-    /** @param array<int, int|string> $lineIds */
-    private function deleteLineTagsForLines(array $lineIds): void
-    {
-        if (!$lineIds) {
-            return;
-        }
-        $placeholders = implode(',', array_fill(0, \count($lineIds), '?'));
-        $this->em->getConnection()->executeStatement("DELETE FROM line_tag WHERE line_id IN ($placeholders)", $lineIds);
-    }
 
     private function deleteTransactionIfEmpty(string $transactionId): void
     {
@@ -1503,8 +1403,7 @@ class LedgerStateService
         $dates = [];
         foreach ($operations as $op) {
             $lines = match ($op['op'] ?? null) {
-                'upsertLine' => [$op['line'] ?? []],
-                'upsertTransaction' => $op['lines'] ?? [],
+                'createLine', 'updateLine' => [$op],
                 default => [],
             };
             foreach ($lines as $line) {
