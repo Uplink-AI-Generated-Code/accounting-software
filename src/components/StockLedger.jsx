@@ -96,6 +96,14 @@ export function StockLedger({ account, accounts, symbols, currencies, groupLevel
     }
     if (d.tags && d.tags.length) line1.tags = d.tags;
 
+    // Keep this line's place among its same-date neighbours — without
+    // its `order` it would sort first while being edited, and saving
+    // would clear it (updateLine replaces the whole line). Only while the
+    // date is unchanged: a different date is a different group, where the
+    // old position means nothing.
+    const original = d.mode === "edit" ? d.originalRecord.lines.find((l) => l.accountId === account.id) : null;
+    if (original && original.order !== undefined && original.date === line1.date) line1.order = original.order;
+
     const activeOtherLines = d.otherLines.filter((ol) => {
       if (!ol.accountId) return false;
       if (ol.matchedLineId) return true;

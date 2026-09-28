@@ -79,6 +79,14 @@ export function AccountLedger({ account, accounts, currencies, symbols, groupLev
     const line1 = { accountId: account.id, amount: delta, date: d.date || todayISO(), description: (d.description || "").trim() };
     if (d.tags && d.tags.length) line1.tags = d.tags;
 
+    // Keep this line's place among its same-date neighbours — without
+    // its `order` it would sort first while being edited, and saving
+    // would clear it (updateLine replaces the whole line). Only while the
+    // date is unchanged: a different date is a different group, where the
+    // old position means nothing.
+    const original = d.mode === "edit" ? d.originalRecord.lines.find((l) => l.accountId === account.id) : null;
+    if (original && original.order !== undefined && original.date === line1.date) line1.order = original.order;
+
     // The exchange tag is kept regardless of whether this leg is linked —
     // it's useful as a record of the rate at entry time even once a real
     // counterpart line exists, not just while still searching for one.
