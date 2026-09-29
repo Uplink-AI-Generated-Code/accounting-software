@@ -93,6 +93,16 @@ export function useLedgerRowAnimation(rows, editingKey, { onReorder } = {}) {
     el.style.transition = `transform ${duration}ms ${EASE}`;
     el.style.transform = "translateY(0px)";
 
+    // Rows passing over one another paint in DOM order, so a row moving
+    // up (to an earlier DOM position) would slide *under* the rows it
+    // passes. Lift it above them until it lands.
+    el.style.position = "relative";
+    el.style.zIndex = "2";
+    setTimeout(() => {
+      el.style.zIndex = "";
+      el.style.position = "";
+    }, duration + 60);
+
     const start = performance.now();
     let lastTop = contentTop(el, scroller);
 
